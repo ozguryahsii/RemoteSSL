@@ -4,6 +4,9 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using RemoteSSL.Api.Controllers;
 using RemoteSSL.Application.Abstractions;
+using RemoteSSL.Application.Observability;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using RemoteSSL.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -17,6 +20,21 @@ builder.Services.AddHealthChecks()
     .AddNpgSql(builder.Configuration.GetConnectionString("Database")!, name: "postgres")
     .AddRabbitMQ(rabbitConnectionString: builder.Configuration.GetConnectionString("RabbitMq")!, name: "rabbitmq")
     .AddRedis(builder.Configuration.GetConnectionString("Redis")!, name: "redis");
+
+// §32.2 distributed tracing: the RemoteSSL activity source carries the correlation id
+// that spans certificate request → CA → deployment job → runner → target. Exported over
+// OTLP only when an endpoint is configured, so the default install needs no collector.
+var otlpEndpoint = builder.Configuration["Observability:OtlpEndpoint"];
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService("remotessl-api"))
+    .WithTracing(t =>
+    {
+        t.AddSource(TraceContext.Source.Name)
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation();
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+            t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+    });
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .WithOrigins(builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? ["http://localhost:5173"])

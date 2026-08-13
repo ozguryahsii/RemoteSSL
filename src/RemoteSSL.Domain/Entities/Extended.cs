@@ -53,6 +53,8 @@ public class CertificateRequestEntity
     public string? EncryptedPrivateKeyPem { get; set; }
     public string? ErrorMessage { get; set; }
     public string? RequestedBy { get; set; }
+    /// <summary>Trace id shared by the whole request → CA → deployment → runner chain (§32.2).</summary>
+    public string CorrelationId { get; set; } = string.Empty;
     public Guid? IssuedVersionId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }

@@ -17,6 +17,10 @@ namespace RemoteSSL.Runner;
 /// </summary>
 public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogger<Worker> logger) : BackgroundService
 {
+    /// <summary>Activity source name registered with OpenTelemetry in Program.cs (§32.2).</summary>
+    public const string ActivitySourceName = "RemoteSSL.Runner";
+
+    private static readonly System.Diagnostics.ActivitySource Activity = new(ActivitySourceName);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private Guid _runnerId;
     private string _apiKey = string.Empty;
@@ -101,7 +105,13 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
 
     private async Task ExecuteJobAsync(HttpClient http, ClaimedJob job, CancellationToken ct)
     {
-        logger.LogInformation("Executing job {Id} ({Type})", job.Id, job.JobType);
+        // Job execution joins the control plane's trace via the correlation id it was issued with.
+        using var activity = Activity.StartActivity($"runner.{job.JobType}", System.Diagnostics.ActivityKind.Consumer);
+        activity?.SetTag("remotessl.correlation_id", job.CorrelationId);
+        activity?.SetTag("remotessl.job_id", job.Id);
+
+        logger.LogInformation("Executing job {Id} ({Type}) correlation {Correlation}",
+            job.Id, job.JobType, job.CorrelationId);
         bool success = false, rolledBack = false;
         var steps = new List<object>();
         string? resultJson = null;
@@ -125,7 +135,12 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
 
             if (job.JobType == "probe")
             {
+                var probeWatch = System.Diagnostics.Stopwatch.StartNew();
                 resultJson = await ProbeEndpointAsync(doc.RootElement, ct);
+                probeWatch.Stop();
+                // The control plane records probe_latency (§32.1) for the internal vantage
+                // from this measurement — only the runner can time its own segment.
+                resultJson = WithElapsedMs(resultJson, probeWatch.Elapsed.TotalMilliseconds);
                 success = true; // probe outcome (incl. failures) is data, not a job failure
                 steps.Add(new { step = "PreCheck", success = true, safeLog = "probe executed from runner segment" });
             }
@@ -239,6 +254,22 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
         CertPem = e.GetProperty("certPem").GetString()!,
         ReloadCmd = e.TryGetProperty("reloadCmd", out var rc) ? rc.GetString() : null
     };
+
+    /// <summary>Adds the measured duration to a probe result document.</summary>
+    private static string WithElapsedMs(string json, double elapsedMs)
+    {
+        try
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(json)?.AsObject();
+            if (node is null) return json;
+            node["elapsedMs"] = Math.Round(elapsedMs, 1);
+            return node.ToJsonString();
+        }
+        catch
+        {
+            return json;
+        }
+    }
 
     /// <summary>
     /// TLS probe executed from inside the runner's segment (internal-DNS endpoints).

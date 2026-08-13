@@ -260,13 +260,60 @@ public class PoliciesController(IRemoteSslDbContext db, AuditWriter audit) : Con
 public class AuditController(IRemoteSslDbContext db) : ControllerBase
 {
     [HttpGet]
-    public async Task<IEnumerable<object>> List([FromQuery] string? action, [FromQuery] int take = 100, CancellationToken ct = default)
+    public async Task<IEnumerable<object>> List([FromQuery] string? action, [FromQuery] string? correlationId,
+        [FromQuery] int take = 100, CancellationToken ct = default)
     {
         var q = db.AuditEvents.AsNoTracking().OrderByDescending(e => e.Timestamp).AsQueryable();
         if (!string.IsNullOrEmpty(action)) q = q.Where(e => e.Action.StartsWith(action));
+        if (!string.IsNullOrEmpty(correlationId)) q = q.Where(e => e.CorrelationId == correlationId);
         return await q.Take(Math.Min(take, 500)).Select(e => new
         {
             e.Id, e.Timestamp, e.Actor, e.Action, e.ObjectType, e.ObjectId, e.Result, e.CorrelationId, e.DetailsJson
         }).ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// The whole §32.2 chain behind one trace id: certificate request → CA → deployment
+    /// job → runner jobs → target, joined with the audit trail and the latency samples
+    /// recorded along the way.
+    /// </summary>
+    [HttpGet("trace/{correlationId}")]
+    public async Task<object> Trace(string correlationId, CancellationToken ct)
+    {
+        var events = await db.AuditEvents.AsNoTracking()
+            .Where(e => e.CorrelationId == correlationId)
+            .OrderBy(e => e.Timestamp)
+            .Select(e => new { e.Timestamp, e.Actor, e.Action, e.ObjectType, e.ObjectId, e.Result, e.DetailsJson })
+            .ToListAsync(ct);
+
+        var request = await db.CertificateRequests.AsNoTracking()
+            .Where(r => r.CorrelationId == correlationId)
+            .Select(r => new { r.Id, r.CommonName, State = r.State.ToString(), r.CreatedAt, r.UpdatedAt, r.ErrorMessage })
+            .FirstOrDefaultAsync(ct);
+
+        var jobs = await db.DeploymentJobs.AsNoTracking()
+            .Where(j => j.CorrelationId == correlationId)
+            .Select(j => new
+            {
+                j.Id, Status = j.Status.ToString(), j.Strategy, j.RequestedBy,
+                j.CreatedAt, j.StartedAt, j.CompletedAt,
+                Certificate = j.CertificateVersion.Certificate.CommonName,
+                TargetCount = j.Targets.Count
+            })
+            .ToListAsync(ct);
+
+        var runnerJobs = await db.RunnerJobs.AsNoTracking()
+            .Where(j => j.CorrelationId == correlationId)
+            .OrderBy(j => j.CreatedAt)
+            .Select(j => new { j.Id, j.JobType, j.Status, j.RunnerId, j.CreatedAt, j.ClaimedAt, j.CompletedAt })
+            .ToListAsync(ct);
+
+        var samples = await db.MetricSamples.AsNoTracking()
+            .Where(s => s.CorrelationId == correlationId)
+            .OrderBy(s => s.Timestamp)
+            .Select(s => new { s.Timestamp, s.Metric, s.ValueMs, s.Label, s.Success })
+            .ToListAsync(ct);
+
+        return new { CorrelationId = correlationId, Request = request, DeploymentJobs = jobs, RunnerJobs = runnerJobs, Events = events, Metrics = samples };
     }
 }

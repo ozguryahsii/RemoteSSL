@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Application.Monitoring;
+using RemoteSSL.Application.Observability;
 using RemoteSSL.Domain;
 
 namespace RemoteSSL.Api.Controllers;
@@ -13,7 +14,8 @@ namespace RemoteSSL.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/dashboard")]
-public class DashboardController(IRemoteSslDbContext db) : ControllerBase
+public class DashboardController(IRemoteSslDbContext db, MetricsQuery metrics, AuditPipelineHealth auditHealth)
+    : ControllerBase
 {
     [HttpGet]
     public async Task<object> Get(CancellationToken ct)
@@ -66,6 +68,33 @@ public class DashboardController(IRemoteSslDbContext db) : ControllerBase
             .OrderBy(c => c.DaysLeft)
             .Take(25)
             .ToList();
+
+        // Expiry breakdown (Faz 1 "expiry dashboard"): certificates grouped by how much
+        // runway is left, so an operator sees the shape of the wave, not just two counters.
+        var expiryBuckets = new[]
+            {
+                ("Expired", int.MinValue, -1),
+                ("0-7 days", 0, 7),
+                ("8-30 days", 8, 30),
+                ("31-60 days", 31, 60),
+                ("61-90 days", 61, 90),
+                ("90+ days", 91, int.MaxValue)
+            }
+            .Select(b => new
+            {
+                Bucket = b.Item1,
+                MinDays = b.Item2 == int.MinValue ? (int?)null : b.Item2,
+                MaxDays = b.Item3 == int.MaxValue ? (int?)null : b.Item3,
+                Count = certs.Count(c => c.DaysLeft is not null && c.DaysLeft >= b.Item2 && c.DaysLeft <= b.Item3),
+                Severity = b.Item1 switch
+                {
+                    "Expired" or "0-7 days" => "critical",
+                    "8-30 days" => "warning",
+                    _ => "ok"
+                }
+            })
+            .ToList();
+        var expiryUnknown = certs.Count(c => c.DaysLeft is null);
 
         // ---- Deployment jobs -------------------------------------------------------
         var jobs = await db.DeploymentJobs.AsNoTracking()
@@ -202,9 +231,20 @@ public class DashboardController(IRemoteSslDbContext db) : ControllerBase
         if (driftRecent.Count > 0) Alert("CertificateDrift", "warning",
             $"{driftRecent.Count} drift/vantage-mismatch event(s) in the last 24h.");
 
+        // Audit is the compliance record (§25); if its writes fail the operators must know.
+        var auditFailures = auditHealth.Recent(TimeSpan.FromHours(24));
+        if (auditFailures.Count > 0) Alert("AuditPipelineFailure", "critical",
+            $"{auditFailures.Count} audit write(s) failed in the last 24h — last error: {auditFailures[0].Error}");
+
         var unreachable = monitors.Count(m => m.Enabled && m.LastProbeStatus != ProbeStatus.Success
                                               && m.LastProbeStatus != ProbeStatus.NeverProbed);
         if (unreachable > 0) Alert("ProbeFailure", "warning", $"{unreachable} monitor(s) failing their probe.");
+
+        // ---- Latency metrics (§32.1): percentiles over the window plus a 7-day trend ---
+        var probeLatency = await metrics.SummaryAsync(MetricsRecorder.ProbeLatency, TimeSpan.FromHours(24), ct);
+        var caLatency = await metrics.SummaryAsync(MetricsRecorder.CaRequestLatency, TimeSpan.FromDays(7), ct);
+        var probeLatencyTrend = await metrics.TrendAsync(MetricsRecorder.ProbeLatency, 7, ct);
+        var caLatencyTrend = await metrics.TrendAsync(MetricsRecorder.CaRequestLatency, 7, ct);
 
         return new
         {
@@ -223,8 +263,19 @@ public class DashboardController(IRemoteSslDbContext db) : ControllerBase
                 QueueDepth = queueDepth,
                 RenewalFailureCount = renewalFailures,
                 DriftDetectedCount = driftCount,
-                PendingApprovals = pendingApprovals.Count
+                PendingApprovals = pendingApprovals.Count,
+                ProbeLatencyP50Ms = probeLatency.P50Ms,
+                ProbeLatencyP95Ms = probeLatency.P95Ms,
+                ProbeLatencySamples = probeLatency.Count,
+                CaRequestLatencyP50Ms = caLatency.P50Ms,
+                CaRequestLatencyP95Ms = caLatency.P95Ms,
+                CaRequestLatencySamples = caLatency.Count,
+                AuditPipelineFailures = auditFailures.Count
             },
+            ExpiryBuckets = expiryBuckets,
+            ExpiryUnknown = expiryUnknown,
+            ProbeLatencyTrend = probeLatencyTrend,
+            CaRequestLatencyTrend = caLatencyTrend,
             Alerts = alerts,
             CriticalCertificates = attention,
             FailedJobs = failedJobs,

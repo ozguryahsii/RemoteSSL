@@ -226,6 +226,53 @@ Bu adapterlar implemente edildi ancak bu ortamda gerçek hedef olmadığı için
 - **F5 BIG-IP**: adapter `f5-bigip`, connection `{"managementUrl":"https://...","allowInsecureTls":true}`; cert/key objeleri timestamped oluşturulur, client-ssl profili yeniden bağlanır, rollback profili eski objelere döndürür.
 - **FortiGate / Palo Alto / Citrix ADC / Cisco ISE**: adapter tipleri `fortigate`, `paloalto`, `citrix-adc`, `cisco-ise`; connection `{"managementUrl":"...","apiToken":"..."}` (token'lı vendorlar), binding'e `certObjectName` + `bindingRef` (PA'da commit otomatik, ADC'de config save otomatik). Gerçek cihazda doğrulanmalı.
 
+## 14. Observability: metrikler, latency ve uçtan uca trace — yeni
+
+**Prometheus endpoint (§32.1)** — doküman metrik isimleriyle scrape edilebilir:
+
+```bash
+curl http://localhost:5200/metrics
+# certificates_total / certificates_expiring / probe_success_rate
+# probe_latency_seconds{quantile="0.5"} / {quantile="0.95"}
+# deployment_success_rate / deployment_duration_seconds / rollback_count
+# runner_online / runner_offline / queue_depth
+# ca_request_latency_seconds{...} / renewal_failure_count / drift_detected_count
+# audit_pipeline_failure_count
+```
+
+**Latency metrikleri**: her TLS probe (dış vantage kontrol düzleminde, iç vantage runner'da
+ölçülür) ve her CA connector çağrısı `MetricSamples` tablosuna yazılır. Dashboard'da p50/p95
+kartları ve 7 günlük p95 trendi görünür. Örneklem toplamak için birkaç probe çalıştırın:
+
+```bash
+MID=$(curl -s http://localhost:5200/api/v1/monitors | python3 -c "import json,sys;print(json.load(sys.stdin)[0]['id'])")
+for i in 1 2 3; do curl -s -X POST http://localhost:5200/api/v1/monitors/$MID/probe -o /dev/null; done
+curl -s http://localhost:5200/api/v1/dashboard | grep -o '"probeLatencyP50Ms":[^,]*'
+```
+
+Saklama süresi `Observability:MetricRetentionDays` (varsayılan 30 gün); temizlik leader-elected
+arka plan görevi ile yapılır. Audit kayıtları bu temizliğe dahil değildir (§25.3).
+
+**Expiry breakdown**: dashboard'da sertifikalar kalan ömre göre gruplanır
+(Expired / 0-7 / 8-30 / 31-60 / 61-90 / 90+ gün).
+
+**Audit pipeline failure alarmı (§32.3)**: audit satırı taşıyan bir SaveChanges hata alırsa
+kayıt tutulur ve dashboard'da kritik alarm + `audit_pipeline_failure_count` metriği üretilir.
+
+**Uçtan uca trace (§32.2)**: tek bir correlation ID
+`certificate request → CA → deployment job → runner job → target` zinciri boyunca taşınır.
+
+- **Audit** ekranında satırdaki trace id'ye tıklayın → istek, deployment job'ları, runner job'ları,
+  latency örnekleri ve tüm audit adımları tek panelde listelenir.
+- API: `GET /api/v1/audit/trace/{correlationId}`, ayrıca `GET /api/v1/audit?correlationId=...`.
+- OpenTelemetry: `Observability:OtlpEndpoint` ayarlanırsa API ve runner span'leri OTLP ile
+  (Jaeger/Tempo/collector) dışarı aktarılır; ayarlanmazsa hiçbir dış bağımlılık gerekmez.
+
+  ```json
+  // appsettings.json (API ve/veya Runner)
+  { "Observability": { "OtlpEndpoint": "http://localhost:4317", "MetricRetentionDays": 30 } }
+  ```
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

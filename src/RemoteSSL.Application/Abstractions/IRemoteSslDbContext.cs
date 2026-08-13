@@ -30,6 +30,7 @@ public interface IRemoteSslDbContext
     DbSet<ServicePath> ServicePaths { get; }
     DbSet<DeploymentJobTarget> DeploymentJobTargets { get; }
     DbSet<DeploymentStep> DeploymentSteps { get; }
+    DbSet<MetricSample> MetricSamples { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

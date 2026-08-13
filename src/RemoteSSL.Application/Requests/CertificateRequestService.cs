@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Application.Auditing;
 using RemoteSSL.Application.Certificates;
+using RemoteSSL.Application.Observability;
 using RemoteSSL.Domain;
 using RemoteSSL.Domain.Abstractions;
 using RemoteSSL.Domain.Entities;
@@ -29,6 +30,10 @@ public class CertificateRequestService(
         string keyOrigin, Guid? caConnectorId, string? profileId, string requestedBy, CancellationToken ct,
         Guid? targetId = null, string? targetKeyPath = null, CertificateFactory.SubjectOptions? subject = null)
     {
+        // One trace id follows this request through CA submission, issuance and deployment (§32.2).
+        using var trace = TraceContext.Begin("certificate.request");
+        trace.SetTag("remotessl.common_name", commonName);
+
         if (keyAlgorithm.Equals("RSA", StringComparison.OrdinalIgnoreCase) && keySizeOrCurve < 2048)
             throw new ArgumentException("RSA key size below policy minimum 2048");
 
@@ -48,6 +53,7 @@ public class CertificateRequestService(
             ProfileId = profileId,
             State = CertificateRequestState.Validated,
             RequestedBy = requestedBy,
+            CorrelationId = trace.CorrelationId,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         };
@@ -90,14 +96,15 @@ public class CertificateRequestService(
                     keyAlgorithm = req.KeyAlgorithm,
                     keySizeOrCurve
                 }),
-                CorrelationId = Guid.NewGuid().ToString("N"),
+                CorrelationId = trace.CorrelationId,
                 CreatedAt = DateTimeOffset.UtcNow
             });
         }
 
         db.CertificateRequests.Add(req);
         audit.Append($"user:{requestedBy}", "certificate.request", "certificate_request", req.Id.ToString(),
-            req.State.ToString(), new { commonName, sans = normalizedSans, keyAlgorithm, keySizeOrCurve, keyOrigin });
+            req.State.ToString(), new { commonName, sans = normalizedSans, keyAlgorithm, keySizeOrCurve, keyOrigin },
+            trace.CorrelationId);
         await db.SaveChangesAsync(ct);
 
         if (caConnectorId is not null && req.CsrPem is not null)
@@ -107,6 +114,7 @@ public class CertificateRequestService(
 
     public async Task SubmitAsync(CertificateRequestEntity req, CancellationToken ct)
     {
+        using var trace = TraceContext.Begin("certificate.request.submit", NonEmpty(req.CorrelationId));
         var connector = await connectors.ResolveAsync(req.CaConnectorId!.Value, ct);
         try
         {
@@ -125,7 +133,7 @@ public class CertificateRequestService(
         }
         req.UpdatedAt = DateTimeOffset.UtcNow;
         audit.Append("service:lifecycle", "certificate.request.submit", "certificate_request",
-            req.Id.ToString(), req.State.ToString());
+            req.Id.ToString(), req.State.ToString(), null, trace.CorrelationId);
         await db.SaveChangesAsync(ct);
     }
 
@@ -140,6 +148,7 @@ public class CertificateRequestService(
 
         foreach (var req in pending)
         {
+            using var trace = TraceContext.Begin("certificate.request.poll", NonEmpty(req.CorrelationId));
             try
             {
                 var connector = await connectors.ResolveAsync(req.CaConnectorId!.Value, ct);
@@ -175,7 +184,7 @@ public class CertificateRequestService(
         req.State = CertificateRequestState.CsrGenerated;
         req.UpdatedAt = DateTimeOffset.UtcNow;
         audit.Append("service:lifecycle", "certificate.request.csr-on-target", "certificate_request",
-            req.Id.ToString(), "CSR_GENERATED");
+            req.Id.ToString(), "CSR_GENERATED", null, NonEmpty(req.CorrelationId));
         await db.SaveChangesAsync(ct);
         if (req.CaConnectorId is not null) await SubmitAsync(req, ct);
     }
@@ -192,6 +201,10 @@ public class CertificateRequestService(
         await db.SaveChangesAsync(ct);
     }
 
+    /// <summary>Requests created before trace propagation existed carry no id; those start a fresh one.</summary>
+    private static string? NonEmpty(string? correlationId) =>
+        string.IsNullOrWhiteSpace(correlationId) ? null : correlationId;
+
     private async Task BindIssuedAsync(CertificateRequestEntity req, string certPem, string? chainPem, CancellationToken ct)
     {
         var version = await inventory.AddVersionAsync(certPem, chainPem, req.EncryptedPrivateKeyPem,
@@ -202,6 +215,6 @@ public class CertificateRequestService(
         req.State = CertificateRequestState.Issued;
         req.UpdatedAt = DateTimeOffset.UtcNow;
         audit.Append("service:lifecycle", "certificate.issued", "certificate_request", req.Id.ToString(),
-            "ISSUED", new { req.CommonName, versionId = version.Id });
+            "ISSUED", new { req.CommonName, versionId = version.Id }, NonEmpty(req.CorrelationId));
     }
 }

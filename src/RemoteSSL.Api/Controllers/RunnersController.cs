@@ -160,6 +160,10 @@ public class RunnersController(
                     GetStr("tlsProtocol"), GetBool("hostnameValid"), GetBool("chainValid"), GetStr("chainError"));
                 var probeService = HttpContext.RequestServices
                     .GetRequiredService<Application.Monitoring.MonitorProbeService>();
+                // §32.1 probe_latency for the internal vantage, as timed by the runner.
+                if (r.TryGetProperty("elapsedMs", out var elapsed) && elapsed.ValueKind == JsonValueKind.Number)
+                    probeService.RecordProbeLatency(monitor, elapsed.GetDouble(),
+                        probeResult.Status == ProbeStatus.Success, job.CorrelationId);
                 await probeService.ApplyResultAsync(monitor, probeResult,
                     Application.Monitoring.ProbeVantage.Internal, ct);
             }

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Application.Certificates;
+using RemoteSSL.Application.Observability;
 using RemoteSSL.Domain;
 using RemoteSSL.Domain.Entities;
 
@@ -16,7 +17,8 @@ public class MonitorProbeService(
     IRemoteSslDbContext db,
     ITlsProber prober,
     INotificationSink notifier,
-    ILogger<MonitorProbeService> logger)
+    ILogger<MonitorProbeService> logger,
+    MetricsRecorder? metrics = null)
 {
     /// <summary>Probes from the control plane (external vantage) and folds the result in.</summary>
     public async Task<MonitorEndpoint> ProbeAsync(Guid monitorId, CancellationToken ct = default)
@@ -26,8 +28,22 @@ public class MonitorProbeService(
                           .Include(m => m.InternalObservedVersion)
                           .FirstOrDefaultAsync(m => m.Id == monitorId, ct)
                       ?? throw new KeyNotFoundException($"Monitor {monitorId} not found");
+        using var trace = TraceContext.Begin("monitor.probe");
+        trace.SetTag("remotessl.monitor_id", monitor.Id);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var result = await prober.ProbeAsync(monitor.Host, monitor.Port, monitor.Sni, ct);
+        sw.Stop();
+        RecordProbeLatency(monitor, sw.Elapsed.TotalMilliseconds, result.Status == ProbeStatus.Success, trace.CorrelationId);
+
         return await ApplyResultAsync(monitor, result, ProbeVantage.External, ct);
+    }
+
+    /// <summary>Queues a probe_latency sample (§32.1); persisted with the probe result itself.</summary>
+    public void RecordProbeLatency(MonitorEndpoint monitor, double elapsedMs, bool success, string? correlationId = null)
+    {
+        metrics?.Record(MetricsRecorder.ProbeLatency, elapsedMs,
+            $"{monitor.Host}:{monitor.Port}", success, correlationId);
     }
 
     /// <summary>Queues a runner-side probe job unless one is already pending for this monitor.</summary>

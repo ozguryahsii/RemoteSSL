@@ -239,6 +239,30 @@ select {
 .dash-section h2 a { color: var(--sidebar-active); text-decoration: none; font-weight: 400; }
 .dash-section h3 { font-size: 14px; margin: 16px 0 6px; }
 .dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 24px; }
+.bucket-list {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+  padding: 14px 18px; display: flex; flex-direction: column; gap: 8px;
+}
+.bucket-row { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+.bucket-label { width: 110px; flex-shrink: 0; color: var(--muted); }
+.bucket-bar-track { flex: 1; height: 10px; background: #f1f5f9; border-radius: 5px; overflow: hidden; }
+.bucket-bar { display: block; height: 100%; border-radius: 5px; background: var(--ok); }
+.bucket-bar.critical { background: var(--bad); }
+.bucket-bar.warning { background: #d97706; }
+.bucket-count { width: 40px; text-align: right; font-weight: 600; }
+.bucket-count.critical { color: var(--bad); }
+.bucket-count.warning { color: #d97706; }
+.bucket-count.ok { color: var(--ok); }
+
+.trend-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 16px; }
+.trend-card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+  padding: 12px 16px; min-width: 260px; flex: 1;
+}
+.spark { display: flex; align-items: flex-end; gap: 4px; height: 56px; margin: 8px 0; }
+.spark-col { flex: 1; max-width: 48px; height: 100%; display: flex; align-items: flex-end; }
+.spark-bar { width: 100%; background: var(--sidebar-active); border-radius: 2px 2px 0 0; min-height: 2px; }
+
 .tab-bar {
   display: flex; flex-wrap: wrap; gap: 2px;
   border-bottom: 1px solid #e2e8f0; margin: 18px 0 0;

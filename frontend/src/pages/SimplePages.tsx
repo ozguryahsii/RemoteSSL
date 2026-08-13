@@ -152,27 +152,102 @@ export function Approvals() {
   )
 }
 
+interface TraceView {
+  correlationId: string
+  request: { id: string; commonName: string; state: string; createdAt: string; errorMessage: string | null } | null
+  deploymentJobs: { id: string; status: string; strategy: string; certificate: string; targetCount: number; createdAt: string; completedAt: string | null }[]
+  runnerJobs: { id: string; jobType: string; status: string; runnerId: string | null; createdAt: string; completedAt: string | null }[]
+  events: { timestamp: string; actor: string; action: string; objectType: string; result: string }[]
+  metrics: { timestamp: string; metric: string; valueMs: number; label: string | null; success: boolean }[]
+}
+
+/** §32.2: the full chain behind one trace id — request → CA → job → runner → target. */
+function TracePanel({ correlationId, onClose }: { correlationId: string; onClose: () => void }) {
+  const [trace, setTrace] = useState<TraceView | null>(null)
+  useEffect(() => {
+    apiGet<TraceView>(`/api/v1/audit/trace/${correlationId}`).then(setTrace).catch(() => {})
+  }, [correlationId])
+
+  return (
+    <div className="detail-panel">
+      <div className="detail-header">
+        <h2 className="small">Trace {correlationId}</h2>
+        <button onClick={onClose}>Close</button>
+      </div>
+      {!trace ? <p className="muted">Loading…</p> : (
+        <>
+          <dl className="kv">
+            <dt>Certificate request</dt>
+            <dd>{trace.request
+              ? `${trace.request.commonName} — ${trace.request.state}${trace.request.errorMessage ? ` (${trace.request.errorMessage})` : ''}`
+              : '—'}</dd>
+            <dt>Deployment jobs</dt>
+            <dd>{trace.deploymentJobs.length === 0 ? '—' : trace.deploymentJobs.map((j) => (
+              <div key={j.id}>{j.certificate} · {j.strategy} · {j.targetCount} target(s) · <span className={j.status === 'Succeeded' ? 'ok' : 'warn'}>{j.status}</span></div>
+            ))}</dd>
+            <dt>Runner jobs</dt>
+            <dd>{trace.runnerJobs.length === 0 ? '—' : trace.runnerJobs.map((j) => (
+              <div key={j.id}>{j.jobType} · <span className={j.status === 'Succeeded' ? 'ok' : j.status === 'Failed' ? 'bad' : 'muted'}>{j.status}</span>
+                <span className="muted small"> {new Date(j.createdAt).toLocaleString()}</span></div>
+            ))}</dd>
+            <dt>Latency samples</dt>
+            <dd>{trace.metrics.length === 0 ? '—' : trace.metrics.map((m, i) => (
+              <div key={i}>{m.metric} {Math.round(m.valueMs)} ms {m.label && <span className="muted">({m.label})</span>}</div>
+            ))}</dd>
+          </dl>
+          <h3 className="small">Steps</h3>
+          <table className="data-table">
+            <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Object</th><th>Result</th></tr></thead>
+            <tbody>
+              {trace.events.map((e, i) => (
+                <tr key={i}>
+                  <td className="small muted">{new Date(e.timestamp).toLocaleString()}</td>
+                  <td className="small">{e.actor}</td><td>{e.action}</td>
+                  <td className="small">{e.objectType}</td>
+                  <td><span className={/FAIL|DRIFT/.test(e.result) ? 'bad' : 'ok'}>{e.result}</span></td>
+                </tr>
+              ))}
+              {trace.events.length === 0 && <tr><td colSpan={5} className="muted">No audit events on this trace.</td></tr>}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function Audit() {
   const [events] = useData<{
     id: number; timestamp: string; actor: string; action: string
-    objectType: string; result: string; detailsJson: string
+    objectType: string; result: string; correlationId: string; detailsJson: string
   }[]>('/api/v1/audit?take=100', 15000)
+  const [trace, setTrace] = useState<string | null>(null)
+
   return (
     <div className="page">
       <h1>Audit</h1>
+      <p className="muted small">
+        Click a trace id to follow one operation end to end: certificate request → CA → deployment job → runner → target.
+      </p>
       <table className="data-table">
-        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Object</th><th>Result</th><th>Details</th></tr></thead>
+        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Object</th><th>Result</th><th>Trace</th><th>Details</th></tr></thead>
         <tbody>
           {(events ?? []).map((e) => (
             <tr key={e.id}>
               <td className="small muted">{new Date(e.timestamp).toLocaleString()}</td>
               <td className="small">{e.actor}</td><td>{e.action}</td><td className="small">{e.objectType}</td>
               <td><span className={/FAIL|DRIFT/.test(e.result) ? 'bad' : 'ok'}>{e.result}</span></td>
-              <td className="small muted" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.detailsJson}</td>
+              <td className="small">
+                {e.correlationId
+                  ? <button className="link-button" onClick={() => setTrace(e.correlationId)}>{e.correlationId.slice(0, 8)}…</button>
+                  : '—'}
+              </td>
+              <td className="small muted" style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.detailsJson}</td>
             </tr>
           ))}
         </tbody>
       </table>
+      {trace && <TracePanel correlationId={trace} onClose={() => setTrace(null)} />}
     </div>
   )
 }

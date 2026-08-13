@@ -105,8 +105,10 @@ public class AutomationService(
 
             try
             {
+                // Auto-deploy stays on the renewal request's trace id (§32.2).
                 await deployments.CreateJobAsync(req.IssuedVersionId!.Value, bindings, "sequential",
-                    "automation", policy.ApprovalRequired, ct);
+                    "automation", policy.ApprovalRequired, ct,
+                    correlationId: string.IsNullOrWhiteSpace(req.CorrelationId) ? null : req.CorrelationId);
                 req.State = CertificateRequestState.ReadyForDeployment;
             }
             catch (InvalidOperationException ex)

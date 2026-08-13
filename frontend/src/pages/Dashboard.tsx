@@ -16,6 +16,28 @@ interface Metrics {
   renewalFailureCount: number
   driftDetectedCount: number
   pendingApprovals: number
+  probeLatencyP50Ms: number | null
+  probeLatencyP95Ms: number | null
+  probeLatencySamples: number
+  caRequestLatencyP50Ms: number | null
+  caRequestLatencyP95Ms: number | null
+  caRequestLatencySamples: number
+  auditPipelineFailures: number
+}
+
+interface ExpiryBucket {
+  bucket: string
+  minDays: number | null
+  maxDays: number | null
+  count: number
+  severity: string
+}
+
+interface TrendPoint {
+  day: string
+  count: number
+  p50Ms: number | null
+  p95Ms: number | null
 }
 
 interface DashboardData {
@@ -37,6 +59,10 @@ interface DashboardData {
   }[]
   pendingApprovals: { id: string; deploymentJobId: string; requestedBy: string; createdAt: string }[]
   recentDrift: { action: string; detailsJson: string; timestamp: string }[]
+  expiryBuckets: ExpiryBucket[]
+  expiryUnknown: number
+  probeLatencyTrend: TrendPoint[]
+  caRequestLatencyTrend: TrendPoint[]
 }
 
 function healthClass(h: string): string {
@@ -53,6 +79,58 @@ function Metric({ label, value, suffix = '', tone = '' }: { label: string; value
     <div className="stat-card">
       <div className={`stat-value ${tone}`}>{value === null ? '—' : value}{value === null ? '' : suffix}</div>
       <div className="muted small">{label}</div>
+    </div>
+  )
+}
+
+/** Expiry breakdown (Faz 1 expiry dashboard): where the renewal wave sits. */
+function ExpiryBreakdown({ buckets, unknown }: { buckets: ExpiryBucket[]; unknown: number }) {
+  const max = Math.max(1, ...buckets.map((b) => b.count))
+  return (
+    <section className="dash-section">
+      <h2>Expiry breakdown <Link className="small" to="/certificates">certificates →</Link></h2>
+      <div className="bucket-list">
+        {buckets.map((b) => (
+          <div key={b.bucket} className="bucket-row">
+            <span className="bucket-label">{b.bucket}</span>
+            <span className="bucket-bar-track">
+              <span className={`bucket-bar ${b.severity}`} style={{ width: `${(b.count / max) * 100}%` }} />
+            </span>
+            <span className={`bucket-count ${b.count > 0 ? b.severity : 'muted'}`}>{b.count}</span>
+          </div>
+        ))}
+        {unknown > 0 && (
+          <div className="bucket-row">
+            <span className="bucket-label muted">No live version</span>
+            <span className="bucket-bar-track" />
+            <span className="bucket-count muted">{unknown}</span>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/** 7-day p50/p95 sparkline for a latency metric (§32.1). */
+function LatencyTrend({ title, points, unit = 'ms' }: { title: string; points: TrendPoint[]; unit?: string }) {
+  if (points.length === 0) return (
+    <div className="trend-card">
+      <div className="muted small">{title}</div>
+      <div className="muted small">No samples yet.</div>
+    </div>
+  )
+  const max = Math.max(1, ...points.map((p) => p.p95Ms ?? 0))
+  return (
+    <div className="trend-card">
+      <div className="muted small">{title} — p95 over {points.length} day(s)</div>
+      <div className="spark">
+        {points.map((p) => (
+          <span key={p.day} className="spark-col" title={`${p.day}: p50 ${p.p50Ms ?? '—'}${unit}, p95 ${p.p95Ms ?? '—'}${unit} (${p.count} samples)`}>
+            <span className="spark-bar" style={{ height: `${((p.p95Ms ?? 0) / max) * 100}%` }} />
+          </span>
+        ))}
+      </div>
+      <div className="muted small">peak p95 {Math.round(max)}{unit}</div>
     </div>
   )
 }
@@ -92,6 +170,19 @@ export default function Dashboard() {
         <Metric label="Renewal failures" value={m.renewalFailureCount} tone={m.renewalFailureCount > 0 ? 'bad' : ''} />
         <Metric label="Drift (7d)" value={m.driftDetectedCount} tone={m.driftDetectedCount > 0 ? 'warn' : ''} />
         <Metric label="Pending approvals" value={m.pendingApprovals} tone={m.pendingApprovals > 0 ? 'warn' : ''} />
+        <Metric label="Probe latency p50 / p95" value={m.probeLatencySamples === 0 ? null
+          : `${m.probeLatencyP50Ms ?? '—'} / ${m.probeLatencyP95Ms ?? '—'}`} suffix=" ms" />
+        <Metric label="CA request latency p50 / p95" value={m.caRequestLatencySamples === 0 ? null
+          : `${m.caRequestLatencyP50Ms ?? '—'} / ${m.caRequestLatencyP95Ms ?? '—'}`} suffix=" ms" />
+        <Metric label="Audit write failures (24h)" value={m.auditPipelineFailures}
+          tone={m.auditPipelineFailures > 0 ? 'bad' : 'ok'} />
+      </div>
+
+      <ExpiryBreakdown buckets={d.expiryBuckets} unknown={d.expiryUnknown} />
+
+      <div className="trend-row">
+        <LatencyTrend title="Probe latency" points={d.probeLatencyTrend} />
+        <LatencyTrend title="CA request latency" points={d.caRequestLatencyTrend} />
       </div>
 
       {/* Critical / expiring certificates (§43) */}

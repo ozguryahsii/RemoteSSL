@@ -27,9 +27,18 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<UserAccount> Users => Set<UserAccount>();
     public DbSet<ServicePath> ServicePaths => Set<ServicePath>();
+    public DbSet<MetricSample> MetricSamples => Set<MetricSample>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        b.Entity<MetricSample>(e =>
+        {
+            e.Property(x => x.Metric).HasMaxLength(64);
+            e.Property(x => x.Label).HasMaxLength(256);
+            e.Property(x => x.CorrelationId).HasMaxLength(64);
+            e.HasIndex(x => new { x.Metric, x.Timestamp });
+        });
+
         b.Entity<Certificate>(e =>
         {
             e.Property(x => x.CommonName).HasMaxLength(512);

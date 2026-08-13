@@ -7,6 +7,8 @@ using RemoteSSL.Application.Certificates;
 using RemoteSSL.Domain;
 using RemoteSSL.Domain.Entities;
 
+using RemoteSSL.Application.Observability;
+
 namespace RemoteSSL.Application.Deployments;
 
 /// <summary>
@@ -36,8 +38,13 @@ public class DeploymentService(
 
     public async Task<DeploymentJob> CreateJobAsync(
         Guid certificateVersionId, IReadOnlyList<Guid> bindingIds, string strategy,
-        string requestedBy, bool approvalRequired, CancellationToken ct, int maxConcurrency = 0)
+        string requestedBy, bool approvalRequired, CancellationToken ct, int maxConcurrency = 0,
+        string? correlationId = null)
     {
+        // Inherits the trace of the renewal/request that triggered it, so the whole
+        // request → CA → job → runner → target chain shares one id (§32.2).
+        using var trace = TraceContext.Begin("deployment.job.create", correlationId);
+
         var version = await db.CertificateVersions.Include(v => v.Certificate)
                           .FirstOrDefaultAsync(v => v.Id == certificateVersionId, ct)
                       ?? throw new KeyNotFoundException("Certificate version not found");
@@ -68,7 +75,7 @@ public class DeploymentService(
             MaxConcurrency = resolvedConcurrency,
             StopOnFailure = stopOnFailure,
             RequestedBy = requestedBy,
-            CorrelationId = Guid.NewGuid().ToString("N"),
+            CorrelationId = trace.CorrelationId,
             CreatedAt = DateTimeOffset.UtcNow
         };
         foreach (var b in bindings)
