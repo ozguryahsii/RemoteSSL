@@ -21,6 +21,14 @@ public interface IRemoteSslDbContext
     DbSet<DeploymentJob> DeploymentJobs { get; }
     DbSet<RunnerNode> Runners { get; }
     DbSet<AuditEvent> AuditEvents { get; }
+    DbSet<RunnerJob> RunnerJobs { get; }
+    DbSet<CaConnectorConfig> CaConnectors { get; }
+    DbSet<CertificateRequestEntity> CertificateRequests { get; }
+    DbSet<RenewalPolicy> RenewalPolicies { get; }
+    DbSet<ApprovalRequest> ApprovalRequests { get; }
+    DbSet<UserAccount> Users { get; }
+    DbSet<DeploymentJobTarget> DeploymentJobTargets { get; }
+    DbSet<DeploymentStep> DeploymentSteps { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

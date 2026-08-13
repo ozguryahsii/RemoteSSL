@@ -20,6 +20,9 @@ public class RunnerNode
     /// <summary>SHA-256 thumbprint of the runner's client identity certificate.</summary>
     public string? IdentityCertThumbprint { get; set; }
 
+    /// <summary>SHA-256 hash of the runner's API key (issued at registration; plaintext never stored).</summary>
+    public string? ApiKeyHash { get; set; }
+
     public DateTimeOffset? LastHeartbeatAt { get; set; }
     public DateTimeOffset RegisteredAt { get; set; }
 }

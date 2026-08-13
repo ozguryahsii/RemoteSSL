@@ -86,6 +86,9 @@ public class CredentialRef
     public string? Username { get; set; }
     public string AccessPolicyJson { get; set; } = "{}";
 
+    /// <summary>Data-protection-encrypted secret material for the internal vault provider; never plaintext.</summary>
+    public string? EncryptedSecret { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 }

@@ -4,6 +4,10 @@ import { useTranslation } from 'react-i18next'
 import { apiGetText } from './api/client'
 import Monitors from './pages/Monitors'
 import Certificates from './pages/Certificates'
+import Targets from './pages/Targets'
+import Deployments from './pages/Deployments'
+import Requests from './pages/Requests'
+import { Dashboard, Runners, Credentials, Approvals, Audit } from './pages/SimplePages'
 import './App.css'
 
 const NAV_ITEMS = [
@@ -78,9 +82,17 @@ export default function App() {
         </aside>
         <main className="content">
           <Routes>
+            <Route path="/" element={<Dashboard />} />
             <Route path="/monitors" element={<Monitors />} />
             <Route path="/certificates" element={<Certificates />} />
-            {NAV_ITEMS.filter((i) => !['/monitors', '/certificates'].includes(i.path)).map((item) => (
+            <Route path="/targets" element={<Targets />} />
+            <Route path="/deployments" element={<Deployments />} />
+            <Route path="/requests" element={<Requests />} />
+            <Route path="/runners" element={<Runners />} />
+            <Route path="/credentials" element={<Credentials />} />
+            <Route path="/approvals" element={<Approvals />} />
+            <Route path="/audit" element={<Audit />} />
+            {NAV_ITEMS.filter((i) => !['/', '/monitors', '/certificates', '/targets', '/deployments', '/requests', '/runners', '/credentials', '/approvals', '/audit'].includes(i.path)).map((item) => (
               <Route key={item.path} path={item.path} element={<Placeholder titleKey={item.key} />} />
             ))}
           </Routes>

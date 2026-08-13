@@ -49,6 +49,9 @@ public class CertificateVersion
     /// <summary>PEM bundle of the observed/assembled intermediate chain, in order.</summary>
     public string? PemChain { get; set; }
 
+    /// <summary>Data-protection-encrypted private key PEM (central key origin only; design doc §16.2 tradeoff).</summary>
+    public string? EncryptedPrivateKeyPem { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     public ICollection<CertificateSan> Sans { get; set; } = new List<CertificateSan>();

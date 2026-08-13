@@ -20,6 +20,19 @@ public static class DependencyInjection
         services.AddSingleton<ITlsProber, TlsProber>();
         services.AddScoped<MonitorProbeService>();
         services.AddHostedService<ProbeSchedulerService>();
+        services.AddHostedService<AutomationSchedulerService>();
+
+        services.AddDataProtection();
+        services.AddHttpClient();
+        services.AddScoped<ISecretProtector, Security.DataProtectionSecretProtector>();
+        services.AddScoped<Application.Auditing.AuditWriter>();
+        services.AddScoped<Application.Certificates.InventoryService>();
+        services.AddScoped<Application.Deployments.DeploymentService>();
+        services.AddScoped<Application.Requests.CertificateRequestService>();
+        services.AddScoped<Application.Requests.ICaConnectorResolver, Ca.DbCaConnectorResolver>();
+        services.AddScoped<Application.Automation.AutomationService>();
+        services.AddScoped<Ca.CaConnectorFactory>();
+        services.AddSingleton<Notifications.WebhookNotificationService>();
 
         return services;
     }

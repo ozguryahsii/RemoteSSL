@@ -20,6 +20,12 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<DeploymentStep> DeploymentSteps => Set<DeploymentStep>();
     public DbSet<RunnerNode> Runners => Set<RunnerNode>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+    public DbSet<RunnerJob> RunnerJobs => Set<RunnerJob>();
+    public DbSet<CaConnectorConfig> CaConnectors => Set<CaConnectorConfig>();
+    public DbSet<CertificateRequestEntity> CertificateRequests => Set<CertificateRequestEntity>();
+    public DbSet<RenewalPolicy> RenewalPolicies => Set<RenewalPolicy>();
+    public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+    public DbSet<UserAccount> Users => Set<UserAccount>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -118,6 +124,25 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
             e.Property(x => x.Name).HasMaxLength(256);
             e.Property(x => x.CapabilitiesJson).HasColumnType("jsonb");
         });
+
+        b.Entity<RunnerJob>(e =>
+        {
+            e.Property(x => x.JobType).HasMaxLength(64);
+            e.Property(x => x.Status).HasMaxLength(32);
+            e.Property(x => x.PayloadJson).HasColumnType("jsonb");
+            e.HasIndex(x => new { x.Status, x.RunnerId });
+        });
+        b.Entity<CaConnectorConfig>(e =>
+        {
+            e.Property(x => x.Name).HasMaxLength(256);
+            e.Property(x => x.ConnectorType).HasMaxLength(64);
+        });
+        b.Entity<CertificateRequestEntity>(e =>
+        {
+            e.Property(x => x.CommonName).HasMaxLength(512);
+            e.HasIndex(x => x.State);
+        });
+        b.Entity<UserAccount>(e => e.HasIndex(x => x.Username).IsUnique());
 
         b.Entity<AuditEvent>(e =>
         {
