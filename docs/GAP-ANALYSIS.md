@@ -8,17 +8,17 @@ Durum kodları: **YOK** = hiç yapılmadı · **KISMİ** = temel var, doküman k
 
 ---
 
-## F11 — Sertifika politikası, lifecycle ve onay derinliği
+## F11 — Sertifika politikası, lifecycle ve onay derinliği ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 11.1 | Certificate policy modeli: `minimumRsaBits`, `allowedEcCurves`, `blockWeakSignatureAlgorithms`, `requirePostDeploymentProbe`, `requireApprovalIn:[PROD]`, `rotateKeyOnRenewal` — merkezi policy nesnesi ve her aşamada uygulanması | §39 | KISMİ (yalnız RSA 2048 alt sınırı kodda sabit) |
-| 11.2 | Request validation kuralları: wildcard policy, internal/public hostname politikası, max validity / CA profile limiti, ownership politikası, target capability uyumu, mevcut sertifika örtüşme uyarısı | §17.2 | KISMİ (SAN normalizasyonu + RSA min var) |
-| 11.3 | Request state machine'de `PENDING_APPROVAL` → approve/reject adımı (şu an onay yalnızca deployment job'ında) | §19.1 | YOK |
-| 11.4 | Environment bazlı governance matrisi (DEV serbest / TEST opsiyonel / PROD zorunlu onay + zorunlu pencere) | §23.2 | YOK |
-| 11.5 | Separation of duties: talebi açan kendi PROD deployment'ını onaylayamaz; break-glass rolü ayrıca audit'lenir | §23.3 | YOK |
-| 11.6 | Sertifika lifecycle statülerinin gerçekten yönetilmesi: `PendingDeployment`, `PartiallyDeployed`, `DeploymentFailed`, `Revoked` (enum var, hiç set edilmiyor) | §19.2 | KISMİ |
-| 11.7 | Revoke akışı: connector `RevokeAsync` var ama API/UI yok; revoke sonrası version durumu ve audit | FR-009, §19.2 | KISMİ |
+| 11.1 | Certificate policy modeli ve her aşamada uygulanması | §39 | ✅ `CertificatePolicy` entity'si, Policies ekranında CRUD, varsayılan politika seed'i |
+| 11.2 | Request validation kuralları | §17.2 | ✅ wildcard, izinli/yasaklı domain suffix, max validity, ownership, EC curve, örtüşme uyarısı — bloklayan kurallar 422 + `findings` |
+| 11.3 | Request state machine'de `PENDING_APPROVAL` → approve/reject | §19.1 | ✅ onay gelmeden key/CSR üretilmiyor; `POST /certificates/requests/{id}/approve` |
+| 11.4 | Environment bazlı governance matrisi | §23.2 | ✅ `requireApprovalIn` / `requireWindowIn`; politika, çağıranın "onay gerekmiyor" demesini geçersiz kılar |
+| 11.5 | Separation of duties + break-glass | §23.3 | ✅ kendi talebini onaylayamaz; `BreakGlassAdministrator` override eder ve `APPROVED_BREAK_GLASS` olarak audit'lenir |
+| 11.6 | Lifecycle statülerinin yönetilmesi | §19.2 | ✅ `PendingDeployment` / `PartiallyDeployed` / `DeploymentFailed` / `Revoked` job sonucundan set ediliyor; expiry ile öncelik kuralı testli |
+| 11.7 | Revoke akışı | FR-009, §19.2 | ✅ CA'ya revoke + envanterde işaretleme; manuel CA için `recordOnly` (audit'te `REVOKED_RECORDED`) |
 
 ## F12 — Deployment operasyon tamlığı
 

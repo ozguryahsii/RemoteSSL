@@ -13,6 +13,8 @@ public class Certificate
     public string? Environment { get; set; }
     public string? OwnerId { get; set; }
     public Guid? RenewalPolicyId { get; set; }
+    /// <summary>Certificate policy (§5.2 policy_id, §39); null = the default policy applies.</summary>
+    public Guid? CertificatePolicyId { get; set; }
     public CertificateHealthStatus HealthStatus { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }

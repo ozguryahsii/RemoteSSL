@@ -9,7 +9,10 @@ namespace RemoteSSL.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/certificates")]
-public class CertificatesController(IRemoteSslDbContext db) : ControllerBase
+public class CertificatesController(
+    IRemoteSslDbContext db, Application.Auditing.AuditWriter audit,
+    Application.Requests.ICaConnectorResolver connectors, Application.Abstractions.INotificationSink notifier)
+    : ControllerBase
 {
     /// <summary>Inventory row per design doc §26.1: Certificate | Expiry | CA | Managed | Deployments | Auto Renew | Status.</summary>
     public record CertificateListItem(
@@ -61,8 +64,9 @@ public class CertificatesController(IRemoteSslDbContext db) : ControllerBase
         Guid VersionId, string Kind, string Description, bool HasPrivateKey, DateTimeOffset CreatedAt);
 
     public record ApprovalDto(
-        Guid Id, Guid DeploymentJobId, string Status, string? RequestedBy, string? DecidedBy,
-        string? Reason, DateTimeOffset CreatedAt, DateTimeOffset? DecidedAt);
+        Guid Id, string ObjectType, Guid? DeploymentJobId, Guid? CertificateRequestId, string Status,
+        string? RequestedBy, string? DecidedBy, string? Reason, bool BreakGlass,
+        DateTimeOffset CreatedAt, DateTimeOffset? DecidedAt);
 
     public record AuditDto(
         long Id, DateTimeOffset Timestamp, string Actor, string Action, string Result, string DetailsJson);
@@ -104,7 +108,10 @@ public class CertificatesController(IRemoteSslDbContext db) : ControllerBase
             .ToListAsync(ct);
 
         return items.Select(x => new CertificateListItem(
-            x.Id, x.CommonName, x.DisplayName, x.HealthStatus.ToString(),
+            x.Id, x.CommonName, x.DisplayName,
+            // Deployment/revocation state outranks expiry-derived health (§19.2).
+            Application.Policies.CertificateStatusResolver
+                .Resolve(x.HealthStatus, x.Latest?.NotAfter, now).ToString(),
             x.Latest?.IssuerDn,
             // "CA" column: the connector that issued it, falling back to the issuer CN.
             x.CaName ?? IssuerShortName(x.Latest?.IssuerDn),
@@ -123,7 +130,83 @@ public class CertificatesController(IRemoteSslDbContext db) : ControllerBase
         return cn?[3..] ?? issuerDn;
     }
 
-    public record UpdateCertificateRequest(string? DisplayName, string? Environment, string? OwnerId);
+    public record UpdateCertificateRequest(
+        string? DisplayName, string? Environment, string? OwnerId,
+        Guid? CertificatePolicyId = null, bool ClearCertificatePolicy = false);
+
+    /// <param name="RecordOnly">
+    /// Records a revocation performed outside RemoteSSL (manual/offline CA, §18.4) without
+    /// calling a connector. Audited as RECORDED so the trail never claims RemoteSSL revoked it.
+    /// </param>
+    public record RevokeRequest(string Reason = "Unspecified", string RevokedBy = "api", bool RecordOnly = false);
+
+    /// <summary>
+    /// Revokes an issued version at its CA and records the outcome (FR-009, §19.2). The
+    /// version is only marked Revoked once the connector accepted the revocation, so the
+    /// inventory never claims a revocation that did not happen.
+    /// </summary>
+    [HttpPost("versions/{versionId:guid}/revoke")]
+    [Microsoft.AspNetCore.Authorization.Authorize(Policy = "CertOps")]
+    public async Task<IActionResult> RevokeVersion(Guid versionId, RevokeRequest req, CancellationToken ct)
+    {
+        var version = await db.CertificateVersions.Include(v => v.Certificate)
+            .FirstOrDefaultAsync(v => v.Id == versionId, ct);
+        if (version is null) return NotFound();
+        if (version.Status == CertificateVersionStatus.Revoked)
+            return Conflict(new ProblemDetails { Title = "This version is already revoked." });
+
+        if (!Enum.TryParse<Domain.Abstractions.RevocationReason>(req.Reason, true, out var reason))
+            reason = Domain.Abstractions.RevocationReason.Unspecified;
+
+        // The issuing request tells us which CA to talk to; without one there is nothing to call.
+        var caConnectorId = await db.CertificateRequests.AsNoTracking()
+            .Where(r => r.IssuedVersionId == versionId && r.CaConnectorId != null)
+            .Select(r => r.CaConnectorId)
+            .FirstOrDefaultAsync(ct);
+
+        if (!req.RecordOnly)
+        {
+            if (caConnectorId is null)
+                return UnprocessableEntity(new ProblemDetails
+                {
+                    Title = "This version was not issued through a CA connector. Revoke it at the CA, "
+                            + "then record it here with recordOnly."
+                });
+            try
+            {
+                var connector = await connectors.ResolveAsync(caConnectorId.Value, ct);
+                await connector.RevokeAsync(version.SerialNumber, reason, ct);
+            }
+            catch (Exception ex)
+            {
+                audit.Append($"user:{req.RevokedBy}", "certificate.revoke", "certificate_version",
+                    versionId.ToString(), "FAILED", new { reason = req.Reason, error = ex.Message });
+                await db.SaveChangesAsync(ct);
+                return UnprocessableEntity(new ProblemDetails
+                {
+                    Title = $"CA refused the revocation: {ex.Message}. "
+                            + "If it was revoked at the CA itself, record it here with recordOnly."
+                });
+            }
+        }
+
+        version.Status = CertificateVersionStatus.Revoked;
+        version.Certificate.HealthStatus = CertificateHealthStatus.Revoked;
+        version.Certificate.UpdatedAt = DateTimeOffset.UtcNow;
+        audit.Append($"user:{req.RevokedBy}", "certificate.revoke", "certificate_version",
+            versionId.ToString(), req.RecordOnly ? "REVOKED_RECORDED" : "REVOKED",
+            new
+            {
+                reason = req.Reason, version.SerialNumber, certificate = version.Certificate.CommonName,
+                revokedAtCaByRemoteSsl = !req.RecordOnly
+            });
+        notifier.Notify("certificate.revoked", new
+        {
+            certificate = version.Certificate.CommonName, versionId, reason = req.Reason
+        });
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
 
     [HttpPatch("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, UpdateCertificateRequest req, CancellationToken ct)
@@ -133,6 +216,8 @@ public class CertificatesController(IRemoteSslDbContext db) : ControllerBase
         if (!string.IsNullOrWhiteSpace(req.DisplayName)) cert.DisplayName = req.DisplayName;
         if (req.Environment is not null) cert.Environment = req.Environment;
         if (req.OwnerId is not null) cert.OwnerId = req.OwnerId;
+        if (req.ClearCertificatePolicy) cert.CertificatePolicyId = null;
+        else if (req.CertificatePolicyId is not null) cert.CertificatePolicyId = req.CertificatePolicyId;
         cert.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         return NoContent();
@@ -231,13 +316,16 @@ public class CertificatesController(IRemoteSslDbContext db) : ControllerBase
             }
         }
 
-        // --- Approvals raised on this certificate's deployment jobs -------------------
+        // --- Approvals on this certificate's deployment jobs and its requests ---------
         var jobIds = deployments.Select(d => d.JobId).ToList();
+        var requestIds = await db.CertificateRequests.AsNoTracking()
+            .Where(r => r.CertificateId == id).Select(r => r.Id).ToListAsync(ct);
         var approvals = await db.ApprovalRequests.AsNoTracking()
-            .Where(a => jobIds.Contains(a.DeploymentJobId))
+            .Where(a => (a.DeploymentJobId != null && jobIds.Contains(a.DeploymentJobId.Value))
+                        || (a.CertificateRequestId != null && requestIds.Contains(a.CertificateRequestId.Value)))
             .OrderByDescending(a => a.CreatedAt)
-            .Select(a => new ApprovalDto(a.Id, a.DeploymentJobId, a.Status, a.RequestedBy,
-                a.DecidedBy, a.Reason, a.CreatedAt, a.DecidedAt))
+            .Select(a => new ApprovalDto(a.Id, a.ObjectType, a.DeploymentJobId, a.CertificateRequestId, a.Status,
+                a.RequestedBy, a.DecidedBy, a.Reason, a.BreakGlass, a.CreatedAt, a.DecidedAt))
             .ToListAsync(ct);
 
         // --- Audit trail across the certificate, versions, requests and jobs ----------

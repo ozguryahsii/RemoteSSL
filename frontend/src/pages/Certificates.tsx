@@ -126,6 +126,24 @@ export default function Certificates() {
     open(selected.id); reload()
   }
 
+  /** FR-009 / §19.2: revoke the version at its CA, then mark it revoked in the inventory. */
+  async function revoke(versionId: string) {
+    const reason = window.prompt(
+      'Revocation reason: Unspecified | KeyCompromise | Superseded | CessationOfOperation', 'Unspecified')
+    if (!reason) return
+    let res = await apiPost(`/api/v1/certificates/versions/${versionId}/revoke`, { reason, revokedBy: 'ui' })
+    if (!res.ok) {
+      // Manual/offline CAs are revoked in their own interface; offer to record that here (§18.4).
+      const problem = await res.json()
+      if (!window.confirm(`${problem.title ?? `Revoke failed (${res.status})`}\n\nRecord it as revoked anyway?`)) return
+      res = await apiPost(`/api/v1/certificates/versions/${versionId}/revoke`,
+        { reason, revokedBy: 'ui', recordOnly: true })
+      if (!res.ok) { alert((await res.json()).title ?? `Revoke failed (${res.status})`); return }
+    }
+    if (selected) open(selected.id)
+    reload()
+  }
+
   async function removeCert() {
     if (!selected || !window.confirm(`Delete certificate '${selected.commonName}' from the inventory?`)) return
     const res = await apiDelete(`/api/v1/certificates/${selected.id}`)
@@ -218,6 +236,11 @@ export default function Certificates() {
                   <div><strong>Validity:</strong> {new Date(v.notBefore).toLocaleDateString()} → {new Date(v.notAfter).toLocaleDateString()} ({v.daysUntilExpiry} days)</div>
                   <div><strong>Key:</strong> {v.publicKeyAlgorithm} {v.keySize} / {v.signatureAlgorithm}</div>
                   {v.sans.length > 0 && <div><strong>SAN:</strong> {v.sans.join(', ')}</div>}
+                  {v.status !== 'Revoked' && (
+                    <button className="danger" style={{ marginTop: 6 }} onClick={() => revoke(v.id)}>
+                      Revoke at CA
+                    </button>
+                  )}
                 </div>
               ))}
 

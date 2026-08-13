@@ -28,9 +28,16 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<UserAccount> Users => Set<UserAccount>();
     public DbSet<ServicePath> ServicePaths => Set<ServicePath>();
     public DbSet<MetricSample> MetricSamples => Set<MetricSample>();
+    public DbSet<CertificatePolicy> CertificatePolicies => Set<CertificatePolicy>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        b.Entity<CertificatePolicy>(e =>
+        {
+            e.Property(x => x.Name).HasMaxLength(200);
+            e.HasIndex(x => x.IsDefault);
+        });
+
         b.Entity<MetricSample>(e =>
         {
             e.Property(x => x.Metric).HasMaxLength(64);

@@ -73,6 +73,7 @@ export function Policies() {
   return (
     <div className="page">
       <h1>Policies</h1>
+      <h2>Renewal policies</h2>
       <form className="inline-form" onSubmit={add}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="policy name" required />
         <input value={days} onChange={(e) => setDays(e.target.value)} type="number" style={{ width: 90 }} title="renew before days" />
@@ -103,6 +104,161 @@ export function Policies() {
             </tr>
           ))}
           {(policies ?? []).length === 0 && <tr><td colSpan={7} className="muted">No policies yet.</td></tr>}
+        </tbody>
+      </table>
+
+      <CertificatePolicies />
+    </div>
+  )
+}
+
+interface CertPolicy {
+  id: string; name: string; isDefault: boolean
+  minimumRsaBits: number; allowedEcCurves: string[]
+  renewBeforeDays: number; rotateKeyOnRenewal: boolean
+  requireApprovalIn: string[]; blockWeakSignatureAlgorithms: boolean; requirePostDeploymentProbe: boolean
+  allowWildcard: boolean; maxValidityDays: number | null
+  allowedDomainSuffixes: string[]; blockedDomainSuffixes: string[]
+  warnOnOverlap: boolean; requireOwner: boolean
+  requireWindowIn: string[]; enforceSeparationOfDuties: boolean
+}
+
+const EMPTY_CERT_POLICY: Omit<CertPolicy, 'id'> = {
+  name: '', isDefault: false, minimumRsaBits: 2048, allowedEcCurves: ['P-256', 'P-384'],
+  renewBeforeDays: 30, rotateKeyOnRenewal: true, requireApprovalIn: ['PROD'],
+  blockWeakSignatureAlgorithms: true, requirePostDeploymentProbe: true,
+  allowWildcard: true, maxValidityDays: null, allowedDomainSuffixes: [], blockedDomainSuffixes: [],
+  warnOnOverlap: true, requireOwner: false, requireWindowIn: [], enforceSeparationOfDuties: true,
+}
+
+const csv = (v: string[]) => v.join(', ')
+const parseCsv = (v: string) => v.split(',').map((x) => x.trim()).filter(Boolean)
+
+/**
+ * Certificate policy editor (design doc §39 + the §17.2 request rules and the §23.2/§23.3
+ * governance switches). One policy is the default; certificates may point at another.
+ */
+function CertificatePolicies() {
+  const [policies, reload] = useData<CertPolicy[]>('/api/v1/certificate-policies')
+  const [draft, setDraft] = useState<Omit<CertPolicy, 'id'>>(EMPTY_CERT_POLICY)
+  const [editing, setEditing] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  function edit(p: CertPolicy) {
+    const { id, ...rest } = p
+    setEditing(id); setDraft(rest); setError(null)
+  }
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    const res = editing
+      ? await apiPatch(`/api/v1/certificate-policies/${editing}`, draft)
+      : await apiPost('/api/v1/certificate-policies', draft)
+    if (!res.ok) { setError((await res.json()).title ?? `Save failed (${res.status})`); return }
+    setEditing(null); setDraft(EMPTY_CERT_POLICY); reload()
+  }
+
+  async function remove(id: string) {
+    if (!window.confirm('Delete this certificate policy? Certificates using it fall back to the default.')) return
+    const res = await apiDelete(`/api/v1/certificate-policies/${id}`)
+    if (!res.ok) setError((await res.json()).title ?? `Delete failed (${res.status})`)
+    reload()
+  }
+
+  const set = <K extends keyof typeof draft>(key: K, value: (typeof draft)[K]) =>
+    setDraft({ ...draft, [key]: value })
+
+  return (
+    <div style={{ marginTop: 36 }}>
+      <h2>Certificate policies</h2>
+      <p className="muted small">
+        Key strength, naming rules, approval and separation of duties. The default policy applies to every
+        certificate that has no policy of its own.
+      </p>
+
+      <form className="policy-form" onSubmit={save}>
+        <label>Name
+          <input value={draft.name} onChange={(e) => set('name', e.target.value)} required />
+        </label>
+        <label>Minimum RSA bits
+          <input type="number" value={draft.minimumRsaBits} onChange={(e) => set('minimumRsaBits', Number(e.target.value))} />
+        </label>
+        <label>Allowed EC curves
+          <input value={csv(draft.allowedEcCurves)} onChange={(e) => set('allowedEcCurves', parseCsv(e.target.value))} placeholder="P-256, P-384" />
+        </label>
+        <label>Renew before (days)
+          <input type="number" value={draft.renewBeforeDays} onChange={(e) => set('renewBeforeDays', Number(e.target.value))} />
+        </label>
+        <label>Max validity (days)
+          <input type="number" value={draft.maxValidityDays ?? ''} placeholder="unlimited"
+                 onChange={(e) => set('maxValidityDays', e.target.value ? Number(e.target.value) : null)} />
+        </label>
+        <label>Approval required in
+          <input value={csv(draft.requireApprovalIn)} onChange={(e) => set('requireApprovalIn', parseCsv(e.target.value))} placeholder="PROD" />
+        </label>
+        <label>Maintenance window required in
+          <input value={csv(draft.requireWindowIn)} onChange={(e) => set('requireWindowIn', parseCsv(e.target.value))} placeholder="none" />
+        </label>
+        <label>Allowed domain suffixes
+          <input value={csv(draft.allowedDomainSuffixes)} onChange={(e) => set('allowedDomainSuffixes', parseCsv(e.target.value))} placeholder="any" />
+        </label>
+        <label>Blocked domain suffixes
+          <input value={csv(draft.blockedDomainSuffixes)} onChange={(e) => set('blockedDomainSuffixes', parseCsv(e.target.value))} placeholder=".local, .internal" />
+        </label>
+        <div className="policy-toggles">
+          <label><input type="checkbox" checked={draft.isDefault} onChange={(e) => set('isDefault', e.target.checked)} /> default policy</label>
+          <label><input type="checkbox" checked={draft.rotateKeyOnRenewal} onChange={(e) => set('rotateKeyOnRenewal', e.target.checked)} /> rotate key on renewal</label>
+          <label><input type="checkbox" checked={draft.blockWeakSignatureAlgorithms} onChange={(e) => set('blockWeakSignatureAlgorithms', e.target.checked)} /> block weak signature algorithms</label>
+          <label><input type="checkbox" checked={draft.requirePostDeploymentProbe} onChange={(e) => set('requirePostDeploymentProbe', e.target.checked)} /> require post-deployment probe</label>
+          <label><input type="checkbox" checked={draft.allowWildcard} onChange={(e) => set('allowWildcard', e.target.checked)} /> allow wildcard names</label>
+          <label><input type="checkbox" checked={draft.warnOnOverlap} onChange={(e) => set('warnOnOverlap', e.target.checked)} /> warn on overlapping names</label>
+          <label><input type="checkbox" checked={draft.requireOwner} onChange={(e) => set('requireOwner', e.target.checked)} /> require owner</label>
+          <label><input type="checkbox" checked={draft.enforceSeparationOfDuties} onChange={(e) => set('enforceSeparationOfDuties', e.target.checked)} /> enforce separation of duties</label>
+        </div>
+        <div className="policy-actions">
+          <button type="submit">{editing ? 'Save policy' : 'Add policy'}</button>
+          {editing && <button type="button" onClick={() => { setEditing(null); setDraft(EMPTY_CERT_POLICY) }}>Cancel</button>}
+        </div>
+      </form>
+      {error && <p className="error small">{error}</p>}
+
+      <table className="data-table">
+        <thead>
+          <tr><th>Policy</th><th>Key rules</th><th>Naming</th><th>Governance</th><th></th></tr>
+        </thead>
+        <tbody>
+          {(policies ?? []).map((p) => (
+            <tr key={p.id} className={editing === p.id ? 'editing-row' : undefined}>
+              <td>
+                {p.name}
+                {p.isDefault && <span className="tag ok">default</span>}
+              </td>
+              <td className="small muted">
+                RSA ≥ {p.minimumRsaBits} · EC {csv(p.allowedEcCurves) || 'any'}
+                <div>renew T-{p.renewBeforeDays} · {p.rotateKeyOnRenewal ? 'rotate key' : 'reuse key'}</div>
+                {p.blockWeakSignatureAlgorithms && <div>weak signatures blocked</div>}
+              </td>
+              <td className="small muted">
+                {p.allowWildcard ? 'wildcard allowed' : 'no wildcard'}
+                {p.maxValidityDays && <div>max {p.maxValidityDays} days</div>}
+                {p.allowedDomainSuffixes.length > 0 && <div>only {csv(p.allowedDomainSuffixes)}</div>}
+                {p.blockedDomainSuffixes.length > 0 && <div>blocked {csv(p.blockedDomainSuffixes)}</div>}
+                {p.requireOwner && <div>owner required</div>}
+              </td>
+              <td className="small muted">
+                approval: {csv(p.requireApprovalIn) || 'never'}
+                <div>window: {csv(p.requireWindowIn) || 'not enforced'}</div>
+                <div>{p.enforceSeparationOfDuties ? 'separation of duties on' : 'separation of duties off'}</div>
+                {p.requirePostDeploymentProbe && <div>post-deployment probe required</div>}
+              </td>
+              <td className="actions">
+                <button onClick={() => edit(p)}>Edit</button>
+                <button className="danger" onClick={() => remove(p.id)}>Delete</button>
+              </td>
+            </tr>
+          ))}
+          {(policies ?? []).length === 0 && <tr><td colSpan={5} className="muted">No certificate policies yet.</td></tr>}
         </tbody>
       </table>
     </div>

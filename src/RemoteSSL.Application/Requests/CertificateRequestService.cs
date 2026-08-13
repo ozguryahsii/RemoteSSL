@@ -4,6 +4,7 @@ using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Application.Auditing;
 using RemoteSSL.Application.Certificates;
 using RemoteSSL.Application.Observability;
+using RemoteSSL.Application.Policies;
 using RemoteSSL.Domain;
 using RemoteSSL.Domain.Abstractions;
 using RemoteSSL.Domain.Entities;
@@ -23,23 +24,33 @@ public interface ICaConnectorResolver
 /// </summary>
 public class CertificateRequestService(
     IRemoteSslDbContext db, ISecretProtector protector, InventoryService inventory,
-    ICaConnectorResolver connectors, AuditWriter audit)
+    ICaConnectorResolver connectors, AuditWriter audit, GovernanceService governance)
 {
+    /// <summary>Non-blocking findings from the last create call, surfaced to the wizard (§17.2).</summary>
+    public IReadOnlyList<PolicyFinding> LastWarnings { get; private set; } = [];
+
     public async Task<CertificateRequestEntity> CreateAsync(
         string commonName, IReadOnlyList<string> sans, string keyAlgorithm, int keySizeOrCurve,
         string keyOrigin, Guid? caConnectorId, string? profileId, string requestedBy, CancellationToken ct,
-        Guid? targetId = null, string? targetKeyPath = null, CertificateFactory.SubjectOptions? subject = null)
+        Guid? targetId = null, string? targetKeyPath = null, CertificateFactory.SubjectOptions? subject = null,
+        Guid? certificateId = null, string? environment = null, string? ownerId = null,
+        int? requestedValidityDays = null)
     {
         // One trace id follows this request through CA submission, issuance and deployment (§32.2).
         using var trace = TraceContext.Begin("certificate.request");
         trace.SetTag("remotessl.common_name", commonName);
 
-        if (keyAlgorithm.Equals("RSA", StringComparison.OrdinalIgnoreCase) && keySizeOrCurve < 2048)
-            throw new ArgumentException("RSA key size below policy minimum 2048");
+        var normalizedSans = PolicyEvaluator.NormalizeNames(commonName, sans).ToList();
 
-        var normalizedSans = sans.Select(s => s.Trim().ToLowerInvariant())
-            .Where(s => s.Length > 0).Distinct().ToList();
-        if (!normalizedSans.Contains(commonName.ToLowerInvariant())) normalizedSans.Insert(0, commonName.ToLowerInvariant());
+        // §17.2 / §39: every rule of the effective certificate policy, evaluated up front.
+        var policy = await governance.ResolveAsync(certificateId, ct);
+        var overlaps = policy.WarnOnOverlap
+            ? await governance.FindOverlappingAsync(normalizedSans, certificateId, ct)
+            : [];
+        var findings = PolicyEvaluator.ValidateRequest(policy, new RequestFacts(
+            commonName, normalizedSans, keyAlgorithm, keySizeOrCurve, ownerId, requestedValidityDays, overlaps));
+        if (findings.Any(f => f.Blocking)) throw new PolicyViolationException(findings);
+        LastWarnings = findings;
 
         var req = new CertificateRequestEntity
         {
@@ -53,11 +64,110 @@ public class CertificateRequestService(
             ProfileId = profileId,
             State = CertificateRequestState.Validated,
             RequestedBy = requestedBy,
+            Environment = environment,
+            OwnerId = ownerId,
+            CertificateId = certificateId,
             CorrelationId = trace.CorrelationId,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         };
 
+        // §19.1/§23.2: environments listed in the policy stop here until a checker approves.
+        // No key or CSR is produced before the decision.
+        if (PolicyEvaluator.RequiresApproval(policy, environment))
+        {
+            req.State = CertificateRequestState.PendingApproval;
+            db.CertificateRequests.Add(req);
+            db.ApprovalRequests.Add(new ApprovalRequest
+            {
+                Id = Guid.NewGuid(),
+                ObjectType = "certificate_request",
+                CertificateRequestId = req.Id,
+                RequestedBy = requestedBy,
+                CreatedAt = DateTimeOffset.UtcNow
+            });
+            audit.Append($"user:{requestedBy}", "certificate.request", "certificate_request", req.Id.ToString(),
+                req.State.ToString(),
+                new { commonName, sans = normalizedSans, keyAlgorithm, keySizeOrCurve, keyOrigin, environment },
+                trace.CorrelationId);
+            await db.SaveChangesAsync(ct);
+            return req;
+        }
+
+        await BuildCsrAsync(req, keyOrigin, commonName, normalizedSans, keySizeOrCurve, subject,
+            targetId, targetKeyPath, trace.CorrelationId, ct);
+
+        db.CertificateRequests.Add(req);
+        audit.Append($"user:{requestedBy}", "certificate.request", "certificate_request", req.Id.ToString(),
+            req.State.ToString(),
+            new { commonName, sans = normalizedSans, keyAlgorithm, keySizeOrCurve, keyOrigin, environment },
+            trace.CorrelationId);
+        await db.SaveChangesAsync(ct);
+
+        if (caConnectorId is not null && req.CsrPem is not null)
+            await SubmitAsync(req, ct);
+        return req;
+    }
+
+    /// <summary>
+    /// Approves or rejects a certificate request (§19.1 PENDING_APPROVAL). On approval the
+    /// key/CSR work runs and the request continues to the CA; on rejection it ends REJECTED.
+    /// </summary>
+    public async Task ApproveAsync(Guid requestId, string approver, bool approve, string? reason,
+        bool approverIsBreakGlass, CancellationToken ct)
+    {
+        var req = await db.CertificateRequests.FirstOrDefaultAsync(r => r.Id == requestId, ct)
+                  ?? throw new KeyNotFoundException("Request not found");
+        if (req.State != CertificateRequestState.PendingApproval)
+            throw new InvalidOperationException($"Request is {req.State}, not awaiting approval");
+
+        using var trace = TraceContext.Begin("certificate.request.approve", NonEmpty(req.CorrelationId));
+
+        var policy = await governance.ResolveAsync(req.CertificateId, ct);
+        var decision = GovernanceService.CheckApprover(policy, req.RequestedBy, approver, approverIsBreakGlass);
+        if (decision == ApproverDecision.SelfApprovalRefused)
+            throw new InvalidOperationException("Requester cannot approve their own certificate request");
+
+        var approval = await db.ApprovalRequests.FirstOrDefaultAsync(a => a.CertificateRequestId == requestId, ct);
+        if (approval is not null)
+        {
+            approval.Status = approve ? "Approved" : "Rejected";
+            approval.DecidedBy = approver;
+            approval.Reason = reason;
+            approval.BreakGlass = decision == ApproverDecision.BreakGlass;
+            approval.DecidedAt = DateTimeOffset.UtcNow;
+        }
+
+        if (!approve)
+        {
+            req.State = CertificateRequestState.Rejected;
+            req.UpdatedAt = DateTimeOffset.UtcNow;
+            audit.Append($"user:{approver}", "certificate.request.reject", "certificate_request",
+                req.Id.ToString(), "REJECTED", new { reason }, trace.CorrelationId);
+            await db.SaveChangesAsync(ct);
+            return;
+        }
+
+        var sans = JsonSerializer.Deserialize<List<string>>(req.SansJson) ?? [req.CommonName];
+        await BuildCsrAsync(req, req.KeyOrigin, req.CommonName, sans, req.KeySizeOrCurve, null,
+            req.TargetId, req.TargetKeyPath, trace.CorrelationId, ct);
+        req.UpdatedAt = DateTimeOffset.UtcNow;
+
+        audit.Append($"user:{approver}", "certificate.request.approve", "certificate_request",
+            req.Id.ToString(), decision == ApproverDecision.BreakGlass ? "APPROVED_BREAK_GLASS" : "APPROVED",
+            new { reason, breakGlass = decision == ApproverDecision.BreakGlass }, trace.CorrelationId);
+        await db.SaveChangesAsync(ct);
+
+        if (req.CaConnectorId is not null && req.CsrPem is not null)
+            await SubmitAsync(req, ct);
+    }
+
+    /// <summary>Produces the key/CSR for the request's key origin (central or on-target).</summary>
+    private async Task BuildCsrAsync(
+        CertificateRequestEntity req, string keyOrigin, string commonName, IReadOnlyList<string> normalizedSans,
+        int keySizeOrCurve, CertificateFactory.SubjectOptions? subject, Guid? targetId, string? targetKeyPath,
+        string correlationId, CancellationToken ct)
+    {
         if (keyOrigin == "central")
         {
             var artifacts = CertificateFactory.GenerateCsr(commonName, normalizedSans, req.KeyAlgorithm, keySizeOrCurve, subject);
@@ -96,20 +206,10 @@ public class CertificateRequestService(
                     keyAlgorithm = req.KeyAlgorithm,
                     keySizeOrCurve
                 }),
-                CorrelationId = trace.CorrelationId,
+                CorrelationId = correlationId,
                 CreatedAt = DateTimeOffset.UtcNow
             });
         }
-
-        db.CertificateRequests.Add(req);
-        audit.Append($"user:{requestedBy}", "certificate.request", "certificate_request", req.Id.ToString(),
-            req.State.ToString(), new { commonName, sans = normalizedSans, keyAlgorithm, keySizeOrCurve, keyOrigin },
-            trace.CorrelationId);
-        await db.SaveChangesAsync(ct);
-
-        if (caConnectorId is not null && req.CsrPem is not null)
-            await SubmitAsync(req, ct);
-        return req;
     }
 
     public async Task SubmitAsync(CertificateRequestEntity req, CancellationToken ct)

@@ -19,7 +19,7 @@ namespace RemoteSSL.Application.Deployments;
 /// </summary>
 public class DeploymentService(
     IRemoteSslDbContext db, ISecretProtector protector, AuditWriter audit,
-    INotificationSink notifier, ITlsProber prober)
+    INotificationSink notifier, ITlsProber prober, Policies.GovernanceService governance)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -48,6 +48,12 @@ public class DeploymentService(
         var version = await db.CertificateVersions.Include(v => v.Certificate)
                           .FirstOrDefaultAsync(v => v.Id == certificateVersionId, ct)
                       ?? throw new KeyNotFoundException("Certificate version not found");
+
+        // §23.2: the environment governance matrix can demand approval even when the
+        // caller did not ask for it. Policy may raise the bar, never lower it.
+        var policy = await governance.ResolveAsync(version.CertificateId, ct);
+        var environment = version.Certificate.Environment;
+        if (Policies.PolicyEvaluator.RequiresApproval(policy, environment)) approvalRequired = true;
 
         var bindings = await db.DeploymentBindings
             .Include(b => b.CertificateStore).ThenInclude(s => s.Target)
@@ -103,6 +109,7 @@ public class DeploymentService(
             });
         }
 
+        await UpdateCertificateStatusAsync(job, ct);
         audit.Append($"user:{requestedBy}", "deployment.create", "deployment_job", job.Id.ToString(),
             approvalRequired ? "PENDING_APPROVAL" : "CREATED",
             new { certificate = version.Certificate.CommonName, targets = bindings.Count, strategy },
@@ -111,14 +118,20 @@ public class DeploymentService(
         return job;
     }
 
-    public async Task ApproveAsync(Guid jobId, string approver, bool approve, string? reason, CancellationToken ct)
+    public async Task ApproveAsync(Guid jobId, string approver, bool approve, string? reason,
+        CancellationToken ct, bool approverIsBreakGlass = false)
     {
-        var job = await db.DeploymentJobs.FirstOrDefaultAsync(j => j.Id == jobId, ct)
+        var job = await db.DeploymentJobs.Include(j => j.CertificateVersion)
+                      .FirstOrDefaultAsync(j => j.Id == jobId, ct)
                   ?? throw new KeyNotFoundException("Job not found");
         if (job.Status != DeploymentJobStatus.PendingApproval)
             throw new InvalidOperationException($"Job is {job.Status}, not awaiting approval");
-        // Separation of duties (design doc §23.3)
-        if (string.Equals(job.RequestedBy, approver, StringComparison.OrdinalIgnoreCase))
+
+        // Separation of duties (§23.3): the requester cannot approve their own change unless
+        // they hold the break-glass role, and that exception is audited as such.
+        var policy = await governance.ResolveAsync(job.CertificateVersion.CertificateId, ct);
+        var decision = Policies.GovernanceService.CheckApprover(policy, job.RequestedBy, approver, approverIsBreakGlass);
+        if (decision == Policies.ApproverDecision.SelfApprovalRefused)
             throw new InvalidOperationException("Requester cannot approve their own deployment");
 
         var approval = await db.ApprovalRequests.FirstOrDefaultAsync(a => a.DeploymentJobId == jobId, ct);
@@ -127,13 +140,37 @@ public class DeploymentService(
             approval.Status = approve ? "Approved" : "Rejected";
             approval.DecidedBy = approver;
             approval.Reason = reason;
+            approval.BreakGlass = decision == Policies.ApproverDecision.BreakGlass;
             approval.DecidedAt = DateTimeOffset.UtcNow;
         }
         job.Status = approve ? DeploymentJobStatus.Approved : DeploymentJobStatus.Cancelled;
         job.ApprovedBy = approve ? approver : null;
         audit.Append($"user:{approver}", approve ? "deployment.approve" : "deployment.reject",
-            "deployment_job", jobId.ToString(), job.Status.ToString(), new { reason }, job.CorrelationId);
+            "deployment_job", jobId.ToString(),
+            approve && decision == Policies.ApproverDecision.BreakGlass ? "APPROVED_BREAK_GLASS" : job.Status.ToString(),
+            new { reason, breakGlass = decision == Policies.ApproverDecision.BreakGlass }, job.CorrelationId);
+        await UpdateCertificateStatusAsync(job, ct);
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Reflects the job's outcome on the certificate's lifecycle status (§19.2), so the
+    /// inventory shows PendingDeployment / PartiallyDeployed / DeploymentFailed rather than
+    /// expiry alone.
+    /// </summary>
+    private async Task UpdateCertificateStatusAsync(DeploymentJob job, CancellationToken ct)
+    {
+        var status = Policies.CertificateStatusResolver.FromDeployment(job.Status);
+        if (status is null) return;
+        var certificateId = job.CertificateVersion?.CertificateId
+                            ?? await db.CertificateVersions.Where(v => v.Id == job.CertificateVersionId)
+                                .Select(v => v.CertificateId).FirstAsync(ct);
+        var cert = await db.Certificates.FirstOrDefaultAsync(c => c.Id == certificateId, ct);
+        if (cert is null) return;
+        // A revoked certificate keeps its status regardless of deployment activity.
+        if (cert.HealthStatus == CertificateHealthStatus.Revoked) return;
+        cert.HealthStatus = status.Value;
+        cert.UpdatedAt = DateTimeOffset.UtcNow;
     }
 
     /// <summary>Fans the job out into per-binding runner jobs with full adapter payloads.</summary>
@@ -147,6 +184,25 @@ public class DeploymentService(
                   ?? throw new KeyNotFoundException("Job not found");
         if (job.Status != DeploymentJobStatus.Approved)
             throw new InvalidOperationException($"Job is {job.Status}; approval required before execution");
+
+        // FR-014 / §23.2: environments the policy marks window-controlled may only deploy
+        // inside their certificate's maintenance window — manual deployments included.
+        var policy = await governance.ResolveAsync(job.CertificateVersion.CertificateId, ct);
+        var cert = await db.Certificates.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == job.CertificateVersion.CertificateId, ct);
+        if (Policies.PolicyEvaluator.RequiresMaintenanceWindow(policy, cert?.Environment))
+        {
+            var windowJson = cert?.RenewalPolicyId is { } rp
+                ? await db.RenewalPolicies.Where(p => p.Id == rp).Select(p => p.MaintenanceWindowJson).FirstOrDefaultAsync(ct)
+                : null;
+            if (string.IsNullOrWhiteSpace(windowJson))
+                throw new InvalidOperationException(
+                    $"Policy requires a maintenance window for environment '{cert?.Environment}', " +
+                    "but no window is defined on the certificate's renewal policy.");
+            if (!Policies.MaintenanceWindow.IsOpen(windowJson, DateTimeOffset.UtcNow))
+                throw new InvalidOperationException(
+                    $"Outside the maintenance window for environment '{cert?.Environment}'.");
+        }
 
         job.Status = DeploymentJobStatus.Running;
         job.StartedAt = DateTimeOffset.UtcNow;
@@ -268,6 +324,7 @@ public class DeploymentService(
                     foreach (var o in olds) o.Status = CertificateVersionStatus.Superseded;
                     version.Status = CertificateVersionStatus.Active;
                 }
+                await UpdateCertificateStatusAsync(job, ct);
                 audit.Append("service:orchestrator", "deployment.complete", "deployment_job",
                     job.Id.ToString(), job.Status.ToString(), null, job.CorrelationId);
                 notifier.Notify(

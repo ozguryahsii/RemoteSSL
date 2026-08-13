@@ -53,6 +53,10 @@ public class CertificateRequestEntity
     public string? EncryptedPrivateKeyPem { get; set; }
     public string? ErrorMessage { get; set; }
     public string? RequestedBy { get; set; }
+    /// <summary>Target environment; drives approval and maintenance-window governance (§23.2).</summary>
+    public string? Environment { get; set; }
+    /// <summary>Owning user/team, required when the policy says so (§17.2).</summary>
+    public string? OwnerId { get; set; }
     /// <summary>Trace id shared by the whole request → CA → deployment → runner chain (§32.2).</summary>
     public string CorrelationId { get; set; } = string.Empty;
     public Guid? IssuedVersionId { get; set; }
@@ -76,10 +80,21 @@ public class RenewalPolicy
     public DateTimeOffset CreatedAt { get; set; }
 }
 
+/// <summary>
+/// Maker-checker record (§23.1). Covers both deployment jobs and certificate requests —
+/// §19.1 puts a PENDING_APPROVAL step in the request state machine too.
+/// </summary>
 public class ApprovalRequest
 {
     public Guid Id { get; set; }
-    public Guid DeploymentJobId { get; set; }
+    /// <summary>"deployment_job" | "certificate_request".</summary>
+    public string ObjectType { get; set; } = "deployment_job";
+    /// <summary>Set for deployment-job approvals; null for certificate-request approvals.</summary>
+    public Guid? DeploymentJobId { get; set; }
+    /// <summary>Set for certificate-request approvals; null for deployment-job approvals.</summary>
+    public Guid? CertificateRequestId { get; set; }
+    /// <summary>True when a break-glass administrator overrode separation of duties (§23.3).</summary>
+    public bool BreakGlass { get; set; }
     public string Status { get; set; } = "Pending"; // Pending|Approved|Rejected
     public string? RequestedBy { get; set; }
     public string? DecidedBy { get; set; }

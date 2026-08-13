@@ -5,8 +5,10 @@ import { useData, post } from './SimplePages'
 interface RequestRow {
   id: string; commonName: string; state: string; keyAlgorithm: string; keySizeOrCurve: number
   caConnectorId: string | null; errorMessage: string | null; issuedVersionId: string | null
-  requestedBy: string; createdAt: string
+  requestedBy: string; environment: string | null; ownerId: string | null; createdAt: string
 }
+
+interface PolicyFinding { rule: string; message: string }
 
 export default function Requests() {
   const [requests, reload] = useData<RequestRow[]>('/api/v1/certificates/requests', 15000)
@@ -15,7 +17,12 @@ export default function Requests() {
   const [alg, setAlg] = useState('RSA'); const [size, setSize] = useState('2048'); const [caId, setCaId] = useState('')
   const [org, setOrg] = useState(''); const [ou, setOu] = useState('')
   const [city, setCity] = useState(''); const [state, setState] = useState(''); const [country, setCountry] = useState('')
+  const [environment, setEnvironment] = useState(''); const [owner, setOwner] = useState('')
+  const [validityDays, setValidityDays] = useState('')
   const [csr, setCsr] = useState<string | null>(null)
+  const [policyError, setPolicyError] = useState<PolicyFinding[] | null>(null)
+  const [warnings, setWarnings] = useState<PolicyFinding[]>([])
+  const [notice, setNotice] = useState<string | null>(null)
   // In-app upload modal state
   const [uploadFor, setUploadFor] = useState<RequestRow | null>(null)
   const [certPem, setCertPem] = useState(''); const [chainPem, setChainPem] = useState('')
@@ -24,15 +31,36 @@ export default function Requests() {
 
   async function create(e: React.FormEvent) {
     e.preventDefault()
+    setPolicyError(null); setWarnings([]); setNotice(null)
     const res = await post('/api/v1/certificates/requests', {
       commonName: cn, sans: sans.split(',').map((s) => s.trim()).filter(Boolean),
       keyAlgorithm: alg, keySizeOrCurve: Number(size), caConnectorId: caId || null, requestedBy: 'ui',
       organization: org || null, organizationalUnit: ou || null,
       locality: city || null, state: state || null, country: country || null,
+      environment: environment || null, ownerId: owner || null,
+      requestedValidityDays: validityDays ? Number(validityDays) : null,
     })
     const body = await res.json()
+    if (!res.ok) {
+      // Blocking policy violations come back as problem details with the offending rules (§17.2).
+      setPolicyError(body.findings ?? [{ rule: 'request', message: body.title ?? `Failed (${res.status})` }])
+      return
+    }
     setCsr(body.csrPem ?? null)
+    setWarnings(body.warnings ?? [])
+    if (body.state === 'PendingApproval')
+      setNotice(`Request created and is awaiting approval — policy requires approval in ${environment}.`)
     setCn(''); setSans(''); reload()
+  }
+
+  async function decide(r: RequestRow, approve: boolean) {
+    const approver = window.prompt(approve ? 'Approver username:' : 'Rejecting — your username:')
+    if (!approver) return
+    const reason = window.prompt('Reason (optional):') ?? undefined
+    const res = await post(`/api/v1/certificates/requests/${r.id}/approve`,
+      { approver, approve, reason })
+    if (!res.ok) alert((await res.json()).title ?? `Decision failed (${res.status})`)
+    reload()
   }
 
   function openUpload(r: RequestRow) {
@@ -93,9 +121,31 @@ export default function Requests() {
           <input value={state} onChange={(e) => setState(e.target.value)} placeholder="State (ST)" />
           <input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Country (C, e.g. TR)"
                  maxLength={2} style={{ width: 140 }} />
+          <input value={environment} onChange={(e) => setEnvironment(e.target.value)}
+                 placeholder="Environment (e.g. PROD)" style={{ width: 170 }}
+                 title="Drives approval and maintenance-window policy" />
+          <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="Owner" style={{ width: 130 }} />
+          <input value={validityDays} onChange={(e) => setValidityDays(e.target.value)} type="number"
+                 placeholder="Validity (days)" style={{ width: 140 }} />
           <button type="submit">Create request</button>
         </div>
       </form>
+
+      {policyError && (
+        <div className="alert-list">
+          {policyError.map((f, i) => (
+            <div key={i} className="alert-row critical"><strong>{f.rule}</strong> — {f.message}</div>
+          ))}
+        </div>
+      )}
+      {warnings.length > 0 && (
+        <div className="alert-list">
+          {warnings.map((f, i) => (
+            <div key={i} className="alert-row warning"><strong>{f.rule}</strong> — {f.message}</div>
+          ))}
+        </div>
+      )}
+      {notice && <p className="warn">{notice}</p>}
 
       {csr && (
         <div className="detail-panel">
@@ -105,7 +155,7 @@ export default function Requests() {
       )}
 
       <table className="data-table">
-        <thead><tr><th>Common name</th><th>State</th><th>Key</th><th>Requested by</th><th>Created</th><th></th></tr></thead>
+        <thead><tr><th>Common name</th><th>State</th><th>Key</th><th>Environment</th><th>Requested by</th><th>Created</th><th></th></tr></thead>
         <tbody>
           {(requests ?? []).map((r) => (
             <tr key={r.id}>
@@ -115,9 +165,16 @@ export default function Requests() {
                 {r.errorMessage && <div className="bad small">{r.errorMessage}</div>}
               </td>
               <td>{r.keyAlgorithm} {r.keySizeOrCurve}</td>
+              <td className="small">{r.environment ?? '—'}{r.ownerId && <div className="muted">owner: {r.ownerId}</div>}</td>
               <td>{r.requestedBy}</td>
               <td className="small muted">{new Date(r.createdAt).toLocaleString()}</td>
               <td className="actions">
+                {r.state === 'PendingApproval' && (
+                  <>
+                    <button onClick={() => decide(r, true)}>Approve</button>
+                    <button className="danger" onClick={() => decide(r, false)}>Reject</button>
+                  </>
+                )}
                 {['WaitingForCertificate', 'CsrGenerated', 'PendingIssuance'].includes(r.state) && (
                   <button onClick={() => openUpload(r)}>Upload issued cert</button>
                 )}
@@ -130,7 +187,7 @@ export default function Requests() {
             </tr>
           ))}
           {(requests ?? []).length === 0 && (
-            <tr><td colSpan={6} className="muted">No requests yet. Fill the form above to generate a CSR (and optionally submit it to a CA).</td></tr>
+            <tr><td colSpan={7} className="muted">No requests yet. Fill the form above to generate a CSR (and optionally submit it to a CA).</td></tr>
           )}
         </tbody>
       </table>

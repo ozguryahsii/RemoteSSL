@@ -95,6 +95,8 @@ using (var scope = app.Services.CreateScope())
         var db = scope.ServiceProvider.GetRequiredService<RemoteSSL.Infrastructure.Persistence.RemoteSslDbContext>();
         await db.Database.MigrateAsync();
     }
+    await CertificatePoliciesController.SeedDefaultAsync(
+        scope.ServiceProvider.GetRequiredService<IRemoteSslDbContext>(), CancellationToken.None);
     await AuthController.SeedAdminAsync(
         scope.ServiceProvider.GetRequiredService<IRemoteSslDbContext>(), app.Configuration, CancellationToken.None);
 }

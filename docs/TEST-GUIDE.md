@@ -273,6 +273,49 @@ kayıt tutulur ve dashboard'da kritik alarm + `audit_pipeline_failure_count` met
   { "Observability": { "OtlpEndpoint": "http://localhost:4317", "MetricRetentionDays": 30 } }
   ```
 
+## 15. Sertifika politikası, onay ve revoke (F11) — yeni
+
+**Politika ekranı**: **Policies → Certificate policies**. İlk açılışta "Default certificate policy"
+otomatik oluşur (RSA ≥ 2048, EC P-256/P-384, PROD'da onay zorunlu, separation of duties açık).
+Ekrandan yeni politika eklenebilir, düzenlenebilir, silinebilir; bir sertifikaya özel politika
+`PATCH /api/v1/certificates/{id}` içindeki `certificatePolicyId` ile bağlanır.
+
+**Politika ihlali** (bloklayan kural → 422 + hangi kuralın ihlal edildiği):
+
+```bash
+curl -s -X POST http://localhost:5200/api/v1/certificates/requests \
+  -H 'Content-Type: application/json' \
+  -d '{"commonName":"weak.company.com","keySizeOrCurve":1024,"requestedBy":"test"}'
+# {"title":"Policy violation: RSA key size 1024 is below the policy minimum 2048.", ...}
+```
+
+**Örtüşme uyarısı** (bloklamaz, `warnings` içinde döner ve ekranda sarı satır olarak görünür):
+envanterde zaten olan bir CN ile yeni request açın.
+
+**PROD onay akışı** (§19.1 + §23.2 + §23.3):
+
+1. **Certificate Requests** ekranında formu doldururken **Environment** alanına `PROD` yazın.
+2. Request `PendingApproval` durumunda kalır — **bu aşamada henüz private key/CSR üretilmez**.
+3. Satırdaki **Approve** ile onaylayın. Talebi açan kişinin kullanıcı adını girerseniz reddedilir
+   ("Requester cannot approve their own certificate request"); farklı bir onaycı girin.
+4. Onay sonrası CSR üretilir, CA seçiliyse otomatik gönderilir.
+
+**Deployment onayı**: PROD ortamındaki bir sertifika için deployment açarsanız, istek `approvalRequired:false`
+gelse bile politika onayı zorunlu kılar (`PendingApproval`). Onaylarken de separation of duties uygulanır.
+`BreakGlassAdministrator` rolündeki kullanıcı kendi değişikliğini onaylayabilir; audit'te `APPROVED_BREAK_GLASS` görünür.
+
+**Bakım penceresi**: politikada `requireWindowIn` içine bir ortam yazarsanız (örn. `PROD`), o ortamdaki
+deployment yalnızca sertifikanın renewal policy'sindeki pencere açıkken çalışır — manuel deployment dahil.
+
+**Lifecycle statüleri**: deployment devam ederken sertifika `PendingDeployment`, kısmi başarısızlıkta
+`PartiallyDeployed`, başarısızlıkta `DeploymentFailed` görünür. Süresi dolmuşsa `Expired` her zaman öne çıkar,
+revoke edilmişse `Revoked` kalıcıdır.
+
+**Revoke**: **Certificates → sertifika → Overview → Versions** altındaki **Revoke at CA** düğmesi.
+CA connector'ı ile üretilmiş sürümlerde CA'ya revoke isteği gider. Manuel/offline CA'da RemoteSSL revoke
+edemez; ekran "kayıt olarak işaretleyeyim mi?" diye sorar ve onaylarsanız audit'e `REVOKED_RECORDED` düşer
+(envanter "RemoteSSL revoke etti" demez).
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

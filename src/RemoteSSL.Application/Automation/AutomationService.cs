@@ -178,25 +178,5 @@ public class AutomationService(
 
     /// <summary>Window JSON: {"days":["SUN","MON"],"start":"01:00","end":"04:00"} evaluated in UTC.</summary>
     public static bool IsWindowOpen(string windowJson, DateTimeOffset nowUtc)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(windowJson);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("days", out var days))
-            {
-                var today = nowUtc.DayOfWeek.ToString()[..3].ToUpperInvariant();
-                if (!days.EnumerateArray().Any(d => string.Equals(d.GetString(), today, StringComparison.OrdinalIgnoreCase)))
-                    return false;
-            }
-            var start = TimeSpan.Parse(root.GetProperty("start").GetString()!);
-            var end = TimeSpan.Parse(root.GetProperty("end").GetString()!);
-            var t = nowUtc.TimeOfDay;
-            return start <= end ? t >= start && t <= end : t >= start || t <= end;
-        }
-        catch
-        {
-            return true; // malformed window must not block forever; audit trail shows execution time
-        }
-    }
+        => Policies.MaintenanceWindow.IsOpen(windowJson, nowUtc);
 }

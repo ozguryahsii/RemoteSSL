@@ -32,6 +32,7 @@ public static class DependencyInjection
         services.AddHttpClient();
         services.AddScoped<ISecretProtector, Security.DataProtectionSecretProtector>();
         services.AddScoped<Application.Auditing.AuditWriter>();
+        services.AddScoped<Application.Policies.GovernanceService>();
         services.AddScoped<Application.Observability.MetricsRecorder>();
         services.AddScoped<Application.Observability.MetricsQuery>();
         services.AddScoped<Application.Certificates.InventoryService>();
