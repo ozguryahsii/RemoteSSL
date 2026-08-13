@@ -123,7 +123,13 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
             var kind = doc.RootElement.GetProperty("kind").GetString();
             var creds = await ResolveCredentialsAsync(http, doc.RootElement, ct);
 
-            if (job.JobType == "generate-csr")
+            if (job.JobType == "probe")
+            {
+                resultJson = await ProbeEndpointAsync(doc.RootElement, ct);
+                success = true; // probe outcome (incl. failures) is data, not a job failure
+                steps.Add(new { step = "PreCheck", success = true, safeLog = "probe executed from runner segment" });
+            }
+            else if (job.JobType == "generate-csr")
             {
                 var (ok, csrPem, log) = GenerateCsrOnTarget(doc.RootElement, creds);
                 success = ok;
@@ -233,6 +239,90 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
         CertPem = e.GetProperty("certPem").GetString()!,
         ReloadCmd = e.TryGetProperty("reloadCmd", out var rc) ? rc.GetString() : null
     };
+
+    /// <summary>
+    /// TLS probe executed from inside the runner's segment (internal-DNS endpoints).
+    /// Captures the presented leaf + chain without enforcing trust; results flow back
+    /// to the control plane's inventory correlation.
+    /// </summary>
+    private static async Task<string> ProbeEndpointAsync(JsonElement e, CancellationToken ct)
+    {
+        var host = e.GetProperty("host").GetString()!;
+        var port = e.GetProperty("port").GetInt32();
+        var sni = e.TryGetProperty("sni", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+
+        byte[]? leafDer = null;
+        var chainDer = new List<byte[]>();
+        bool? hostnameValid = null, chainValid = null;
+        string? chainError = null;
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+            using var tcp = new System.Net.Sockets.TcpClient();
+            try
+            {
+                await tcp.ConnectAsync(host, port, timeoutCts.Token);
+            }
+            catch (System.Net.Sockets.SocketException ex) when (ex.SocketErrorCode == System.Net.Sockets.SocketError.HostNotFound)
+            {
+                return JsonSerializer.Serialize(new { status = "DnsResolutionFailed", error = ex.Message });
+            }
+            catch (System.Net.Sockets.SocketException ex)
+            {
+                return JsonSerializer.Serialize(new { status = "ConnectionFailed", error = ex.Message });
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return JsonSerializer.Serialize(new { status = "Timeout", error = $"TCP connect to {host}:{port} timed out" });
+            }
+
+            await using var ssl = new System.Net.Security.SslStream(tcp.GetStream(), false,
+                (_, cert, chain, errors) =>
+                {
+                    if (cert is not null)
+                    {
+                        leafDer = cert.GetRawCertData();
+                        if (chain is not null)
+                            foreach (var el in chain.ChainElements.Skip(1)) chainDer.Add(el.Certificate.RawData);
+                    }
+                    hostnameValid = !errors.HasFlag(System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch);
+                    chainValid = !errors.HasFlag(System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors)
+                                 && !errors.HasFlag(System.Net.Security.SslPolicyErrors.RemoteCertificateNotAvailable);
+                    if (chainValid == false && chain is not null)
+                        chainError = string.Join("; ", chain.ChainStatus.Select(x => x.StatusInformation.Trim()).Distinct());
+                    return true;
+                });
+            try
+            {
+                await ssl.AuthenticateAsClientAsync(new System.Net.Security.SslClientAuthenticationOptions
+                {
+                    TargetHost = string.IsNullOrWhiteSpace(sni) ? host : sni
+                }, timeoutCts.Token);
+            }
+            catch (System.Security.Authentication.AuthenticationException ex) when (leafDer is null)
+            {
+                return JsonSerializer.Serialize(new { status = "TlsHandshakeFailed", error = ex.GetBaseException().Message });
+            }
+            catch (System.Security.Authentication.AuthenticationException) { /* cert captured despite handshake failure */ }
+
+            return JsonSerializer.Serialize(new
+            {
+                status = "Success",
+                leafDerBase64 = leafDer is null ? null : Convert.ToBase64String(leafDer),
+                chainDerBase64 = chainDer.Select(Convert.ToBase64String).ToArray(),
+                tlsProtocol = ssl.IsAuthenticated ? ssl.SslProtocol.ToString() : null,
+                hostnameValid,
+                chainValid,
+                chainError
+            });
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new { status = "ConnectionFailed", error = ex.GetBaseException().Message });
+        }
+    }
 
     /// <summary>Remote store discovery (design doc §27.1): certificate files / store entries on the target.</summary>
     private (bool Ok, string Output) DiscoverStores(JsonElement e, string? kind, SshCredentials creds)

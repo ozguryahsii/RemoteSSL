@@ -58,12 +58,18 @@ public class ProbeSchedulerService(
         {
             var db = scope.ServiceProvider.GetRequiredService<RemoteSslDbContext>();
             var now = DateTimeOffset.UtcNow;
-            dueIds = await db.MonitorEndpoints
+            var due = await db.MonitorEndpoints
                 .Where(m => m.Enabled)
                 .Where(m => m.LastProbeAt == null
                             || m.LastProbeAt < now.AddMinutes(-(m.ProbeIntervalMinutes ?? defaultIntervalMinutes)))
-                .Select(m => m.Id)
                 .ToListAsync(ct);
+
+            // Internal-DNS endpoints are probed from their runner (design decision: segment-local probing).
+            foreach (var pinned in due.Where(m => m.RunnerId != null))
+                await MonitorProbeService.QueueRunnerProbeAsync(db, pinned, ct);
+            await db.SaveChangesAsync(ct);
+
+            dueIds = due.Where(m => m.RunnerId == null).Select(m => m.Id).ToList();
         }
 
         if (dueIds.Count == 0) return;

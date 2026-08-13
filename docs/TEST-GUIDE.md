@@ -121,7 +121,33 @@ Runner hedefte `openssl` ile 0600 izinli key + CSR üretir; CSR kontrol düzlemi
 Credential oluştururken provider `HashiCorpVault`, secretIdentifier `vault://secret/prod/web01`
 (KV v2; data içinde `password` ve/veya `privateKey` alanları). Runner, secret'i broker üzerinden execution anında alır.
 
-## 11. Windows / IIS, Java, Oracle, F5, diğer vendorlar (kod hazır, lab gerekli)
+## 11. İç DNS endpoint'leri ve katmanlı (F5 → nginx → IIS) analiz — yeni
+
+**Runner üzerinden probe:** Dış DNS'te olmayan iç servisler için monitor eklerken/düzenlerken
+"probe from control plane" yerine **via runner: &lt;runner adı&gt;** seçin. Probe o segmentteki runner'dan
+yapılır, DNS çözümü orada gerçekleşir. Satırda `via runner` etiketi görünür.
+(Runner'ı ilgili segmentte çalıştırmanız gerekir: `dotnet run --project src/RemoteSSL.Runner`,
+`appsettings.json` → `ControlPlane:Url` kontrol düzlemine bakacak şekilde.)
+
+**Service Paths (katman analizi):** Monitors ekranının altındaki **Service Paths** bölümünde,
+uygulamanın önündeki TLS katmanlarını sırayla (en dıştan içe: F5 VIP → nginx → IIS) bir "path"
+olarak tanımlayın (Cmd+tık ile sırayla seçin) → **Analyze**.
+
+Analiz her hop'u ayrı probe eder ve şu verdict'leri üretir:
+- `Healthy` / `ExpiringSoon` / `Critical` — normal expiry durumu
+- **`StaleCertificate`** — bu katman diğerlerinden farklı (daha eski) sertifika sunuyor;
+  yani son yenilemede **bu katman atlanmış**
+- `Expired` — süresi dolmuş
+- `Unreachable` — erişilemedi (iç DNS ise: runner atayın)
+
+Doğrulanmış örnek çıktı:
+```
+ATTENTION — hop 2 (localhost:8445): StaleCertificate
+  hop1 localhost:8444 via=control-plane -> Healthy        (59 gün)
+  hop2 localhost:8445 via=runner       -> StaleCertificate (bu katman son yenilemede atlanmış)
+```
+
+## 12. Windows / IIS, Java, Oracle, F5, diğer vendorlar (kod hazır, lab gerekli)
 
 Bu adapterlar implemente edildi ancak bu ortamda gerçek hedef olmadığı için canlı test edilmedi:
 

@@ -26,6 +26,7 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<RenewalPolicy> RenewalPolicies => Set<RenewalPolicy>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<UserAccount> Users => Set<UserAccount>();
+    public DbSet<ServicePath> ServicePaths => Set<ServicePath>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -143,6 +144,7 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
             e.HasIndex(x => x.State);
         });
         b.Entity<UserAccount>(e => e.HasIndex(x => x.Username).IsUnique());
+        b.Entity<ServicePath>(e => e.Property(x => x.Name).HasMaxLength(256));
 
         b.Entity<AuditEvent>(e =>
         {

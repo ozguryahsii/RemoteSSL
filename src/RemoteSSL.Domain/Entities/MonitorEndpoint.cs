@@ -16,6 +16,12 @@ public class MonitorEndpoint
     /// <summary>Probe interval in minutes; policy default applies when null.</summary>
     public int? ProbeIntervalMinutes { get; set; }
 
+    /// <summary>
+    /// When set, probes run from this runner inside the network segment instead of
+    /// the control plane — required for endpoints resolvable only by internal DNS.
+    /// </summary>
+    public Guid? RunnerId { get; set; }
+
     public ProbeStatus LastProbeStatus { get; set; }
     public string? LastProbeError { get; set; }
     public DateTimeOffset? LastProbeAt { get; set; }

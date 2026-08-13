@@ -137,6 +137,31 @@ public class RunnersController(
                 await requestService.AttachTargetCsrAsync(reqId.GetGuid(), csr.GetString()!, ct);
             }
         }
+        if (job.JobType == "probe" && req.ResultJson is not null)
+        {
+            using var payload = JsonDocument.Parse(job.PayloadJson);
+            using var result = JsonDocument.Parse(req.ResultJson);
+            var monitorId = payload.RootElement.GetProperty("monitorId").GetGuid();
+            var monitor = await db.MonitorEndpoints.Include(m => m.LastObservedVersion)
+                .FirstOrDefaultAsync(m => m.Id == monitorId, ct);
+            if (monitor is not null)
+            {
+                var r = result.RootElement;
+                string? GetStr(string name) => r.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                bool? GetBool(string name) => r.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.GetBoolean() : null;
+                var probeResult = new Application.Abstractions.TlsProbeResult(
+                    Enum.TryParse<ProbeStatus>(GetStr("status"), out var st) ? st : ProbeStatus.ConnectionFailed,
+                    GetStr("error"),
+                    GetStr("leafDerBase64") is { } leaf ? Convert.FromBase64String(leaf) : null,
+                    r.TryGetProperty("chainDerBase64", out var chain) && chain.ValueKind == JsonValueKind.Array
+                        ? chain.EnumerateArray().Select(x => Convert.FromBase64String(x.GetString()!)).ToList()
+                        : [],
+                    GetStr("tlsProtocol"), GetBool("hostnameValid"), GetBool("chainValid"), GetStr("chainError"));
+                var probeService = HttpContext.RequestServices
+                    .GetRequiredService<Application.Monitoring.MonitorProbeService>();
+                await probeService.ApplyResultAsync(monitor, probeResult, ct);
+            }
+        }
         if (job.DeploymentJobTargetId is not null)
         {
             await deployments.CompleteRunnerJobAsync(jobId, req.Success, req.RolledBack,

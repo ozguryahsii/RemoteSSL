@@ -86,6 +86,21 @@ public class ApprovalRequest
     public DateTimeOffset? DecidedAt { get; set; }
 }
 
+/// <summary>
+/// Ordered chain of monitor endpoints representing the hops in front of an
+/// application (e.g. F5 VIP -> nginx -> IIS backend). Path analysis probes every
+/// hop and pinpoints the layer serving a stale or mismatching certificate.
+/// </summary>
+public class ServicePath
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Ordered JSON array of monitor endpoint ids (outermost hop first).</summary>
+    public string MonitorIdsJson { get; set; } = "[]";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+}
+
 public class UserAccount
 {
     public Guid Id { get; set; }

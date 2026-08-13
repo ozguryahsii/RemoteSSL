@@ -10,11 +10,11 @@ namespace RemoteSSL.Api.Controllers;
 [Route("api/v1/monitors")]
 public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService probeService) : ControllerBase
 {
-    public record CreateMonitorRequest(string Host, int Port = 443, string? Sni = null, int? ProbeIntervalMinutes = null);
-    public record UpdateMonitorRequest(bool? Enabled, int? ProbeIntervalMinutes, string? Host, int? Port, string? Sni, bool ClearSni = false);
+    public record CreateMonitorRequest(string Host, int Port = 443, string? Sni = null, int? ProbeIntervalMinutes = null, Guid? RunnerId = null);
+    public record UpdateMonitorRequest(bool? Enabled, int? ProbeIntervalMinutes, string? Host, int? Port, string? Sni, bool ClearSni = false, Guid? RunnerId = null, bool ClearRunner = false);
 
     public record MonitorDto(
-        Guid Id, string Host, int Port, string? Sni, bool Enabled, int? ProbeIntervalMinutes,
+        Guid Id, string Host, int Port, string? Sni, bool Enabled, int? ProbeIntervalMinutes, Guid? RunnerId,
         string LastProbeStatus, string? LastProbeError, DateTimeOffset? LastProbeAt,
         string? LastTlsProtocol, bool? LastHostnameValid, bool? LastChainValid, string? LastChainError,
         ObservedCertDto? ObservedCertificate);
@@ -63,6 +63,7 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
             Port = request.Port,
             Sni = sni,
             ProbeIntervalMinutes = request.ProbeIntervalMinutes,
+            RunnerId = request.RunnerId,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         };
@@ -84,6 +85,8 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         if (request.Port is >= 1 and <= 65535) monitor.Port = request.Port.Value;
         if (request.ClearSni) monitor.Sni = null;
         else if (!string.IsNullOrWhiteSpace(request.Sni)) monitor.Sni = request.Sni.Trim().ToLowerInvariant();
+        if (request.ClearRunner) monitor.RunnerId = null;
+        else if (request.RunnerId is not null) monitor.RunnerId = request.RunnerId;
         monitor.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         return ToDto(monitor);
@@ -99,19 +102,23 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         return NoContent();
     }
 
-    /// <summary>On-demand probe (design doc §27.1: POST /monitors/{id}/probe).</summary>
+    /// <summary>
+    /// On-demand probe (design doc §27.1). Runner-pinned monitors are probed from
+    /// inside the segment: a probe job is queued and the result lands asynchronously.
+    /// </summary>
     [HttpPost("{id:guid}/probe")]
     public async Task<ActionResult<MonitorDto>> Probe(Guid id, CancellationToken ct)
     {
-        try
+        var pinned = await db.MonitorEndpoints.AsNoTracking().FirstOrDefaultAsync(m => m.Id == id, ct);
+        if (pinned is null) return NotFound();
+        if (pinned.RunnerId is not null)
         {
-            var monitor = await probeService.ProbeAsync(id, ct);
-            return ToDto(monitor);
+            await MonitorProbeService.QueueRunnerProbeAsync(db, pinned, ct);
+            await db.SaveChangesAsync(ct);
+            return Accepted(ToDto(pinned));
         }
-        catch (KeyNotFoundException)
-        {
-            return NotFound();
-        }
+        var monitor = await probeService.ProbeAsync(id, ct);
+        return ToDto(monitor);
     }
 
     private static MonitorDto ToDto(MonitorEndpoint m)
@@ -129,7 +136,7 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         }
 
         return new MonitorDto(
-            m.Id, m.Host, m.Port, m.Sni, m.Enabled, m.ProbeIntervalMinutes,
+            m.Id, m.Host, m.Port, m.Sni, m.Enabled, m.ProbeIntervalMinutes, m.RunnerId,
             m.LastProbeStatus.ToString(), m.LastProbeError, m.LastProbeAt,
             m.LastTlsProtocol, m.LastHostnameValid, m.LastChainValid, m.LastChainError,
             observed);

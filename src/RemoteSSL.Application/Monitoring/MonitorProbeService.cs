@@ -24,12 +24,48 @@ public class MonitorProbeService(
                           .Include(m => m.LastObservedVersion)
                           .FirstOrDefaultAsync(m => m.Id == monitorId, ct)
                       ?? throw new KeyNotFoundException($"Monitor {monitorId} not found");
+        var result = await prober.ProbeAsync(monitor.Host, monitor.Port, monitor.Sni, ct);
+        return await ApplyResultAsync(monitor, result, ct);
+    }
 
+    /// <summary>Queues a runner-side probe job unless one is already pending for this monitor.</summary>
+    public static async Task QueueRunnerProbeAsync(IRemoteSslDbContext db, MonitorEndpoint monitor, CancellationToken ct)
+    {
+        // jsonb columns don't support LIKE — filter candidates in memory (probe queue is small).
+        var candidates = await db.RunnerJobs
+            .Where(j => j.JobType == "probe" && (j.Status == "Queued" || j.Status == "Claimed"))
+            .Select(j => j.PayloadJson)
+            .ToListAsync(ct);
+        var marker = monitor.Id.ToString();
+        if (candidates.Any(p => p.Contains(marker, StringComparison.OrdinalIgnoreCase))) return;
+        db.RunnerJobs.Add(new RunnerJob
+        {
+            Id = Guid.NewGuid(),
+            RunnerId = monitor.RunnerId,
+            JobType = "probe",
+            PayloadJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                kind = "probe",
+                monitorId = monitor.Id,
+                host = monitor.Host,
+                port = monitor.Port,
+                sni = monitor.Sni
+            }),
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+    }
+
+    /// <summary>
+    /// Folds a probe result into the inventory. Also the entry point for probes
+    /// executed remotely by a runner (internal-DNS endpoints).
+    /// </summary>
+    public async Task<MonitorEndpoint> ApplyResultAsync(MonitorEndpoint monitor, TlsProbeResult result, CancellationToken ct = default)
+    {
         var previousDaysLeft = monitor is { LastObservedVersion: not null, LastProbeAt: not null }
             ? ExpiryCalculator.DaysUntilExpiry(monitor.LastObservedVersion.NotAfter, monitor.LastProbeAt.Value)
             : (int?)null;
 
-        var result = await prober.ProbeAsync(monitor.Host, monitor.Port, monitor.Sni, ct);
         var now = DateTimeOffset.UtcNow;
 
         monitor.LastProbeAt = now;

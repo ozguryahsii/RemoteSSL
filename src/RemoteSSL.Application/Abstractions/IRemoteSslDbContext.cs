@@ -27,6 +27,7 @@ public interface IRemoteSslDbContext
     DbSet<RenewalPolicy> RenewalPolicies { get; }
     DbSet<ApprovalRequest> ApprovalRequests { get; }
     DbSet<UserAccount> Users { get; }
+    DbSet<ServicePath> ServicePaths { get; }
     DbSet<DeploymentJobTarget> DeploymentJobTargets { get; }
     DbSet<DeploymentStep> DeploymentSteps { get; }
 
