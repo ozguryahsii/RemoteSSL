@@ -15,7 +15,7 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
 {
     public record CreateTargetRequest(
         string Name, string TargetType, string AdapterType, string? Environment, string? OsType,
-        JsonElement? ConnectionConfig, Guid? CredentialRefId, Guid? RunnerId);
+        JsonElement? ConnectionConfig, Guid? CredentialRefId, Guid? RunnerId, string? HaRole = null);
     public record CreateStoreRequest(string StoreType, string StorePath, string? Alias, JsonElement? Config);
     public record CreateBindingRequest(Guid CertificateId, JsonElement? ServiceBinding, JsonElement? ActivationPolicy);
 
@@ -23,7 +23,7 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
     public async Task<IEnumerable<object>> List(CancellationToken ct) =>
         await db.Targets.AsNoTracking().Include(t => t.Stores).Select(t => new
         {
-            t.Id, t.Name, TargetType = t.TargetType.ToString(), t.AdapterType, t.Environment,
+            t.Id, t.Name, TargetType = t.TargetType.ToString(), t.AdapterType, t.Environment, t.HaRole,
             t.CredentialRefId, t.RunnerId, t.ConnectionConfigJson,
             Stores = t.Stores.Select(s => new { s.Id, s.StoreType, s.StorePath, s.Alias })
         }).ToListAsync(ct);
@@ -44,6 +44,7 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
             ConnectionConfigJson = req.ConnectionConfig?.GetRawText() ?? "{}",
             CredentialRefId = req.CredentialRefId,
             RunnerId = req.RunnerId,
+            HaRole = Normalize(req.HaRole),
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         };
@@ -55,7 +56,8 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
 
     public record UpdateTargetRequest(
         string? Name, string? AdapterType, string? Environment,
-        JsonElement? ConnectionConfig, Guid? CredentialRefId, bool ClearCredential = false);
+        JsonElement? ConnectionConfig, Guid? CredentialRefId, bool ClearCredential = false,
+        string? HaRole = null, bool ClearHaRole = false);
 
     [HttpPatch("{id:guid}")]
     public async Task<ActionResult<object>> Update(Guid id, UpdateTargetRequest req, CancellationToken ct)
@@ -73,10 +75,19 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
         if (req.ConnectionConfig is not null) t.ConnectionConfigJson = req.ConnectionConfig.Value.GetRawText();
         if (req.ClearCredential) t.CredentialRefId = null;
         else if (req.CredentialRefId is not null) t.CredentialRefId = req.CredentialRefId;
+        if (req.ClearHaRole) t.HaRole = null;
+        else if (req.HaRole is not null) t.HaRole = Normalize(req.HaRole);
         t.UpdatedAt = DateTimeOffset.UtcNow;
         audit.Append("user:api", "target.update", "target", id.ToString(), "OK", new { t.Name, t.AdapterType });
         await db.SaveChangesAsync(ct);
         return new { t.Id };
+    }
+
+    /// <summary>Only "standby"/"active" mean anything to the HA-pair strategy (§14.3).</summary>
+    private static string? Normalize(string? haRole)
+    {
+        var r = haRole?.Trim().ToLowerInvariant();
+        return r is "standby" or "active" ? r : null;
     }
 
     [HttpDelete("{id:guid}")]

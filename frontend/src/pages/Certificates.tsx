@@ -71,6 +71,86 @@ const TABS = ['Overview', 'Lifecycle', 'Deployments', 'Certificate Stores', 'Mon
   'Renewal', 'Files / Artifacts', 'Approvals', 'History / Audit'] as const
 type Tab = typeof TABS[number]
 
+interface PlannedTarget {
+  bindingId: string; target: string; adapter: string; environment: string | null; haRole: string | null
+  store: string; alias: string | null; runnerName: string | null; runnerStatus: string
+  currentThumbprint: string | null; currentCommonName: string | null; currentDaysLeft: number | null
+}
+
+interface DeploymentPlan {
+  certificate: string; newThumbprint: string; newNotAfter: string
+  strategy: string; maxConcurrency: number; stopOnFailure: boolean; manualContinuation: boolean
+  approvalRequired: boolean; windowRequired: boolean; windowOpen: boolean; hasPrivateKey: boolean
+  targets: PlannedTarget[]; environments: string[]; warnings: string[]; blockers: string[]
+}
+
+/** Impact preview before a deployment is committed (NFR-008). */
+function DeploymentPlanView({ plan }: { plan: DeploymentPlan }) {
+  return (
+    <div className="plan-box">
+      <h4>Impact preview</h4>
+      <dl className="kv">
+        <dt>Certificate</dt><dd>{plan.certificate}</dd>
+        <dt>New thumbprint</dt><dd><code className="small">{plan.newThumbprint}</code></dd>
+        <dt>Valid until</dt><dd>{new Date(plan.newNotAfter).toLocaleDateString()}</dd>
+        <dt>Execution</dt>
+        <dd>
+          {plan.strategy}
+          {plan.maxConcurrency > 0 ? ` · ${plan.maxConcurrency} at a time` : ' · all at once'}
+          {plan.stopOnFailure ? ' · stops on first failure' : ' · continues past failures'}
+          {plan.manualContinuation && ' · pauses between waves'}
+        </dd>
+        <dt>Environments</dt><dd>{plan.environments.join(', ') || '—'}</dd>
+        <dt>Governance</dt>
+        <dd>
+          {plan.approvalRequired ? 'approval required' : 'no approval required'}
+          {plan.windowRequired && (plan.windowOpen ? ' · maintenance window open' : ' · outside maintenance window')}
+        </dd>
+      </dl>
+
+      {plan.blockers.length > 0 && (
+        <div className="alert-list">
+          {plan.blockers.map((b, i) => <div key={i} className="alert-row critical">{b}</div>)}
+        </div>
+      )}
+      {plan.warnings.length > 0 && (
+        <div className="alert-list">
+          {plan.warnings.map((w, i) => <div key={i} className="alert-row warning">{w}</div>)}
+        </div>
+      )}
+
+      <table className="data-table">
+        <thead>
+          <tr><th>#</th><th>Target</th><th>Store</th><th>Runner</th><th>Serving today</th></tr>
+        </thead>
+        <tbody>
+          {plan.targets.map((t, i) => (
+            <tr key={t.bindingId}>
+              <td className="small muted">{i + 1}</td>
+              <td>
+                {t.target} <span className="tag">{t.adapter}</span>
+                <div className="muted small">
+                  {t.environment ?? 'no environment'}{t.haRole && ` · HA ${t.haRole}`}
+                </div>
+              </td>
+              <td className="small muted">{t.store}{t.alias && ` (${t.alias})`}</td>
+              <td className="small">
+                {t.runnerName ?? 'control plane'}
+                <div className={t.runnerStatus === 'Online' ? 'ok' : 'bad'}>{t.runnerStatus}</div>
+              </td>
+              <td className="small muted">
+                {t.currentThumbprint
+                  ? <>{t.currentCommonName}<div><code>{t.currentThumbprint.slice(0, 16)}…</code> · {t.currentDaysLeft} days left</div></>
+                  : 'unknown'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export default function Certificates() {
   const { t } = useTranslation()
   const [certs, setCerts] = useState<CertificateListItem[]>([])
@@ -84,6 +164,8 @@ export default function Certificates() {
   const [needApproval, setNeedApproval] = useState(false)
   const [strategy, setStrategy] = useState('sequential')
   const [maxConcurrency, setMaxConcurrency] = useState('2')
+  const [plan, setPlan] = useState<DeploymentPlan | null>(null)
+  const [planning, setPlanning] = useState(false)
 
   function reload() {
     apiGet<CertificateListItem[]>('/api/v1/certificates').then(setCerts).catch(() => {})
@@ -101,6 +183,26 @@ export default function Certificates() {
       .catch(() => setBindings([]))
   }
 
+  /** NFR-008: show what the deployment would change before it is committed. */
+  async function preview() {
+    setPlanning(true); setDeployMsg(null); setPlan(null)
+    try {
+      const res = await apiPost('/api/v1/deployments/plan', {
+        certificateVersionId: deployVersion,
+        bindingIds: selectedBindings,
+        strategy,
+        maxConcurrency: concurrencyFor(strategy),
+        approvalRequired: needApproval,
+      })
+      const body = await res.json()
+      if (!res.ok) { setDeployMsg(`Plan failed: ${body.title ?? res.status}`); return }
+      setPlan(body)
+    } finally { setPlanning(false) }
+  }
+
+  const concurrencyFor = (s: string) =>
+    ['wave', 'parallel', 'canary'].includes(s) ? Number(maxConcurrency) : 0
+
   async function deploy() {
     setDeployMsg('creating job…')
     const res = await apiPost('/api/v1/deployments', {
@@ -108,7 +210,7 @@ export default function Certificates() {
       bindingIds: selectedBindings,
       requestedBy: 'ui',
       strategy,
-      maxConcurrency: strategy === 'wave' || strategy === 'parallel' ? Number(maxConcurrency) : 0,
+      maxConcurrency: concurrencyFor(strategy),
       approvalRequired: needApproval,
       autoExecute: !needApproval,
     })
@@ -264,20 +366,32 @@ export default function Certificates() {
                   ))}
                   <div className="small">
                     Strategy:{' '}
-                    <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+                    <select value={strategy} onChange={(e) => { setStrategy(e.target.value); setPlan(null) }}>
                       <option value="sequential">Sequential (one at a time)</option>
                       <option value="wave">Wave (N at a time, stop on failure)</option>
                       <option value="parallel">Parallel (N at a time)</option>
                       <option value="all-at-once">All at once</option>
+                      <option value="canary">Canary (N first, then continue manually)</option>
+                      <option value="manual">Manual (continue every wave by hand)</option>
+                      <option value="ha-pair">HA pair (standby member first)</option>
                     </select>
-                    {(strategy === 'wave' || strategy === 'parallel') && (
+                    {['wave', 'parallel', 'canary'].includes(strategy) && (
                       <> concurrency: <input value={maxConcurrency} onChange={(e) => setMaxConcurrency(e.target.value)}
                         type="number" min={1} style={{ width: 60 }} /></>
                     )}
                   </div>
                   <label className="small"><input type="checkbox" checked={needApproval} onChange={(e) => setNeedApproval(e.target.checked)} /> require approval</label>
-                  <button onClick={deploy} disabled={!deployVersion || selectedBindings.length === 0}>Deploy</button>
-                  {deployMsg && <span className="small" style={{ marginLeft: 8 }}>{deployMsg}</span>}
+                  <div className="actions">
+                    <button onClick={preview} disabled={planning || !deployVersion || selectedBindings.length === 0}>
+                      {planning ? 'Planning…' : 'Preview impact'}
+                    </button>
+                    <button onClick={deploy}
+                            disabled={!deployVersion || selectedBindings.length === 0 || (plan?.blockers.length ?? 0) > 0}>
+                      Deploy
+                    </button>
+                  </div>
+                  {deployMsg && <span className="small">{deployMsg}</span>}
+                  {plan && <DeploymentPlanView plan={plan} />}
                 </div>
               )}
             </div>

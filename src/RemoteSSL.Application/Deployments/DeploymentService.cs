@@ -23,18 +23,37 @@ public class DeploymentService(
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    /// <summary>Resolves a strategy name into (maxConcurrency, stopOnFailure) per design doc §21.4.</summary>
-    private static (int MaxConcurrency, bool StopOnFailure) ResolveStrategy(string strategy, int maxConcurrency)
+    /// <summary>Resolves a strategy name into its execution shape per design doc §21.4.</summary>
+    private static (int MaxConcurrency, bool StopOnFailure, bool ManualContinuation) ResolveStrategy(
+        string strategy, int maxConcurrency)
     {
         var s = strategy.ToLowerInvariant();
         return s switch
         {
-            "all-at-once" => (0, false),
-            "parallel" => (maxConcurrency > 0 ? maxConcurrency : 0, false),
-            "wave" => (maxConcurrency > 0 ? maxConcurrency : 2, true),
-            _ => (1, true) // sequential
+            "all-at-once" => (0, false, false),
+            "parallel" => (maxConcurrency > 0 ? maxConcurrency : 0, false, false),
+            "wave" => (maxConcurrency > 0 ? maxConcurrency : 2, true, false),
+            // Canary: one target, then wait for the operator before every further wave.
+            "canary" => (maxConcurrency > 0 ? maxConcurrency : 1, true, true),
+            "manual" => (maxConcurrency > 0 ? maxConcurrency : 1, true, true),
+            // HA pair: strictly one at a time, standby member first (see HaRank).
+            "ha-pair" => (1, true, false),
+            _ => (1, true, false) // sequential
         };
     }
+
+    /// <summary>
+    /// Ordering rank for the HA-pair strategy (§14.3): standby members deploy first so a
+    /// failure never takes down the member currently serving traffic. Targets outside a
+    /// pair keep their natural position between standby and active.
+    /// </summary>
+    private static int HaRank(DeploymentJobTarget jt) =>
+        jt.DeploymentBinding.CertificateStore.Target.HaRole?.ToLowerInvariant() switch
+        {
+            "standby" => 0,
+            "active" => 2,
+            _ => 1
+        };
 
     public async Task<DeploymentJob> CreateJobAsync(
         Guid certificateVersionId, IReadOnlyList<Guid> bindingIds, string strategy,
@@ -71,7 +90,7 @@ public class DeploymentService(
         if (conflict != Guid.Empty)
             throw new InvalidOperationException($"Binding {conflict} already has an active deployment job");
 
-        var (resolvedConcurrency, stopOnFailure) = ResolveStrategy(strategy, maxConcurrency);
+        var (resolvedConcurrency, stopOnFailure, manualContinuation) = ResolveStrategy(strategy, maxConcurrency);
         var job = new DeploymentJob
         {
             Id = Guid.NewGuid(),
@@ -80,6 +99,7 @@ public class DeploymentService(
             Strategy = strategy,
             MaxConcurrency = resolvedConcurrency,
             StopOnFailure = stopOnFailure,
+            ManualContinuation = manualContinuation,
             RequestedBy = requestedBy,
             CorrelationId = trace.CorrelationId,
             CreatedAt = DateTimeOffset.UtcNow
@@ -223,7 +243,7 @@ public class DeploymentService(
     {
         var running = job.Targets.Count(t => t.Status == DeploymentJobStatus.Running);
         var pending = job.Targets.Where(t => t.Status == DeploymentJobStatus.Pending)
-            .OrderBy(t => t.Id).ToList();
+            .OrderBy(HaRank).ThenBy(t => t.Id).ToList();
         var slots = job.MaxConcurrency <= 0 ? pending.Count : Math.Max(0, job.MaxConcurrency - running);
 
         var dispatched = 0;
@@ -245,6 +265,138 @@ public class DeploymentService(
         }
         return dispatched;
     }
+
+    /// <summary>
+    /// Cancels a job that has not started yet. Without this a job left approved but never
+    /// executed keeps its bindings locked by the concurrency guard of §21.3 forever.
+    /// A running job is not cancellable — its targets are mid-pipeline; roll it back instead.
+    /// </summary>
+    public async Task CancelAsync(Guid jobId, string requestedBy, string? reason, CancellationToken ct)
+    {
+        var job = await db.DeploymentJobs.Include(j => j.Targets)
+                      .FirstOrDefaultAsync(j => j.Id == jobId, ct)
+                  ?? throw new KeyNotFoundException("Job not found");
+        if (job.Status is not (DeploymentJobStatus.PendingApproval or DeploymentJobStatus.Approved
+            or DeploymentJobStatus.Scheduled or DeploymentJobStatus.Pending))
+            throw new InvalidOperationException($"Job is {job.Status}; only a job that has not started can be cancelled");
+
+        job.Status = DeploymentJobStatus.Cancelled;
+        job.CompletedAt = DateTimeOffset.UtcNow;
+        foreach (var t in job.Targets.Where(t => t.Status == DeploymentJobStatus.Pending))
+        {
+            t.Status = DeploymentJobStatus.Cancelled;
+            t.CompletedAt = DateTimeOffset.UtcNow;
+        }
+
+        var approval = await db.ApprovalRequests.FirstOrDefaultAsync(a => a.DeploymentJobId == jobId, ct);
+        if (approval is not null && approval.Status == "Pending")
+        {
+            approval.Status = "Rejected";
+            approval.DecidedBy = requestedBy;
+            approval.Reason = reason ?? "job cancelled";
+            approval.DecidedAt = DateTimeOffset.UtcNow;
+        }
+
+        audit.Append($"user:{requestedBy}", "deployment.cancel", "deployment_job", jobId.ToString(),
+            "CANCELLED", new { reason }, job.CorrelationId);
+        await UpdateCertificateStatusAsync(job, ct);
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Releases the next wave of a job paused by the manual/canary strategy (§21.4).
+    /// Returns how many targets were dispatched.
+    /// </summary>
+    public async Task<int> ContinueAsync(Guid jobId, string requestedBy, CancellationToken ct)
+    {
+        var job = await LoadJobGraphAsync(jobId, ct);
+        if (job.Status != DeploymentJobStatus.Running)
+            throw new InvalidOperationException($"Job is {job.Status}; only a running job can be continued");
+        if (job.Targets.Any(t => t.Status == DeploymentJobStatus.Running))
+            throw new InvalidOperationException("The current wave is still running");
+        if (job.Targets.All(t => t.Status != DeploymentJobStatus.Pending))
+            throw new InvalidOperationException("No targets are waiting to be deployed");
+
+        var dispatched = DispatchWave(job);
+        audit.Append($"user:{requestedBy}", "deployment.continue", "deployment_job", job.Id.ToString(),
+            "RUNNING", new { wave = dispatched }, job.CorrelationId);
+        await db.SaveChangesAsync(ct);
+        return dispatched;
+    }
+
+    /// <summary>
+    /// Manual rollback (FR-018, §27.1): puts the previous certificate version back on the
+    /// targets this job changed, through the same transactional pipeline — so the rollback
+    /// is itself backed up, validated, reloaded and remotely verified. Targets that were
+    /// already rolled back or never succeeded are left alone. Returns the new job ids;
+    /// targets whose previous version has no usable key are reported as skipped.
+    /// </summary>
+    public async Task<(IReadOnlyList<Guid> Jobs, IReadOnlyList<string> Skipped)> RollbackAsync(
+        Guid jobId, string requestedBy, CancellationToken ct)
+    {
+        var job = await LoadJobGraphAsync(jobId, ct);
+        if (job.Status is DeploymentJobStatus.Running or DeploymentJobStatus.PendingApproval)
+            throw new InvalidOperationException($"Job is {job.Status}; wait for it to finish before rolling back");
+
+        var restorable = job.Targets
+            .Where(t => t.Status == DeploymentJobStatus.Succeeded && t.PreviousVersionId is not null)
+            .ToList();
+        if (restorable.Count == 0)
+            throw new InvalidOperationException(
+                "Nothing to roll back: no target of this job succeeded with a recorded previous version.");
+
+        var jobs = new List<Guid>();
+        var skipped = new List<string>();
+
+        // One job per previous version — targets may have been on different versions.
+        foreach (var group in restorable.GroupBy(t => t.PreviousVersionId!.Value))
+        {
+            var previous = await db.CertificateVersions.FirstOrDefaultAsync(v => v.Id == group.Key, ct);
+            if (previous is null || previous.EncryptedPrivateKeyPem is null)
+            {
+                skipped.AddRange(group.Select(t =>
+                    $"{t.DeploymentBinding.CertificateStore.Target.Name}: previous version has no private key in RemoteSSL"));
+                continue;
+            }
+
+            var rollbackJob = await CreateJobAsync(
+                previous.Id, group.Select(t => t.DeploymentBindingId).ToList(),
+                "sequential", requestedBy, approvalRequired: false, ct,
+                correlationId: string.IsNullOrWhiteSpace(job.CorrelationId) ? null : job.CorrelationId);
+            rollbackJob.RolledBackFromJobId = job.Id;
+            jobs.Add(rollbackJob.Id);
+
+            audit.Append($"user:{requestedBy}", "deployment.rollback", "deployment_job", job.Id.ToString(),
+                "ROLLBACK_REQUESTED",
+                new { rollbackJobId = rollbackJob.Id, toVersion = previous.Id, targets = group.Count() },
+                job.CorrelationId);
+        }
+
+        if (jobs.Count == 0)
+            throw new InvalidOperationException(
+                "Rollback not possible: " + string.Join("; ", skipped));
+
+        await db.SaveChangesAsync(ct);
+
+        // Governance still applies to a rollback: in an environment that requires approval
+        // the job waits for a checker (break-glass exists for incidents). Everything else
+        // runs immediately.
+        foreach (var id in jobs)
+        {
+            var status = await db.DeploymentJobs.Where(j => j.Id == id).Select(j => j.Status).FirstAsync(ct);
+            if (status == DeploymentJobStatus.Approved) await ExecuteAsync(id, ct);
+            else skipped.Add($"rollback job {id} is {status} — approve it to run the rollback");
+        }
+        return (jobs, skipped);
+    }
+
+    private async Task<DeploymentJob> LoadJobGraphAsync(Guid jobId, CancellationToken ct) =>
+        await db.DeploymentJobs
+            .Include(j => j.CertificateVersion)
+            .Include(j => j.Targets).ThenInclude(t => t.DeploymentBinding)
+                .ThenInclude(b => b.CertificateStore).ThenInclude(s => s.Target)
+            .FirstOrDefaultAsync(j => j.Id == jobId, ct)
+        ?? throw new KeyNotFoundException("Job not found");
 
     /// <summary>Runner posted a deploy result: record steps and aggregate statuses.</summary>
     public async Task CompleteRunnerJobAsync(Guid runnerJobId, bool success, bool rolledBack,
@@ -294,9 +446,28 @@ public class DeploymentService(
             // Wave orchestration (§21.4): dispatch the next batch unless we should stop.
             var anyFailed = all.Any(t => t.Status is DeploymentJobStatus.Failed or DeploymentJobStatus.RolledBack);
             var hasPending = all.Any(t => t.Status == DeploymentJobStatus.Pending);
+            var waveDone = all.All(t => t.Status != DeploymentJobStatus.Running);
             if (hasPending && !(job.StopOnFailure && anyFailed))
             {
-                DispatchWave(job);
+                // §21.4 manual/canary continuation: pause between waves until an operator
+                // reviews the result and explicitly continues.
+                if (job.ManualContinuation && waveDone)
+                {
+                    audit.Append("service:orchestrator", "deployment.wave-complete", "deployment_job",
+                        job.Id.ToString(), "AWAITING_CONTINUE",
+                        new { remaining = all.Count(t => t.Status == DeploymentJobStatus.Pending) },
+                        job.CorrelationId);
+                    notifier.Notify("deployment.awaiting-continue", new
+                    {
+                        jobId = job.Id,
+                        remaining = all.Count(t => t.Status == DeploymentJobStatus.Pending),
+                        correlationId = job.CorrelationId
+                    });
+                }
+                else
+                {
+                    DispatchWave(job);
+                }
             }
 
             if (all.All(t => t.Status != DeploymentJobStatus.Running))

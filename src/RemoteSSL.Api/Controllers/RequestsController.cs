@@ -35,6 +35,7 @@ public class RequestsController(IRemoteSslDbContext db, CertificateRequestServic
             }).ToListAsync(ct);
 
     [HttpPost]
+    [ServiceFilter(typeof(Idempotency.IdempotencyFilter))]
     public async Task<ActionResult<object>> Create(CreateRequest req, CancellationToken ct)
     {
         try

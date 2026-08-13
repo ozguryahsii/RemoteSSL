@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { apiGet } from '../api/client'
+import { useCallback, useEffect, useState } from 'react'
+import { apiGet, apiPost } from '../api/client'
 import { useData } from './SimplePages'
 
 interface JobRow {
@@ -13,6 +13,9 @@ interface JobDetail {
     steps: { step: string; status: string; safeLog: string | null; completedAt: string | null }[]
   }[]
 }
+interface JobEvent {
+  at: string; kind: string; source: string | null; name: string; result: string | null; detail: string | null
+}
 
 function statusClass(s: string) {
   if (['Succeeded'].includes(s)) return 'ok'
@@ -21,26 +24,89 @@ function statusClass(s: string) {
 }
 
 export default function Deployments() {
-  const [jobs] = useData<JobRow[]>('/api/v1/deployments', 10000)
+  const [jobs, reloadJobs] = useData<JobRow[]>('/api/v1/deployments', 10000)
   const [detail, setDetail] = useState<JobDetail | null>(null)
+  const [events, setEvents] = useState<JobEvent[]>([])
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const load = useCallback((id: string) => {
+    apiGet<JobDetail>(`/api/v1/deployments/${id}`).then(setDetail).catch(() => {})
+    apiGet<{ events: JobEvent[] }>(`/api/v1/deployments/${id}/events`)
+      .then((d) => setEvents(d.events ?? [])).catch(() => setEvents([]))
+  }, [])
+
+  // A running job changes underneath us; keep the open panel current.
+  useEffect(() => {
+    if (!detail || detail.status !== 'Running') return
+    const timer = setInterval(() => load(detail.id), 5000)
+    return () => clearInterval(timer)
+  }, [detail, load])
+
+  /** §21.4: release the next wave of a canary/manual deployment. */
+  async function continueJob(id: string) {
+    setBusy(true); setMessage(null)
+    try {
+      const res = await apiPost(`/api/v1/deployments/${id}/continue`, { requestedBy: 'ui' })
+      const body = await res.json()
+      setMessage(res.ok ? `Dispatched ${body.dispatched} target(s).` : body.title ?? `Continue failed (${res.status})`)
+      load(id); reloadJobs()
+    } finally { setBusy(false) }
+  }
+
+  /** FR-018: put the previous certificate version back on the targets this job changed. */
+  async function rollback(id: string) {
+    if (!window.confirm('Roll back this job? The previous certificate version is redeployed to its targets.')) return
+    setBusy(true); setMessage(null)
+    try {
+      const res = await apiPost(`/api/v1/deployments/${id}/rollback`, { requestedBy: 'ui' })
+      const body = await res.json()
+      setMessage(res.ok
+        ? `Rollback started: ${(body.rollbackJobs ?? []).length} job(s).`
+          + ((body.skipped ?? []).length ? ` Skipped: ${body.skipped.join('; ')}` : '')
+        : body.title ?? `Rollback failed (${res.status})`)
+      load(id); reloadJobs()
+    } finally { setBusy(false) }
+  }
+
+  /** §21.3: a job that never started keeps its bindings locked until it is cancelled. */
+  async function cancel(id: string) {
+    if (!window.confirm('Cancel this job? Its bindings are released for other deployments.')) return
+    setBusy(true); setMessage(null)
+    try {
+      const res = await apiPost(`/api/v1/deployments/${id}/cancel`, { requestedBy: 'ui' })
+      setMessage(res.ok ? 'Job cancelled.' : (await res.json()).title ?? `Cancel failed (${res.status})`)
+      load(id); reloadJobs()
+    } finally { setBusy(false) }
+  }
+
+  const cancellable = detail && ['PendingApproval', 'Approved', 'Scheduled', 'Pending'].includes(detail.status)
+  const awaitingContinue = detail?.status === 'Running'
+    && detail.targets.some((t) => t.status === 'Pending')
+    && !detail.targets.some((t) => t.status === 'Running')
+  const rollbackable = detail && ['Succeeded', 'PartiallyFailed', 'Failed'].includes(detail.status)
 
   return (
     <div className="page">
       <h1>Deployments</h1>
-      <p className="muted small">Create deployments from the Certificates screen or the API; jobs run transactionally with automatic rollback.</p>
+      <p className="muted small">
+        Create deployments from the Certificates screen or the API; jobs run transactionally with automatic
+        rollback. Open a job to follow its steps, continue a paused canary wave, or roll it back manually.
+      </p>
       <table className="data-table">
-        <thead><tr><th>Certificate</th><th>Status</th><th>Targets</th><th>Requested by</th><th>Created</th><th>Completed</th></tr></thead>
+        <thead><tr><th>Certificate</th><th>Status</th><th>Strategy</th><th>Targets</th><th>Requested by</th><th>Created</th><th>Completed</th></tr></thead>
         <tbody>
           {(jobs ?? []).map((j) => (
-            <tr key={j.id} className="clickable" onClick={() => apiGet<JobDetail>(`/api/v1/deployments/${j.id}`).then(setDetail)}>
+            <tr key={j.id} className="clickable" onClick={() => { setMessage(null); load(j.id) }}>
               <td>{j.certificate}</td>
               <td><span className={statusClass(j.status)}>{j.status}</span></td>
+              <td className="small">{j.strategy}</td>
               <td>{j.targetCount}</td><td>{j.requestedBy}</td>
               <td className="small muted">{new Date(j.createdAt).toLocaleString()}</td>
               <td className="small muted">{j.completedAt ? new Date(j.completedAt).toLocaleString() : '—'}</td>
             </tr>
           ))}
-          {(jobs ?? []).length === 0 && <tr><td colSpan={6} className="muted">No deployment jobs yet — this list fills up once you deploy. To create one: open a certificate on the Certificates screen and use its Deploy section (needs a target with a store + binding), or let a renewal policy auto-deploy.</td></tr>}
+          {(jobs ?? []).length === 0 && <tr><td colSpan={7} className="muted">No deployment jobs yet — this list fills up once you deploy. To create one: open a certificate on the Certificates screen and use its Deploy section (needs a target with a store + binding), or let a renewal policy auto-deploy.</td></tr>}
         </tbody>
       </table>
 
@@ -48,8 +114,26 @@ export default function Deployments() {
         <div className="detail-panel">
           <div className="detail-header">
             <h2>{detail.certificate} — <span className={statusClass(detail.status)}>{detail.status}</span></h2>
-            <button onClick={() => setDetail(null)}>Close</button>
+            <div className="actions">
+              {awaitingContinue && (
+                <button onClick={() => continueJob(detail.id)} disabled={busy}>Continue next wave</button>
+              )}
+              {cancellable && (
+                <button onClick={() => cancel(detail.id)} disabled={busy}>Cancel job</button>
+              )}
+              {rollbackable && (
+                <button className="danger" onClick={() => rollback(detail.id)} disabled={busy}>Roll back</button>
+              )}
+              <button onClick={() => { setDetail(null); setEvents([]); setMessage(null) }}>Close</button>
+            </div>
           </div>
+          {message && <p className="small">{message}</p>}
+          {awaitingContinue && (
+            <p className="warn small">
+              This deployment pauses between waves. Verify the targets that already ran, then continue.
+            </p>
+          )}
+
           {detail.targets.map((t) => (
             <div key={t.id} className="version-card">
               <strong>{t.target}</strong> ({t.adapter}, {t.store}) — <span className={statusClass(t.status)}>{t.status}</span>
@@ -63,6 +147,28 @@ export default function Deployments() {
               </ul>
             </div>
           ))}
+
+          <h3>Progress timeline</h3>
+          <table className="data-table">
+            <thead><tr><th>Time</th><th>Kind</th><th>Source</th><th>Event</th><th>Result</th></tr></thead>
+            <tbody>
+              {events.map((e, i) => (
+                <tr key={i}>
+                  <td className="small muted">{new Date(e.at).toLocaleString()}</td>
+                  <td className="small">{e.kind}</td>
+                  <td className="small">{e.source ?? '—'}</td>
+                  <td className="small">
+                    {e.name}
+                    {e.detail && <div className="muted" style={{ wordBreak: 'break-all' }}>{e.detail}</div>}
+                  </td>
+                  <td className="small">
+                    <span className={e.result && /FAIL|Failed/.test(e.result) ? 'bad' : 'ok'}>{e.result ?? '—'}</span>
+                  </td>
+                </tr>
+              ))}
+              {events.length === 0 && <tr><td colSpan={5} className="muted">No events recorded for this job.</td></tr>}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

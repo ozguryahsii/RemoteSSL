@@ -12,6 +12,8 @@ using RemoteSSL.Infrastructure;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
+// Idempotency-Key support for create endpoints (§27.2).
+builder.Services.AddScoped<RemoteSSL.Api.Idempotency.IdempotencyFilter>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddRemoteSslInfrastructure(builder.Configuration);

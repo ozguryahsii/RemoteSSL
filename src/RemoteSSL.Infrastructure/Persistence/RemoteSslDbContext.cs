@@ -29,9 +29,19 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<ServicePath> ServicePaths => Set<ServicePath>();
     public DbSet<MetricSample> MetricSamples => Set<MetricSample>();
     public DbSet<CertificatePolicy> CertificatePolicies => Set<CertificatePolicy>();
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        b.Entity<IdempotencyRecord>(e =>
+        {
+            e.Property(x => x.Key).HasMaxLength(200);
+            e.Property(x => x.Endpoint).HasMaxLength(200);
+            e.Property(x => x.RequestFingerprint).HasMaxLength(64);
+            e.HasIndex(x => new { x.Key, x.Endpoint }).IsUnique();
+            e.HasIndex(x => x.CreatedAt);
+        });
+
         b.Entity<CertificatePolicy>(e =>
         {
             e.Property(x => x.Name).HasMaxLength(200);

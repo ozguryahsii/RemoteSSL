@@ -32,6 +32,7 @@ public interface IRemoteSslDbContext
     DbSet<DeploymentStep> DeploymentSteps { get; }
     DbSet<MetricSample> MetricSamples { get; }
     DbSet<CertificatePolicy> CertificatePolicies { get; }
+    DbSet<IdempotencyRecord> IdempotencyRecords { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

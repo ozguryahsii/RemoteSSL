@@ -316,6 +316,47 @@ CA connector'ı ile üretilmiş sürümlerde CA'ya revoke isteği gider. Manuel/
 edemez; ekran "kayıt olarak işaretleyeyim mi?" diye sorar ve onaylarsanız audit'e `REVOKED_RECORDED` düşer
 (envanter "RemoteSSL revoke etti" demez).
 
+## 16. Deployment operasyonları (F12) — yeni
+
+**Plan / impact önizlemesi**: **Certificates → sertifika → Overview → Deploy** bölümünde
+**Preview impact**. Hangi hedefler etkilenecek, o hedefler bugün hangi sertifikayı sunuyor,
+çalışma sırası ne, onay/pencere gerekiyor mu ve çalışmayı engelleyecek bir şey var mı — hepsi
+deploy'a basmadan önce görünür. Blocker varsa Deploy düğmesi pasifleşir.
+
+```bash
+curl -s -X POST http://localhost:5200/api/v1/deployments/plan -H 'Content-Type: application/json' \
+  -d '{"certificateVersionId":"<versionId>","bindingIds":["<bindingId>"],"strategy":"ha-pair"}'
+```
+
+**Yeni stratejiler** (Deploy bölümündeki açılır listede):
+- `canary` — önce N hedef, sonra elle devam.
+- `manual` — her dalgada elle devam.
+- `ha-pair` — çiftlerde **standby** üye önce. Rolü **Managed Targets → Edit → HA role** ile verirsiniz.
+
+Duraklamış bir job'ı sürdürmek: **Deployments → job → Continue next wave**
+(`POST /api/v1/deployments/{id}/continue`).
+
+**Manuel rollback**: **Deployments → job → Roll back**. Önceki sertifika sürümü aynı hedeflere,
+aynı transactional pipeline'dan (backup → install → validate → reload → remote verify) geri konur.
+Ortam onay gerektiriyorsa rollback job'ı da onay bekler ve bunu yanıtta açıkça söyler.
+
+**Job iptali**: onaylanmış ama hiç çalıştırılmamış bir job binding'i kilitler. **Cancel job**
+düğmesi (`POST /api/v1/deployments/{id}/cancel`) bunu serbest bırakır. Çalışan bir job iptal
+edilemez — onun yolu rollback'tir.
+
+**Progress timeline**: job detayında audit kayıtları, adım sonuçları ve runner job'ları tek
+zaman çizelgesinde (`GET /api/v1/deployments/{id}/events`).
+
+**Idempotency-Key** (§27.2): aynı isteği iki kez göndermek ikinci bir job/talep yaratmaz.
+
+```bash
+curl -s -X POST http://localhost:5200/api/v1/certificates/requests \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: my-key-1' \
+  -d '{"commonName":"idem.company.com","keySizeOrCurve":2048,"requestedBy":"test"}'
+# aynı komutu tekrar çalıştırın → aynı id döner, yanıtta "Idempotency-Replayed: true"
+# aynı key + farklı gövde → 409
+```
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

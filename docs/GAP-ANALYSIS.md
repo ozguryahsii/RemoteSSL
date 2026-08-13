@@ -20,17 +20,21 @@ Durum kodları: **YOK** = hiç yapılmadı · **KISMİ** = temel var, doküman k
 | 11.6 | Lifecycle statülerinin yönetilmesi | §19.2 | ✅ `PendingDeployment` / `PartiallyDeployed` / `DeploymentFailed` / `Revoked` job sonucundan set ediliyor; expiry ile öncelik kuralı testli |
 | 11.7 | Revoke akışı | FR-009, §19.2 | ✅ CA'ya revoke + envanterde işaretleme; manuel CA için `recordOnly` (audit'te `REVOKED_RECORDED`) |
 
-## F12 — Deployment operasyon tamlığı
+## F12 — Deployment operasyon tamlığı ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 12.1 | `POST /api/v1/deployments/{id}/rollback` — manuel rollback endpoint'i ve UI aksiyonu | §27.1, FR-018 | YOK |
-| 12.2 | `GET /api/v1/deployments/{id}/events` — ilerleme akışı / event geçmişi | §27.1 | YOK |
-| 12.3 | Canary/wave stratejisinde onay bekleyen "manual per-target continuation" | §21.4 | YOK |
-| 12.4 | HA pair standby-first stratejisi (F5 gibi çiftlerde standby önce) | §21.4, §14.3 | YOK |
-| 12.5 | `Idempotency-Key` HTTP header'ı ile create endpoint'lerinde tekrar koruması | §27.2 | KISMİ (step düzeyinde idempotency var) |
-| 12.6 | Deployment plan/impact önizlemesi: PROD deployment öncesi etkilenecek hedefler ve risk özeti | NFR-008 | YOK |
-| 12.7 | Maintenance window'un manuel deployment'ta da uygulanması (şu an yalnız otomatik renewal yolunda) | FR-014, §20.1 | KISMİ |
+| 12.1 | Manuel rollback | §27.1, FR-018 | ✅ `POST /deployments/{id}/rollback` — önceki sürümü aynı transactional pipeline ile geri koyar; Deployments ekranında "Roll back" |
+| 12.2 | Job event akışı | §27.1 | ✅ `GET /deployments/{id}/events` — audit + step + runner job'ları tek zaman çizelgesinde; ekranda "Progress timeline" |
+| 12.3 | Manual per-target continuation | §21.4 | ✅ `canary` / `manual` stratejileri dalgalar arasında durur; `POST /deployments/{id}/continue` |
+| 12.4 | HA pair standby-first | §21.4, §14.3 | ✅ `ha-pair` stratejisi + target'ta `HaRole` (Managed Targets'tan düzenlenebilir) |
+| 12.5 | `Idempotency-Key` header'ı | §27.2 | ✅ deployment ve request create uçlarında; tekrar aynı yanıtı döner (`Idempotency-Replayed: true`), farklı gövde 409 |
+| 12.6 | Plan/impact önizlemesi | NFR-008 | ✅ `POST /deployments/plan` + Certificates ekranında "Preview impact": hedefler, bugün ne sunuyor, sıra, governance, blocker/uyarılar |
+| 12.7 | Maintenance window manuel deployment'ta | FR-014, §20.1 | ✅ F11 ile geldi — `requireWindowIn` ortamlarında manuel deployment da pencereye tabi |
+
+Ek olarak (listede yoktu, operasyonel çıkmazı kapatmak için eklendi): başlamamış job'lar için
+`POST /deployments/{id}/cancel` — onaylanıp hiç çalıştırılmamış bir job binding'i §21.3
+concurrency guard'ı yüzünden süresiz kilitliyordu.
 
 ## F13 — Artifact ve backup yönetimi
 

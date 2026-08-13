@@ -37,6 +37,7 @@ public static class DependencyInjection
         services.AddScoped<Application.Observability.MetricsQuery>();
         services.AddScoped<Application.Certificates.InventoryService>();
         services.AddScoped<Application.Deployments.DeploymentService>();
+        services.AddScoped<Application.Deployments.DeploymentPlanner>();
         services.AddScoped<Application.Requests.CertificateRequestService>();
         services.AddScoped<Application.Requests.ICaConnectorResolver, Ca.DbCaConnectorResolver>();
         services.AddScoped<Application.Automation.AutomationService>();

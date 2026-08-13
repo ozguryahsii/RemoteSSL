@@ -22,6 +22,14 @@ public class DeploymentJob
     public string? ApprovedBy { get; set; }
     public string CorrelationId { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Wave/canary deployments that wait for an operator between waves (§21.4 "manual
+    /// per-target continuation"). The next wave only dispatches on an explicit continue.
+    /// </summary>
+    public bool ManualContinuation { get; set; }
+    /// <summary>Set when this job was created to roll a previous job back (FR-018).</summary>
+    public Guid? RolledBackFromJobId { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? StartedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }

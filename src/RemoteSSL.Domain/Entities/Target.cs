@@ -24,6 +24,12 @@ public class Target
 
     public Guid? RunnerId { get; set; }
 
+    /// <summary>
+    /// Role inside an HA pair: "standby" | "active" (null = not part of a pair). The
+    /// standby-first strategy of §21.4/§14.3 deploys standby members before active ones.
+    /// </summary>
+    public string? HaRole { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 

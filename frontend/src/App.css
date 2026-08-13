@@ -317,3 +317,10 @@ select {
 .policy-toggles label { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
 .policy-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
 .tag.ok { color: var(--ok); }
+
+.plan-box {
+  margin-top: 12px; background: #f8fafc; border: 1px solid #cbd5e1;
+  border-radius: 8px; padding: 14px 18px; width: 100%;
+}
+.plan-box h4 { margin: 0 0 10px; font-size: 14px; }
+.plan-box .kv { margin-bottom: 12px; }
