@@ -92,8 +92,8 @@ public class PathsController(IRemoteSslDbContext db, MonitorProbeService probeSe
             if (monitor is null) continue;
             if (monitor.RunnerId is not null)
                 await MonitorProbeService.QueueRunnerProbeAsync(db, monitor, ct);
-            else
-                try { await probeService.ApplyResultAsync(monitor, await ProbeDirect(monitor, ct), ct); }
+            if (monitor.ExternalProbeEnabled)
+                try { await probeService.ApplyResultAsync(monitor, await ProbeDirect(monitor, ct), ProbeVantage.External, ct); }
                 catch { /* probe failures are recorded on the monitor itself */ }
         }
         await db.SaveChangesAsync(ct);

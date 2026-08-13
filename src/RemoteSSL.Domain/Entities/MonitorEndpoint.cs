@@ -17,10 +17,26 @@ public class MonitorEndpoint
     public int? ProbeIntervalMinutes { get; set; }
 
     /// <summary>
-    /// When set, probes run from this runner inside the network segment instead of
-    /// the control plane — required for endpoints resolvable only by internal DNS.
+    /// Internal vantage: when set, this runner (living next to the application)
+    /// probes the endpoint in addition to the control plane. Comparing both answers
+    /// reveals a layer where the certificate was replaced externally but not
+    /// internally (or vice versa).
     /// </summary>
     public Guid? RunnerId { get; set; }
+
+    /// <summary>External vantage (control plane). Disable for endpoints that are internal-only.</summary>
+    public bool ExternalProbeEnabled { get; set; } = true;
+
+    // --- Internal vantage observation (mirrors the external fields above) ---
+    public ProbeStatus InternalProbeStatus { get; set; }
+    public string? InternalProbeError { get; set; }
+    public DateTimeOffset? InternalProbeAt { get; set; }
+    public Guid? InternalObservedVersionId { get; set; }
+    public CertificateVersion? InternalObservedVersion { get; set; }
+    public bool? InternalHostnameValid { get; set; }
+    public bool? InternalChainValid { get; set; }
+    public string? InternalChainError { get; set; }
+    public string? InternalTlsProtocol { get; set; }
 
     public ProbeStatus LastProbeStatus { get; set; }
     public string? LastProbeError { get; set; }

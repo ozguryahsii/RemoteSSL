@@ -64,12 +64,13 @@ public class ProbeSchedulerService(
                             || m.LastProbeAt < now.AddMinutes(-(m.ProbeIntervalMinutes ?? defaultIntervalMinutes)))
                 .ToListAsync(ct);
 
-            // Internal-DNS endpoints are probed from their runner (design decision: segment-local probing).
+            // Every monitor with an internal vantage also gets a runner-side probe;
+            // the external (control-plane) probe still runs unless explicitly disabled.
             foreach (var pinned in due.Where(m => m.RunnerId != null))
                 await MonitorProbeService.QueueRunnerProbeAsync(db, pinned, ct);
             await db.SaveChangesAsync(ct);
 
-            dueIds = due.Where(m => m.RunnerId == null).Select(m => m.Id).ToList();
+            dueIds = due.Where(m => m.ExternalProbeEnabled).Select(m => m.Id).ToList();
         }
 
         if (dueIds.Count == 0) return;

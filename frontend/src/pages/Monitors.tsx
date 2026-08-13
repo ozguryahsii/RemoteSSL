@@ -13,6 +13,16 @@ interface ObservedCert {
   health: string
 }
 
+interface Vantage {
+  probeStatus: string
+  probeError: string | null
+  probeAt: string | null
+  tlsProtocol: string | null
+  chainValid: boolean | null
+  chainError: string | null
+  certificate: ObservedCert | null
+}
+
 interface Monitor {
   id: string
   host: string
@@ -21,14 +31,11 @@ interface Monitor {
   enabled: boolean
   probeIntervalMinutes: number | null
   runnerId: string | null
-  lastProbeStatus: string
-  lastProbeError: string | null
-  lastProbeAt: string | null
-  lastTlsProtocol: string | null
-  lastHostnameValid: boolean | null
-  lastChainValid: boolean | null
-  lastChainError: string | null
-  observedCertificate: ObservedCert | null
+  externalProbeEnabled: boolean
+  external: Vantage
+  internal: Vantage
+  verdict: string
+  verdictDetail: string
 }
 
 function healthClass(health: string | undefined): string {
@@ -39,6 +46,40 @@ function healthClass(health: string | undefined): string {
   }
 }
 
+function verdictClass(v: string): string {
+  switch (v) {
+    case 'Match': return 'ok'
+    case 'Mismatch': return 'bad'
+    case 'NotConfigured': return 'muted'
+    default: return 'warn'
+  }
+}
+
+/** One vantage cell: probe status, the certificate it serves and its expiry. */
+function VantageCell({ v, enabled, label }: { v: Vantage; enabled: boolean; label: string }) {
+  if (!enabled) return <span className="muted small">{label} disabled</span>
+  const c = v.certificate
+  return (
+    <div className="small">
+      <span className={v.probeStatus === 'Success' ? 'ok' : v.probeStatus === 'NeverProbed' ? 'muted' : 'bad'}>
+        {v.probeStatus}
+      </span>
+      {v.probeError && <div className="muted">{v.probeError}</div>}
+      {c && (
+        <>
+          <div>{c.commonName}</div>
+          <div>
+            <span className={healthClass(c.health)}>{c.daysUntilExpiry} days</span>
+            <span className="muted"> · {c.sha256Thumbprint.slice(0, 12)}…</span>
+          </div>
+          {v.chainValid === false && <div className="warn">chain: {v.chainError}</div>}
+        </>
+      )}
+      {v.probeAt && <div className="muted">{new Date(v.probeAt).toLocaleString()}</div>}
+    </div>
+  )
+}
+
 export default function Monitors() {
   const { t } = useTranslation()
   const [monitors, setMonitors] = useState<Monitor[]>([])
@@ -46,12 +87,14 @@ export default function Monitors() {
   const [port, setPort] = useState('443')
   const [sni, setSni] = useState('')
   const [runnerId, setRunnerId] = useState('')
+  const [externalEnabled, setExternalEnabled] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
   const [eHost, setEHost] = useState(''); const [ePort, setEPort] = useState('443')
   const [eSni, setESni] = useState(''); const [eInterval, setEInterval] = useState('')
   const [eRunner, setERunner] = useState('')
+  const [eExternal, setEExternal] = useState(true)
 
   const [runners] = useData<{ id: string; name: string }[]>('/api/v1/runners')
 
@@ -68,7 +111,7 @@ export default function Monitors() {
   async function addMonitor(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    const res = await apiPost('/api/v1/monitors', { host, port: Number(port), sni: sni || null, runnerId: runnerId || null })
+    const res = await apiPost('/api/v1/monitors', { host, port: Number(port), sni: sni || null, runnerId: runnerId || null, externalProbeEnabled: externalEnabled })
     if (!res.ok) {
       setError(`${t('monitors.addFailed')} (${res.status})`)
       return
@@ -98,14 +141,14 @@ export default function Monitors() {
   function startEdit(m: Monitor) {
     setEditing(m.id); setEHost(m.host); setEPort(String(m.port))
     setESni(m.sni ?? ''); setEInterval(m.probeIntervalMinutes ? String(m.probeIntervalMinutes) : '')
-    setERunner(m.runnerId ?? '')
+    setERunner(m.runnerId ?? ''); setEExternal(m.externalProbeEnabled)
   }
 
   async function saveEdit(id: string) {
     const res = await apiPatch(`/api/v1/monitors/${id}`, {
       host: eHost, port: Number(ePort), sni: eSni || null, clearSni: !eSni,
       probeIntervalMinutes: eInterval ? Number(eInterval) : null,
-      runnerId: eRunner || null, clearRunner: !eRunner,
+      runnerId: eRunner || null, clearRunner: !eRunner, externalProbeEnabled: eExternal,
     })
     if (!res.ok) { setError(`Update failed (${res.status})`); return }
     setEditing(null); reload()
@@ -132,19 +175,24 @@ export default function Monitors() {
           <option value="">probe from control plane</option>
           {(runners ?? []).map((r) => <option key={r.id} value={r.id}>via runner: {r.name}</option>)}
         </select>
+        <label className="small" title="Turn off for services that exist only on internal DNS">
+          <input type="checkbox" checked={externalEnabled} onChange={(e) => setExternalEnabled(e.target.checked)} /> probe externally
+        </label>
         <button type="submit">{t('monitors.add')}</button>
       </form>
       {error && <p className="error">{error}</p>}
+      <p className="muted small" style={{ marginTop: -12 }}>
+        Assign a runner living next to the application to also probe from the inside. RemoteSSL then compares
+        both answers and tells you whether the certificate was replaced outside, inside, or both.
+      </p>
 
       <table className="data-table">
         <thead>
           <tr>
             <th>{t('monitors.endpoint')}</th>
-            <th>{t('monitors.status')}</th>
-            <th>{t('monitors.certificate')}</th>
-            <th>{t('monitors.expiry')}</th>
-            <th>{t('monitors.tls')}</th>
-            <th>{t('monitors.lastProbe')}</th>
+            <th>Outside (control plane)</th>
+            <th>Inside (runner)</th>
+            <th>Comparison</th>
             <th></th>
           </tr>
         </thead>
@@ -160,11 +208,13 @@ export default function Monitors() {
                   {(runners ?? []).map((r) => <option key={r.id} value={r.id}>via {r.name}</option>)}
                 </select>
               </td>
-              <td colSpan={4} className="small muted">
+              <td colSpan={3} className="small muted">
                 Probe interval (min): <input value={eInterval} onChange={(e) => setEInterval(e.target.value)}
                   placeholder="default" type="number" style={{ width: 90 }} />
+                <label style={{ marginLeft: 10 }}>
+                  <input type="checkbox" checked={eExternal} onChange={(e) => setEExternal(e.target.checked)} /> probe externally
+                </label>
               </td>
-              <td></td>
               <td className="actions">
                 <button onClick={() => saveEdit(m.id)}>Save</button>
                 <button onClick={() => setEditing(null)}>Cancel</button>
@@ -174,37 +224,15 @@ export default function Monitors() {
             <tr key={m.id}>
               <td>
                 {m.host}:{m.port}
-                {m.sni && <span className="muted"> (SNI: {m.sni})</span>}
-                {m.runnerId && <span className="tag ok" style={{ marginLeft: 6 }}>via runner</span>}
-                {!m.enabled && <span className="tag muted" style={{ marginLeft: 6 }}>disabled</span>}
+                {m.sni && <div className="muted small">SNI: {m.sni}</div>}
+                {!m.enabled && <span className="tag muted">disabled</span>}
               </td>
+              <td><VantageCell v={m.external} enabled={m.externalProbeEnabled} label="external probe" /></td>
+              <td><VantageCell v={m.internal} enabled={!!m.runnerId} label="no runner assigned —" /></td>
               <td>
-                <span className={m.lastProbeStatus === 'Success' ? 'ok' : m.lastProbeStatus === 'NeverProbed' ? 'muted' : 'bad'}>
-                  {m.lastProbeStatus}
-                </span>
-                {m.lastProbeError && <div className="muted small">{m.lastProbeError}</div>}
+                <span className={verdictClass(m.verdict)}>{m.verdict}</span>
+                <div className="muted small" style={{ maxWidth: 320 }}>{m.verdictDetail}</div>
               </td>
-              <td>
-                {m.observedCertificate ? (
-                  <>
-                    {m.observedCertificate.commonName}
-                    {m.lastChainValid === false && (
-                      <div className="warn small">{t('monitors.chainInvalid')}: {m.lastChainError}</div>
-                    )}
-                  </>
-                ) : (
-                  <span className="muted">—</span>
-                )}
-              </td>
-              <td>
-                {m.observedCertificate && (
-                  <span className={healthClass(m.observedCertificate.health)}>
-                    {m.observedCertificate.daysUntilExpiry} {t('monitors.days')}
-                  </span>
-                )}
-              </td>
-              <td>{m.lastTlsProtocol ?? <span className="muted">—</span>}</td>
-              <td className="muted small">{m.lastProbeAt ? new Date(m.lastProbeAt).toLocaleString() : '—'}</td>
               <td className="actions">
                 <button onClick={() => probe(m.id)} disabled={busy === m.id}>
                   {busy === m.id ? t('monitors.probing') : t('monitors.probeNow')}
@@ -216,7 +244,7 @@ export default function Monitors() {
             </tr>
           ))}
           {monitors.length === 0 && (
-            <tr><td colSpan={7} className="muted">{t('monitors.empty')}</td></tr>
+            <tr><td colSpan={5} className="muted">{t('monitors.empty')}</td></tr>
           )}
         </tbody>
       </table>

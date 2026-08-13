@@ -123,9 +123,27 @@ Credential oluştururken provider `HashiCorpVault`, secretIdentifier `vault://se
 
 ## 11. İç DNS endpoint'leri ve katmanlı (F5 → nginx → IIS) analiz — yeni
 
-**Runner üzerinden probe:** Dış DNS'te olmayan iç servisler için monitor eklerken/düzenlerken
-"probe from control plane" yerine **via runner: &lt;runner adı&gt;** seçin. Probe o segmentteki runner'dan
-yapılır, DNS çözümü orada gerçekleşir. Satırda `via runner` etiketi görünür.
+**Dış + iç çift sorgu (dual vantage) — en pratik yöntem:**
+
+Monitor eklerken/düzenlerken uygulamanın yanında çalışan bir runner seçin. RemoteSSL aynı endpoint'i
+**iki yerden birden** sorgular ve cevapları karşılaştırır:
+
+- **Outside (control plane)** — dış/kurumsal DNS'ten çözülen, yayınlanan endpoint ne sunuyor
+- **Inside (runner)** — uygulama sunucusunun kendisi ne sunuyor
+
+Karşılaştırma sonucu (Comparison sütunu):
+
+| Sonuç | Anlamı |
+|---|---|
+| `Match` | İki taraf aynı sertifikayı sunuyor — sorun yok |
+| `Mismatch` | **Farklı sertifikalar** — hangi tarafın eski kaldığı (dış mı iç mi) detayda yazar; yenilemede atlanan katman odur |
+| `InternalOnly` | Dışarıdan çözülmüyor/erişilmiyor (iç servis) |
+| `ExternalOnly` | Uygulama sunucusu runner'a cevap vermedi |
+| `NotConfigured` | Runner atanmamış, karşılaştıracak ikinci taraf yok |
+
+Sadece iç DNS'te olan servisler için **"probe externally"** kutusunu kapatın; dış sorgu denenmez.
+`Mismatch` durumunda audit'e `vantage.mismatch` olayı düşer ve bildirim kanallarına gider.
+
 (Runner'ı ilgili segmentte çalıştırmanız gerekir: `dotnet run --project src/RemoteSSL.Runner`,
 `appsettings.json` → `ControlPlane:Url` kontrol düzlemine bakacak şekilde.)
 

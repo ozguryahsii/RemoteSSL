@@ -18,14 +18,16 @@ public class MonitorProbeService(
     INotificationSink notifier,
     ILogger<MonitorProbeService> logger)
 {
+    /// <summary>Probes from the control plane (external vantage) and folds the result in.</summary>
     public async Task<MonitorEndpoint> ProbeAsync(Guid monitorId, CancellationToken ct = default)
     {
         var monitor = await db.MonitorEndpoints
                           .Include(m => m.LastObservedVersion)
+                          .Include(m => m.InternalObservedVersion)
                           .FirstOrDefaultAsync(m => m.Id == monitorId, ct)
                       ?? throw new KeyNotFoundException($"Monitor {monitorId} not found");
         var result = await prober.ProbeAsync(monitor.Host, monitor.Port, monitor.Sni, ct);
-        return await ApplyResultAsync(monitor, result, ct);
+        return await ApplyResultAsync(monitor, result, ProbeVantage.External, ct);
     }
 
     /// <summary>Queues a runner-side probe job unless one is already pending for this monitor.</summary>
@@ -57,32 +59,58 @@ public class MonitorProbeService(
     }
 
     /// <summary>
-    /// Folds a probe result into the inventory. Also the entry point for probes
-    /// executed remotely by a runner (internal-DNS endpoints).
+    /// Folds a probe result into the inventory under the vantage it came from:
+    /// external results land on the Last* fields, internal (runner) results on the
+    /// Internal* fields. Both vantages feed certificate correlation, so a backend
+    /// serving its own certificate still shows up in the inventory.
     /// </summary>
-    public async Task<MonitorEndpoint> ApplyResultAsync(MonitorEndpoint monitor, TlsProbeResult result, CancellationToken ct = default)
+    public async Task<MonitorEndpoint> ApplyResultAsync(
+        MonitorEndpoint monitor, TlsProbeResult result, ProbeVantage vantage, CancellationToken ct = default)
     {
-        var previousDaysLeft = monitor is { LastObservedVersion: not null, LastProbeAt: not null }
-            ? ExpiryCalculator.DaysUntilExpiry(monitor.LastObservedVersion.NotAfter, monitor.LastProbeAt.Value)
+        var lastSeenVersion = vantage == ProbeVantage.External ? monitor.LastObservedVersion : monitor.InternalObservedVersion;
+        var lastProbeAt = vantage == ProbeVantage.External ? monitor.LastProbeAt : monitor.InternalProbeAt;
+        var previousDaysLeft = lastSeenVersion is not null && lastProbeAt is not null
+            ? ExpiryCalculator.DaysUntilExpiry(lastSeenVersion.NotAfter, lastProbeAt.Value)
             : (int?)null;
 
         var now = DateTimeOffset.UtcNow;
 
-        monitor.LastProbeAt = now;
-        monitor.LastProbeStatus = result.Status;
-        monitor.LastProbeError = result.Error;
-        monitor.LastTlsProtocol = result.TlsProtocol;
-        monitor.LastHostnameValid = result.HostnameValid;
-        monitor.LastChainValid = result.ChainValid;
-        monitor.LastChainError = result.ChainError;
+        if (vantage == ProbeVantage.External)
+        {
+            monitor.LastProbeAt = now;
+            monitor.LastProbeStatus = result.Status;
+            monitor.LastProbeError = result.Error;
+            monitor.LastTlsProtocol = result.TlsProtocol;
+            monitor.LastHostnameValid = result.HostnameValid;
+            monitor.LastChainValid = result.ChainValid;
+            monitor.LastChainError = result.ChainError;
+        }
+        else
+        {
+            monitor.InternalProbeAt = now;
+            monitor.InternalProbeStatus = result.Status;
+            monitor.InternalProbeError = result.Error;
+            monitor.InternalTlsProtocol = result.TlsProtocol;
+            monitor.InternalHostnameValid = result.HostnameValid;
+            monitor.InternalChainValid = result.ChainValid;
+            monitor.InternalChainError = result.ChainError;
+        }
         monitor.UpdatedAt = now;
 
         if (result.Status == ProbeStatus.Success && result.LeafDer is not null)
         {
             var parsed = CertificateParser.Parse(result.LeafDer);
             var version = await CorrelateAsync(parsed, result.ChainDer, now, ct);
-            monitor.LastObservedVersionId = version.Id;
-            monitor.LastObservedVersion = version;
+            if (vantage == ProbeVantage.External)
+            {
+                monitor.LastObservedVersionId = version.Id;
+                monitor.LastObservedVersion = version;
+            }
+            else
+            {
+                monitor.InternalObservedVersionId = version.Id;
+                monitor.InternalObservedVersion = version;
+            }
 
             await UpsertMonitorLinkAsync(monitor, version.CertificateId, now, ct);
             EmitExpiryEvents(monitor, parsed, previousDaysLeft, now);
@@ -91,8 +119,53 @@ public class MonitorProbeService(
             version.Certificate.UpdatedAt = now;
         }
 
+        await EmitVantageMismatchAsync(monitor, now, ct);
         await db.SaveChangesAsync(ct);
         return monitor;
+    }
+
+    /// <summary>Raises an audit event + notification the first time the two vantages disagree.</summary>
+    private async Task EmitVantageMismatchAsync(MonitorEndpoint monitor, DateTimeOffset now, CancellationToken ct)
+    {
+        if (monitor.RunnerId is null) return;
+        var ext = monitor.LastObservedVersion ?? (monitor.LastObservedVersionId is null ? null
+            : await db.CertificateVersions.FindAsync([monitor.LastObservedVersionId], ct));
+        var intr = monitor.InternalObservedVersion ?? (monitor.InternalObservedVersionId is null ? null
+            : await db.CertificateVersions.FindAsync([monitor.InternalObservedVersionId], ct));
+
+        var (verdict, detail) = VantageComparison.Compare(
+            internalConfigured: true,
+            monitor.LastProbeStatus, ext?.Sha256Thumbprint, ext?.NotAfter,
+            monitor.InternalProbeStatus, intr?.Sha256Thumbprint, intr?.NotAfter);
+        if (verdict != VantageVerdict.Mismatch) return;
+
+        var already = await db.AuditEvents.AnyAsync(e =>
+            e.Action == "vantage.mismatch" && e.ObjectId == monitor.Id.ToString()
+            && e.Timestamp > now.AddHours(-24), ct);
+        if (already) return;
+
+        logger.LogWarning("Vantage mismatch on {Host}:{Port} — external {Ext}, internal {Int}",
+            monitor.Host, monitor.Port, ext?.Sha256Thumbprint, intr?.Sha256Thumbprint);
+        notifier.Notify("vantage.mismatch", new
+        {
+            host = monitor.Host, port = monitor.Port,
+            external = ext?.Sha256Thumbprint, internalThumbprint = intr?.Sha256Thumbprint, detail
+        });
+        db.AuditEvents.Add(new AuditEvent
+        {
+            Timestamp = now,
+            Actor = "service:monitoring",
+            Action = "vantage.mismatch",
+            ObjectType = "monitor_endpoint",
+            ObjectId = monitor.Id.ToString(),
+            Result = "MISMATCH",
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            DetailsJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                host = monitor.Host, port = monitor.Port,
+                external = ext?.Sha256Thumbprint, @internal = intr?.Sha256Thumbprint
+            })
+        });
     }
 
     /// <summary>

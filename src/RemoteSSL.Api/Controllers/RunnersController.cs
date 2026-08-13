@@ -142,7 +142,8 @@ public class RunnersController(
             using var payload = JsonDocument.Parse(job.PayloadJson);
             using var result = JsonDocument.Parse(req.ResultJson);
             var monitorId = payload.RootElement.GetProperty("monitorId").GetGuid();
-            var monitor = await db.MonitorEndpoints.Include(m => m.LastObservedVersion)
+            var monitor = await db.MonitorEndpoints
+                .Include(m => m.LastObservedVersion).Include(m => m.InternalObservedVersion)
                 .FirstOrDefaultAsync(m => m.Id == monitorId, ct);
             if (monitor is not null)
             {
@@ -159,7 +160,8 @@ public class RunnersController(
                     GetStr("tlsProtocol"), GetBool("hostnameValid"), GetBool("chainValid"), GetStr("chainError"));
                 var probeService = HttpContext.RequestServices
                     .GetRequiredService<Application.Monitoring.MonitorProbeService>();
-                await probeService.ApplyResultAsync(monitor, probeResult, ct);
+                await probeService.ApplyResultAsync(monitor, probeResult,
+                    Application.Monitoring.ProbeVantage.Internal, ct);
             }
         }
         if (job.DeploymentJobTargetId is not null)
