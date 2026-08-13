@@ -35,6 +35,7 @@ export default function Targets() {
   const [portTouched, setPortTouched] = useState(false)
   const [winMethod, setWinMethod] = useState('winrm') // winrm | ssh, for windows adapters
   const [testResult, setTestResult] = useState<string | null>(null)
+  const [discovery, setDiscovery] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
   const [eName, setEName] = useState(''); const [eAdapter, setEAdapter] = useState('nginx')
   const [eHost, setEHost] = useState(''); const [ePort, setEPort] = useState('22'); const [eCred, setECred] = useState('')
@@ -121,6 +122,19 @@ export default function Targets() {
     reload()
   }
 
+  async function discoverStores(targetId: string) {
+    setDiscovery('discovering…')
+    const res = await post(`/api/v1/targets/${targetId}/stores/discover`)
+    const { jobId } = await res.json()
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const job = await apiGet<{ status: string; resultJson: string | null }>(`/api/v1/targets/jobs/${jobId}`)
+      if (job.status === 'Succeeded') { setDiscovery(JSON.parse(job.resultJson ?? '{}').output ?? ''); return }
+      if (job.status === 'Failed') { setDiscovery('Discovery failed: ' + (JSON.parse(job.resultJson ?? '{}').output ?? '')); return }
+    }
+    setDiscovery('timeout — is a runner online?')
+  }
+
   async function testConnection(targetId: string) {
     setTestResult('testing…')
     const res = await post(`/api/v1/targets/${targetId}/test-connection`)
@@ -158,6 +172,12 @@ export default function Targets() {
         <button type="submit">Add target</button>
       </form>
       {testResult && <p className="small">{testResult}</p>}
+      {discovery && (
+        <div className="detail-panel">
+          <div className="detail-header"><h3>Discovered stores</h3><button onClick={() => setDiscovery(null)}>Close</button></div>
+          <pre className="small" style={{ overflowX: 'auto', whiteSpace: 'pre-wrap' }}>{discovery}</pre>
+        </div>
+      )}
       <table className="data-table">
         <thead><tr><th>Name</th><th>Adapter</th><th>Connection</th><th>Stores</th><th></th></tr></thead>
         <tbody>
@@ -203,6 +223,7 @@ export default function Targets() {
               </td>
               <td className="actions">
                 <button onClick={() => testConnection(t.id)}>Test connection</button>
+                <button onClick={() => discoverStores(t.id)}>Discover stores</button>
                 <button onClick={() => addStore(t.id)}>Add store</button>
                 <button onClick={() => startEdit(t)}>Edit</button>
                 <button className="danger" onClick={() => remove(t)}>Delete</button>

@@ -166,6 +166,43 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
                 b.ServiceBindingJson
             }).ToListAsync(ct);
 
+    /// <summary>Queues a remote store discovery runner job (design doc §27.1: GET /targets/{id}/stores).</summary>
+    [HttpPost("{id:guid}/stores/discover")]
+    public async Task<ActionResult<object>> DiscoverStores(Guid id, CancellationToken ct)
+    {
+        var target = await db.Targets.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, ct);
+        if (target is null) return NotFound();
+
+        var conn = JsonDocument.Parse(target.ConnectionConfigJson).RootElement;
+        var isWindows = target.AdapterType is "windows-cert-store" or "iis";
+        var job = new RunnerJob
+        {
+            Id = Guid.NewGuid(),
+            RunnerId = target.RunnerId,
+            JobType = "discover",
+            PayloadJson = JsonSerializer.Serialize(new
+            {
+                kind = isWindows ? "windows" : "linux",
+                adapter = target.AdapterType,
+                method = conn.TryGetProperty("method", out var m) ? m.GetString() : (isWindows ? "winrm" : "ssh"),
+                winRmUseSsl = conn.TryGetProperty("winRmUseSsl", out var ws) && ws.GetBoolean(),
+                connection = new
+                {
+                    host = conn.TryGetProperty("host", out var h) ? h.GetString() : target.Name,
+                    port = conn.TryGetProperty("port", out var p) && p.TryGetInt32(out var pi) ? pi : (isWindows ? 5985 : 22),
+                    useSudo = false
+                },
+                credentialRefId = target.CredentialRefId
+            }),
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.RunnerJobs.Add(job);
+        audit.Append("user:api", "target.discover-stores", "target", id.ToString(), "QUEUED", null, job.CorrelationId);
+        await db.SaveChangesAsync(ct);
+        return Accepted(new { jobId = job.Id });
+    }
+
     /// <summary>Queues a test-connection runner job for this target (design doc §27.1).</summary>
     [HttpPost("{id:guid}/test-connection")]
     public async Task<ActionResult<object>> TestConnection(Guid id, CancellationToken ct)
