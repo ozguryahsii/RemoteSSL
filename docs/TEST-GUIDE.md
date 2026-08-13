@@ -16,10 +16,8 @@ git checkout claude/tls-lifecycle-manager-qv7tc5
 
 docker compose up -d                  # PostgreSQL + RabbitMQ + Redis
 
-dotnet tool install --global dotnet-ef
-dotnet ef database update --project src/RemoteSSL.Infrastructure --startup-project src/RemoteSSL.Api
-
 dotnet run --project src/RemoteSSL.Api        # → http://localhost:5200 (Swagger: /swagger)
+# İlk açılışta veritabanı şeması otomatik uygulanır (dotnet-ef gerekmez).
 dotnet run --project src/RemoteSSL.Runner     # ayrı terminalde — runner otomatik register olur
 cd frontend && npm install && npm run dev     # → http://localhost:5173
 ```

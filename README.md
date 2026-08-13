@@ -27,14 +27,10 @@ Prerequisites: .NET 8 SDK, Node.js 20+, Docker.
 # 1. Infrastructure
 docker compose up -d
 
-# 2. Database schema
-dotnet tool install --global dotnet-ef
-dotnet ef database update --project src/RemoteSSL.Infrastructure --startup-project src/RemoteSSL.Api
-
-# 3. API  → http://localhost:5200 (Swagger at /swagger, health at /health)
+# 2. API (applies DB migrations automatically on startup)  → http://localhost:5200 (Swagger at /swagger, health at /health)
 dotnet run --project src/RemoteSSL.Api
 
-# 4. Frontend → http://localhost:5173
+# 3. Frontend → http://localhost:5173
 cd frontend && npm install && npm run dev
 ```
 

@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using RemoteSSL.Api.Controllers;
@@ -57,9 +58,15 @@ app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health").AllowAnonymous();
 
-// Runner endpoints authenticate via their own API key, not user JWTs.
 using (var scope = app.Services.CreateScope())
 {
+    // Apply pending EF migrations on startup so local/dev setups don't need dotnet-ef.
+    // Disable with Database:MigrateOnStartup=false when migrations are managed externally.
+    if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
+    {
+        var db = scope.ServiceProvider.GetRequiredService<RemoteSSL.Infrastructure.Persistence.RemoteSslDbContext>();
+        await db.Database.MigrateAsync();
+    }
     await AuthController.SeedAdminAsync(
         scope.ServiceProvider.GetRequiredService<IRemoteSslDbContext>(), app.Configuration, CancellationToken.None);
 }
