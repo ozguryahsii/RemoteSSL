@@ -43,6 +43,35 @@ public class LatencySummaryTests
     }
 }
 
+public class MetricsQueryWindowTests
+{
+    [Fact]
+    public void Window_start_is_always_utc_even_from_a_non_utc_clock()
+    {
+        // PostgreSQL 'timestamp with time zone' parameters must carry offset 0.
+        var istanbul = new DateTimeOffset(2026, 8, 13, 1, 30, 0, TimeSpan.FromHours(3));
+        var start = MetricsQuery.WindowStartUtc(istanbul, 7);
+        Assert.Equal(TimeSpan.Zero, start.Offset);
+    }
+
+    [Fact]
+    public void Window_covers_the_requested_number_of_days_including_today()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 22, 15, 0, TimeSpan.Zero);
+        var start = MetricsQuery.WindowStartUtc(now, 7);
+        Assert.Equal(new DateTimeOffset(2026, 8, 7, 0, 0, 0, TimeSpan.Zero), start);
+    }
+
+    [Fact]
+    public void A_local_time_past_midnight_utc_maps_to_the_utc_day()
+    {
+        // 01:30 at +03:00 is still 22:30 the previous day in UTC.
+        var istanbul = new DateTimeOffset(2026, 8, 13, 1, 30, 0, TimeSpan.FromHours(3));
+        var start = MetricsQuery.WindowStartUtc(istanbul, 1);
+        Assert.Equal(new DateTimeOffset(2026, 8, 12, 0, 0, 0, TimeSpan.Zero), start);
+    }
+}
+
 public class AuditPipelineHealthTests
 {
     [Fact]

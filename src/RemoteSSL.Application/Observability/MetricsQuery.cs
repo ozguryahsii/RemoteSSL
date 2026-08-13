@@ -20,7 +20,7 @@ public class MetricsQuery(IRemoteSslDbContext db)
     /// <summary>Daily p50/p95 for the trend line, oldest day first.</summary>
     public async Task<IReadOnlyList<LatencyTrendPoint>> TrendAsync(string metric, int days, CancellationToken ct = default)
     {
-        var cutoff = DateTimeOffset.UtcNow.Date.AddDays(-(days - 1));
+        var cutoff = WindowStartUtc(DateTimeOffset.UtcNow, days);
         var samples = await db.MetricSamples.AsNoTracking()
             .Where(s => s.Metric == metric && s.Timestamp >= cutoff && s.Success)
             .Select(s => new { s.Timestamp, s.ValueMs })
@@ -35,5 +35,18 @@ public class MetricsQuery(IRemoteSslDbContext db)
                 return new LatencyTrendPoint(g.Key, summary.Count, summary.P50Ms, summary.P95Ms);
             })
             .ToList();
+    }
+
+    /// <summary>
+    /// Midnight UTC of the first day in the window. Built from the parts rather than
+    /// DateTimeOffset.Date: that property drops the offset, and converting the result back
+    /// re-attaches the server's *local* offset — which PostgreSQL's 'timestamp with time zone'
+    /// rejects for anything but UTC, so the query would only fail outside UTC servers.
+    /// </summary>
+    public static DateTimeOffset WindowStartUtc(DateTimeOffset now, int days)
+    {
+        var utc = now.ToUniversalTime();
+        return new DateTimeOffset(utc.Year, utc.Month, utc.Day, 0, 0, 0, TimeSpan.Zero)
+            .AddDays(-(days - 1));
     }
 }
