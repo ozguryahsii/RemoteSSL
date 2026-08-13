@@ -53,12 +53,64 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
         return CreatedAtAction(nameof(List), new { target.Id });
     }
 
-    [HttpDelete("{id:guid}")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    public record UpdateTargetRequest(
+        string? Name, string? AdapterType, string? Environment,
+        JsonElement? ConnectionConfig, Guid? CredentialRefId, bool ClearCredential = false);
+
+    [HttpPatch("{id:guid}")]
+    public async Task<ActionResult<object>> Update(Guid id, UpdateTargetRequest req, CancellationToken ct)
     {
         var t = await db.Targets.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (t is null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(req.Name) && req.Name != t.Name)
+        {
+            if (await db.Targets.AnyAsync(x => x.Name == req.Name && x.Id != id, ct))
+                return Conflict(new ProblemDetails { Title = "Target name already exists" });
+            t.Name = req.Name;
+        }
+        if (!string.IsNullOrWhiteSpace(req.AdapterType)) t.AdapterType = req.AdapterType;
+        if (req.Environment is not null) t.Environment = req.Environment;
+        if (req.ConnectionConfig is not null) t.ConnectionConfigJson = req.ConnectionConfig.Value.GetRawText();
+        if (req.ClearCredential) t.CredentialRefId = null;
+        else if (req.CredentialRefId is not null) t.CredentialRefId = req.CredentialRefId;
+        t.UpdatedAt = DateTimeOffset.UtcNow;
+        audit.Append("user:api", "target.update", "target", id.ToString(), "OK", new { t.Name, t.AdapterType });
+        await db.SaveChangesAsync(ct);
+        return new { t.Id };
+    }
+
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        var t = await db.Targets.Include(x => x.Stores).FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (t is null) return NotFound();
+        var storeIds = t.Stores.Select(s => s.Id).ToList();
+        if (await db.DeploymentBindings.AnyAsync(b => storeIds.Contains(b.CertificateStoreId), ct))
+            return Conflict(new ProblemDetails { Title = "Target has deployment bindings; delete them first." });
         db.Targets.Remove(t);
+        audit.Append("user:api", "target.delete", "target", id.ToString(), "OK", new { t.Name });
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpDelete("stores/{storeId:guid}")]
+    public async Task<IActionResult> DeleteStore(Guid storeId, CancellationToken ct)
+    {
+        var store = await db.CertificateStores.FirstOrDefaultAsync(s => s.Id == storeId, ct);
+        if (store is null) return NotFound();
+        if (await db.DeploymentBindings.AnyAsync(b => b.CertificateStoreId == storeId, ct))
+            return Conflict(new ProblemDetails { Title = "Store has deployment bindings; delete them first." });
+        db.CertificateStores.Remove(store);
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpDelete("bindings/{bindingId:guid}")]
+    public async Task<IActionResult> DeleteBinding(Guid bindingId, CancellationToken ct)
+    {
+        var binding = await db.DeploymentBindings.FirstOrDefaultAsync(b => b.Id == bindingId, ct);
+        if (binding is null) return NotFound();
+        db.DeploymentBindings.Remove(binding);
         await db.SaveChangesAsync(ct);
         return NoContent();
     }

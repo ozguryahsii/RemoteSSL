@@ -13,7 +13,9 @@ public class RequestsController(IRemoteSslDbContext db, CertificateRequestServic
     public record CreateRequest(
         string CommonName, List<string>? Sans, string KeyAlgorithm = "RSA", int KeySizeOrCurve = 2048,
         string KeyOrigin = "central", Guid? CaConnectorId = null, string? ProfileId = null,
-        string RequestedBy = "api", Guid? TargetId = null, string? TargetKeyPath = null);
+        string RequestedBy = "api", Guid? TargetId = null, string? TargetKeyPath = null,
+        string? Organization = null, string? OrganizationalUnit = null,
+        string? Locality = null, string? State = null, string? Country = null);
     public record UploadIssuedRequest(string CertPem, string? ChainPem);
 
     [HttpGet]
@@ -34,7 +36,9 @@ public class RequestsController(IRemoteSslDbContext db, CertificateRequestServic
         {
             var entity = await service.CreateAsync(req.CommonName, req.Sans ?? [], req.KeyAlgorithm,
                 req.KeySizeOrCurve, req.KeyOrigin, req.CaConnectorId, req.ProfileId, req.RequestedBy, ct,
-                req.TargetId, req.TargetKeyPath);
+                req.TargetId, req.TargetKeyPath,
+                new Application.Certificates.CertificateFactory.SubjectOptions(
+                    req.Organization, req.OrganizationalUnit, req.Locality, req.State, req.Country));
             return new { entity.Id, State = entity.State.ToString(), entity.CsrPem };
         }
         catch (ArgumentException ex) { return ValidationProblem(ex.Message); }

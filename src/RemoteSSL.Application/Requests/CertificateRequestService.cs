@@ -27,7 +27,7 @@ public class CertificateRequestService(
     public async Task<CertificateRequestEntity> CreateAsync(
         string commonName, IReadOnlyList<string> sans, string keyAlgorithm, int keySizeOrCurve,
         string keyOrigin, Guid? caConnectorId, string? profileId, string requestedBy, CancellationToken ct,
-        Guid? targetId = null, string? targetKeyPath = null)
+        Guid? targetId = null, string? targetKeyPath = null, CertificateFactory.SubjectOptions? subject = null)
     {
         if (keyAlgorithm.Equals("RSA", StringComparison.OrdinalIgnoreCase) && keySizeOrCurve < 2048)
             throw new ArgumentException("RSA key size below policy minimum 2048");
@@ -54,7 +54,7 @@ public class CertificateRequestService(
 
         if (keyOrigin == "central")
         {
-            var artifacts = CertificateFactory.GenerateCsr(commonName, normalizedSans, req.KeyAlgorithm, keySizeOrCurve);
+            var artifacts = CertificateFactory.GenerateCsr(commonName, normalizedSans, req.KeyAlgorithm, keySizeOrCurve, subject);
             req.CsrPem = artifacts.CsrPem;
             req.EncryptedPrivateKeyPem = protector.Protect(artifacts.PrivateKeyPem);
             req.State = CertificateRequestState.CsrGenerated;

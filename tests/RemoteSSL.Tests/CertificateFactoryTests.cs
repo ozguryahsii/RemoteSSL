@@ -19,6 +19,22 @@ public class CertificateFactoryTests
     }
 
     [Fact]
+    public void GenerateCsr_includes_full_subject_dn()
+    {
+        var r = CertificateFactory.GenerateCsr("app.ozgur.com.tr", [], "RSA", 2048,
+            new CertificateFactory.SubjectOptions("Vienna Life", "IT", "Istanbul", "Istanbul", "tr"));
+        var req = System.Security.Cryptography.X509Certificates.CertificateRequest.LoadSigningRequestPem(
+            r.CsrPem, System.Security.Cryptography.HashAlgorithmName.SHA256,
+            System.Security.Cryptography.X509Certificates.CertificateRequestLoadOptions.SkipSignatureValidation);
+        var dn = req.SubjectName.Name;
+        Assert.Contains("CN=app.ozgur.com.tr", dn);
+        Assert.Contains("O=Vienna Life", dn);
+        Assert.Contains("OU=IT", dn);
+        Assert.Contains("L=Istanbul", dn);
+        Assert.Contains("C=TR", dn);
+    }
+
+    [Fact]
     public void GenerateCsr_rejects_weak_rsa()
         => Assert.Throws<ArgumentException>(() => CertificateFactory.GenerateCsr("x", [], "RSA", 1024));
 

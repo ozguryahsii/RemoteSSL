@@ -13,9 +13,31 @@ public static class CertificateFactory
 {
     public sealed record CsrArtifacts(string CsrPem, string PrivateKeyPem);
 
-    public static CsrArtifacts GenerateCsr(
-        string commonName, IReadOnlyList<string> dnsSans, string keyAlgorithm, int keySizeOrCurve)
+    /// <summary>Optional subject DN attributes beyond CN (design doc §17.1 wizard fields).</summary>
+    public sealed record SubjectOptions(
+        string? Organization = null, string? OrganizationalUnit = null,
+        string? Locality = null, string? State = null, string? Country = null);
+
+    public static string BuildSubjectDn(string commonName, SubjectOptions? subject)
     {
+        static string Esc(string v) => v.Replace("\\", "\\\\").Replace(",", "\\,").Replace("+", "\\+");
+        var parts = new List<string> { $"CN={Esc(commonName)}" };
+        if (subject is not null)
+        {
+            if (!string.IsNullOrWhiteSpace(subject.Organization)) parts.Add($"O={Esc(subject.Organization)}");
+            if (!string.IsNullOrWhiteSpace(subject.OrganizationalUnit)) parts.Add($"OU={Esc(subject.OrganizationalUnit)}");
+            if (!string.IsNullOrWhiteSpace(subject.Locality)) parts.Add($"L={Esc(subject.Locality)}");
+            if (!string.IsNullOrWhiteSpace(subject.State)) parts.Add($"ST={Esc(subject.State)}");
+            if (!string.IsNullOrWhiteSpace(subject.Country)) parts.Add($"C={Esc(subject.Country.ToUpperInvariant())}");
+        }
+        return string.Join(", ", parts);
+    }
+
+    public static CsrArtifacts GenerateCsr(
+        string commonName, IReadOnlyList<string> dnsSans, string keyAlgorithm, int keySizeOrCurve,
+        SubjectOptions? subject = null)
+    {
+        var subjectDn = BuildSubjectDn(commonName, subject);
         AsymmetricAlgorithm key;
         CertificateRequest req;
         if (keyAlgorithm.Equals("EC", StringComparison.OrdinalIgnoreCase)
@@ -29,7 +51,7 @@ public static class CertificateFactory
             };
             var ecdsa = ECDsa.Create(curve);
             key = ecdsa;
-            req = new CertificateRequest($"CN={commonName}", ecdsa, HashAlgorithmName.SHA256);
+            req = new CertificateRequest(new System.Security.Cryptography.X509Certificates.X500DistinguishedName(subjectDn), ecdsa, HashAlgorithmName.SHA256);
         }
         else
         {
@@ -37,7 +59,7 @@ public static class CertificateFactory
                 throw new ArgumentException("RSA key size below policy minimum 2048.");
             var rsa = RSA.Create(keySizeOrCurve);
             key = rsa;
-            req = new CertificateRequest($"CN={commonName}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            req = new CertificateRequest(new System.Security.Cryptography.X509Certificates.X500DistinguishedName(subjectDn), rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         }
 
         using (key)

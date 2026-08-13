@@ -134,7 +134,7 @@ export function Approvals() {
               </td>
             </tr>
           ))}
-          {(pending ?? []).length === 0 && <tr><td colSpan={4} className="muted">No pending approvals.</td></tr>}
+          {(pending ?? []).length === 0 && <tr><td colSpan={4} className="muted">No pending approvals — entries appear here only when a deployment is created with "require approval" (or a renewal policy demands it).</td></tr>}
         </tbody>
       </table>
     </div>

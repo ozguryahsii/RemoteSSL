@@ -40,7 +40,7 @@ export default function Deployments() {
               <td className="small muted">{j.completedAt ? new Date(j.completedAt).toLocaleString() : '—'}</td>
             </tr>
           ))}
-          {(jobs ?? []).length === 0 && <tr><td colSpan={6} className="muted">No deployment jobs yet.</td></tr>}
+          {(jobs ?? []).length === 0 && <tr><td colSpan={6} className="muted">No deployment jobs yet — this list fills up once you deploy. To create one: open a certificate on the Certificates screen and use its Deploy section (needs a target with a store + binding), or let a renewal policy auto-deploy.</td></tr>}
         </tbody>
       </table>
 
