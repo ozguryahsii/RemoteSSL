@@ -1,15 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client'
 
-export function useData<T>(path: string, refreshMs = 30000): [T | null, () => void] {
+export function useData<T>(path: string, refreshMs = 30000): [T | null, () => void, string | null] {
   const [data, setData] = useState<T | null>(null)
-  const reload = useCallback(() => { apiGet<T>(path).then(setData).catch(() => {}) }, [path])
+  const [error, setError] = useState<string | null>(null)
+  const reload = useCallback(() => {
+    apiGet<T>(path)
+      .then((d) => { setData(d); setError(null) })
+      // Surface the failure instead of leaving the screen on "Loading…" forever.
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+  }, [path])
   useEffect(() => {
     reload()
     const id = setInterval(reload, refreshMs)
     return () => clearInterval(id)
   }, [reload, refreshMs])
-  return [data, reload]
+  return [data, reload, error]
 }
 
 export const post = apiPost

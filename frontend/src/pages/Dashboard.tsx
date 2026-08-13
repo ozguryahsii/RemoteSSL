@@ -136,8 +136,21 @@ function LatencyTrend({ title, points, unit = 'ms' }: { title: string; points: T
 }
 
 export default function Dashboard() {
-  const [d] = useData<DashboardData>('/api/v1/dashboard', 20000)
-  if (!d) return <div className="page"><h1>Dashboard</h1><p className="muted">Loading…</p></div>
+  const [d, , error] = useData<DashboardData>('/api/v1/dashboard', 20000)
+  if (!d) return (
+    <div className="page">
+      <h1>Dashboard</h1>
+      {error
+        ? <>
+            <p className="bad">Dashboard could not be loaded: {error}</p>
+            <p className="muted small">
+              The API is reachable but this endpoint failed. Check the API console output, and make sure
+              the API was restarted after the last pull so its database migrations are applied.
+            </p>
+          </>
+        : <p className="muted">Loading…</p>}
+    </div>
+  )
   const m = d.metrics
 
   return (
@@ -145,16 +158,16 @@ export default function Dashboard() {
       <h1>Dashboard</h1>
 
       {/* Active alerts (design doc §32.3) */}
-      {d.alerts.length > 0 && (
+      {(d.alerts ?? []).length > 0 && (
         <div className="alert-list">
-          {d.alerts.map((a, i) => (
+          {(d.alerts ?? []).map((a, i) => (
             <div key={i} className={`alert-row ${a.severity}`}>
               <strong>{a.type}</strong> — {a.message}
             </div>
           ))}
         </div>
       )}
-      {d.alerts.length === 0 && <p className="ok small">No active alerts.</p>}
+      {(d.alerts ?? []).length === 0 && <p className="ok small">No active alerts.</p>}
 
       {/* Metrics (design doc §32.1) */}
       <div className="stat-row">
@@ -178,11 +191,11 @@ export default function Dashboard() {
           tone={m.auditPipelineFailures > 0 ? 'bad' : 'ok'} />
       </div>
 
-      <ExpiryBreakdown buckets={d.expiryBuckets} unknown={d.expiryUnknown} />
+      <ExpiryBreakdown buckets={d.expiryBuckets ?? []} unknown={d.expiryUnknown ?? 0} />
 
       <div className="trend-row">
-        <LatencyTrend title="Probe latency" points={d.probeLatencyTrend} />
-        <LatencyTrend title="CA request latency" points={d.caRequestLatencyTrend} />
+        <LatencyTrend title="Probe latency" points={d.probeLatencyTrend ?? []} />
+        <LatencyTrend title="CA request latency" points={d.caRequestLatencyTrend ?? []} />
       </div>
 
       {/* Critical / expiring certificates (§43) */}
@@ -193,7 +206,7 @@ export default function Dashboard() {
             <tr><th>Certificate</th><th>Status</th><th>Expires</th><th>Issuer</th><th>Env</th><th>Monitors</th><th>Deployments</th><th>Auto renew</th></tr>
           </thead>
           <tbody>
-            {d.criticalCertificates.map((c) => (
+            {(d.criticalCertificates ?? []).map((c) => (
               <tr key={c.id}>
                 <td>{c.commonName}</td>
                 <td><span className={healthClass(c.health)}>{c.health}</span></td>
@@ -208,7 +221,7 @@ export default function Dashboard() {
                 <td>{c.autoRenew ? <span className="ok">yes</span> : <span className="muted">no</span>}</td>
               </tr>
             ))}
-            {d.criticalCertificates.length === 0 && (
+            {(d.criticalCertificates ?? []).length === 0 && (
               <tr><td colSpan={8} className="ok">Nothing expiring in the next 30 days.</td></tr>
             )}
           </tbody>
@@ -222,7 +235,7 @@ export default function Dashboard() {
           <table className="data-table">
             <thead><tr><th>Certificate</th><th>Status</th><th>Targets</th><th>By</th><th>Finished</th></tr></thead>
             <tbody>
-              {d.failedJobs.map((j) => (
+              {(d.failedJobs ?? []).map((j) => (
                 <tr key={j.id}>
                   <td>{j.certificate}</td>
                   <td><span className="bad">{j.status}</span></td>
@@ -231,7 +244,7 @@ export default function Dashboard() {
                   <td className="small muted">{j.completedAt ? new Date(j.completedAt).toLocaleString() : '—'}</td>
                 </tr>
               ))}
-              {d.failedJobs.length === 0 && <tr><td colSpan={5} className="ok">No failed jobs.</td></tr>}
+              {(d.failedJobs ?? []).length === 0 && <tr><td colSpan={5} className="ok">No failed jobs.</td></tr>}
             </tbody>
           </table>
         </section>
@@ -242,7 +255,7 @@ export default function Dashboard() {
           <table className="data-table">
             <thead><tr><th>Runner</th><th>Segment</th><th>Status</th><th>Last heartbeat</th></tr></thead>
             <tbody>
-              {d.runners.map((r) => (
+              {(d.runners ?? []).map((r) => (
                 <tr key={r.id}>
                   <td>{r.name}<div className="muted small">{r.version ?? ''}</div></td>
                   <td className="small">{r.segment ?? '—'}</td>
@@ -250,7 +263,7 @@ export default function Dashboard() {
                   <td className="small muted">{r.lastHeartbeatAt ? new Date(r.lastHeartbeatAt).toLocaleString() : 'never'}</td>
                 </tr>
               ))}
-              {d.runners.length === 0 && <tr><td colSpan={4} className="warn">No runners registered.</td></tr>}
+              {(d.runners ?? []).length === 0 && <tr><td colSpan={4} className="warn">No runners registered.</td></tr>}
             </tbody>
           </table>
         </section>
@@ -263,7 +276,7 @@ export default function Dashboard() {
           <table className="data-table">
             <thead><tr><th>Certificate</th><th>State</th><th>Requested by</th><th>Age</th></tr></thead>
             <tbody>
-              {d.renewalQueue.map((r) => (
+              {(d.renewalQueue ?? []).map((r) => (
                 <tr key={r.id}>
                   <td>{r.commonName}{!r.hasCa && <span className="muted small"> (no CA)</span>}</td>
                   <td>
@@ -276,7 +289,7 @@ export default function Dashboard() {
                   </td>
                 </tr>
               ))}
-              {d.renewalQueue.length === 0 && <tr><td colSpan={4} className="muted">Renewal queue is empty.</td></tr>}
+              {(d.renewalQueue ?? []).length === 0 && <tr><td colSpan={4} className="muted">Renewal queue is empty.</td></tr>}
             </tbody>
           </table>
         </section>
@@ -287,7 +300,7 @@ export default function Dashboard() {
           <table className="data-table">
             <thead><tr><th>Job</th><th>Requested by</th><th>Waiting</th></tr></thead>
             <tbody>
-              {d.pendingApprovals.map((a) => (
+              {(d.pendingApprovals ?? []).map((a) => (
                 <tr key={a.id}>
                   <td className="small">{a.deploymentJobId.slice(0, 8)}…</td>
                   <td className="small">{a.requestedBy}</td>
@@ -296,15 +309,15 @@ export default function Dashboard() {
                   </td>
                 </tr>
               ))}
-              {d.pendingApprovals.length === 0 && <tr><td colSpan={3} className="muted">Nothing awaiting approval.</td></tr>}
+              {(d.pendingApprovals ?? []).length === 0 && <tr><td colSpan={3} className="muted">Nothing awaiting approval.</td></tr>}
             </tbody>
           </table>
 
-          {d.recentDrift.length > 0 && (
+          {(d.recentDrift ?? []).length > 0 && (
             <>
               <h3>Recent drift / vantage mismatch</h3>
               <ul className="small">
-                {d.recentDrift.map((e, i) => (
+                {(d.recentDrift ?? []).map((e, i) => (
                   <li key={i}>
                     <span className="warn">{e.action}</span>{' '}
                     <span className="muted">{new Date(e.timestamp).toLocaleString()}</span>

@@ -27,8 +27,24 @@ function check(res: Response): Response {
 
 export async function apiGet<T>(path: string): Promise<T> {
   const res = check(await fetch(`${API_BASE}${path}`, { headers: headers() }))
-  if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`)
+  if (!res.ok) throw new Error(`GET ${path} → ${res.status} ${await errorDetail(res)}`)
   return res.json() as Promise<T>
+}
+
+/** Pulls the server's reason out of a failed response so the UI can show it. */
+async function errorDetail(res: Response): Promise<string> {
+  try {
+    const body = await res.text()
+    if (!body) return ''
+    try {
+      const problem = JSON.parse(body) as { title?: string; detail?: string }
+      return problem.title ?? problem.detail ?? body.slice(0, 300)
+    } catch {
+      return body.slice(0, 300)
+    }
+  } catch {
+    return ''
+  }
 }
 
 export async function apiGetText(path: string): Promise<string> {

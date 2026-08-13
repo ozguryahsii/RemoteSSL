@@ -119,7 +119,7 @@ function ExpectedCell({ m }: { m: Monitor }) {
 
 /** One vantage cell: probe status, the certificate it serves and its expiry. */
 function VantageCell({ v, enabled, label }: { v: Vantage; enabled: boolean; label: string }) {
-  if (!enabled) return <span className="muted small">{label} disabled</span>
+  if (!enabled) return <span className="muted small">{label}</span>
   const c = v.certificate
   return (
     <div className="small">
@@ -244,8 +244,11 @@ export default function Monitors() {
       </form>
       {error && <p className="error">{error}</p>}
       <p className="muted small" style={{ marginTop: -12 }}>
-        Assign a runner living next to the application to also probe from the inside. RemoteSSL then compares
-        both answers and tells you whether the certificate was replaced outside, inside, or both.
+        <strong>Outside</strong> is probed by the control plane over public DNS. <strong>Inside</strong> is probed by a
+        runner that lives in the same network as the application — pick one under <em>Edit → via runner</em>. Only then
+        can RemoteSSL compare the two and tell you whether the certificate was replaced outside, inside, or both.
+        Endpoints that exist only on internal DNS (external probe says DnsResolutionFailed) need a runner to be
+        monitored at all; you can also untick <em>probe externally</em> for them.
       </p>
 
       <table className="data-table">
@@ -290,8 +293,10 @@ export default function Monitors() {
                 {m.sni && <div className="muted small">SNI: {m.sni}</div>}
                 {!m.enabled && <span className="tag muted">disabled</span>}
               </td>
-              <td><VantageCell v={m.external} enabled={m.externalProbeEnabled} label="external probe" /></td>
-              <td><VantageCell v={m.internal} enabled={!!m.runnerId} label="no runner assigned —" /></td>
+              <td><VantageCell v={m.external} enabled={m.externalProbeEnabled}
+                               label="external probe turned off for this endpoint" /></td>
+              <td><VantageCell v={m.internal} enabled={!!m.runnerId}
+                               label="not probed from inside — pick a runner under Edit" /></td>
               <td>
                 <span className={verdictClass(m.verdict)}>{m.verdict}</span>
                 <div className="muted small" style={{ maxWidth: 320 }}>{m.verdictDetail}</div>
