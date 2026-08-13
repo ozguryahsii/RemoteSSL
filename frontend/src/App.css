@@ -1,0 +1,90 @@
+:root {
+  --sidebar-bg: #101828;
+  --sidebar-text: #cbd5e1;
+  --sidebar-active: #1d4ed8;
+  --content-bg: #f8fafc;
+  --text: #0f172a;
+  --muted: #64748b;
+  --ok: #16a34a;
+  --bad: #dc2626;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text);
+}
+
+.layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 230px;
+  flex-shrink: 0;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 0;
+}
+
+.brand {
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  padding: 8px 20px 20px;
+}
+
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.sidebar nav a {
+  color: var(--sidebar-text);
+  text-decoration: none;
+  padding: 9px 20px;
+  font-size: 14px;
+  border-left: 3px solid transparent;
+}
+
+.sidebar nav a:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.sidebar nav a.active {
+  background: rgba(29, 78, 216, 0.25);
+  border-left-color: var(--sidebar-active);
+  color: #fff;
+}
+
+.sidebar-footer {
+  padding: 16px 20px 4px;
+}
+
+.status-badge {
+  font-size: 12px;
+}
+
+.status-badge.ok { color: var(--ok); }
+.status-badge.bad { color: var(--bad); }
+
+.content {
+  flex: 1;
+  background: var(--content-bg);
+  padding: 32px 40px;
+}
+
+.page h1 {
+  margin-top: 0;
+  font-size: 24px;
+}
+
+.muted { color: var(--muted); }
