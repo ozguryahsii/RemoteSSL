@@ -1,9 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Domain.Entities;
 
 namespace RemoteSSL.Infrastructure.Persistence;
 
-public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : DbContext(options)
+public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : DbContext(options), IRemoteSslDbContext
 {
     public DbSet<Certificate> Certificates => Set<Certificate>();
     public DbSet<CertificateVersion> CertificateVersions => Set<CertificateVersion>();

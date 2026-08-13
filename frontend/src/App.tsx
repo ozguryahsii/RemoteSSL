@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { apiGetText } from './api/client'
+import Monitors from './pages/Monitors'
+import Certificates from './pages/Certificates'
 import './App.css'
 
 const NAV_ITEMS = [
@@ -76,7 +78,9 @@ export default function App() {
         </aside>
         <main className="content">
           <Routes>
-            {NAV_ITEMS.map((item) => (
+            <Route path="/monitors" element={<Monitors />} />
+            <Route path="/certificates" element={<Certificates />} />
+            {NAV_ITEMS.filter((i) => !['/monitors', '/certificates'].includes(i.path)).map((item) => (
               <Route key={item.path} path={item.path} element={<Placeholder titleKey={item.key} />} />
             ))}
           </Routes>
