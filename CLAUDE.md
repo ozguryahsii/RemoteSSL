@@ -19,3 +19,7 @@ versiyon üretilmez.
 - Deployment pipeline'ı §21.1'deki tam sırayı izler (remote TLS verify dahil);
   §21.4 stratejileri (sequential/parallel/wave) desteklenir.
 - Secret'lar hiçbir yerde plaintext görünmez (§7.3, §22.3).
+
+## Teslimat kuralı
+Her push sonrası kullanıcıya güncelleme/çalıştırma adımları (git pull + hangi
+servislerin yeniden başlatılacağı) her mesajda eksiksiz tekrarlanır.
