@@ -125,7 +125,27 @@ Credential oluştururken provider `HashiCorpVault`, secretIdentifier `vault://se
 
 Bu adapterlar implemente edildi ancak bu ortamda gerçek hedef olmadığı için canlı test edilmedi:
 
-- **Windows/IIS**: Hedefte Windows OpenSSH + PowerShell gerekir. Target adapter `windows-cert-store` veya `iis`, store `LocalMachine\My`, binding'e `iisSiteName`/`iisPort` verin. PFX kontrol düzleminde üretilir, parola dosya ile taşınır, binding rollback'i eski thumbprint'e döner.
+- **Windows/IIS** — adım adım:
+  1. **Hedef Windows sunucusunda OpenSSH Server kurun** (yönetici PowerShell):
+     ```powershell
+     Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+     Start-Service sshd
+     Set-Service sshd -StartupType Automatic
+     New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
+     ```
+     Doğrulama (kendi Mac'inizden): `ssh KULLANICI@10.184.33.5` → PowerShell/cmd açılmalı.
+     Kullanıcı **yerel yönetici** olmalı (cert store + IIS binding yazma yetkisi için).
+  2. **RemoteSSL → Credentials**: Windows kullanıcı adı + parolası (domain hesabıysa `DOMAIN\kullanici`).
+  3. **Managed Targets**: adapter `iis`, host `10.184.33.5`, port `22`, credential'ı seçin → **Test connection** → OK beklenir.
+  4. **Add store** → `LocalMachine\My`.
+  5. Sertifikaya binding ekleyin; `serviceBinding` içine IIS bilgisi verin (Swagger `POST /api/v1/targets/stores/{storeId}/bindings`):
+     ```json
+     { "certificateId": "<certId>",
+       "serviceBinding": { "iisSiteName": "Default Web Site", "iisPort": 443, "iisHostHeader": "btnobet.viennalife.com" } }
+     ```
+     (`iisSiteName` vermezseniz sadece store import yapılır, binding güncellenmez.)
+  6. **Certificates → Deploy**: private key'li bir version seçin (upload/CSR ile gelmiş olmalı — sadece monitor'dan gözlenen versiyonların key'i yoktur, deploy edilemez).
+     Pipeline: PFX kontrol düzleminde üretilir → SSH ile temp'e kopyalanır (parola argv'ye girmez) → `Import-PfxCertificate` → IIS https binding yeni thumbprint'e çevrilir → readback doğrulanır → hata halinde binding eski thumbprint'e geri döner. Temp PFX/parola dosyaları her durumda silinir.
 - **Java keystore**: adapter `java-keystore`/`java-truststore`, store path JKS yolu, alias verin; parola credential'dan gelir, `storepass:env` ile komut satırına sızmaz.
 - **Oracle Wallet**: adapter `oracle-wallet`, store path wallet dizini; `ewallet.p12`+`cwallet.sso` birlikte yedeklenip birlikte döner.
 - **F5 BIG-IP**: adapter `f5-bigip`, connection `{"managementUrl":"https://...","allowInsecureTls":true}`; cert/key objeleri timestamped oluşturulur, client-ssl profili yeniden bağlanır, rollback profili eski objelere döndürür.
