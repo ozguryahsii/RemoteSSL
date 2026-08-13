@@ -36,17 +36,21 @@ Ek olarak (listede yoktu, operasyonel çıkmazı kapatmak için eklendi): başla
 `POST /deployments/{id}/cancel` — onaylanıp hiç çalıştırılmamış bir job binding'i §21.3
 concurrency guard'ı yüzünden süresiz kilitliyordu.
 
-## F13 — Artifact ve backup yönetimi
+## F13 — Artifact ve backup yönetimi ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 13.1 | `Artifact` entity'si: tip, hassasiyet sınıfı (public / sensitive / highly sensitive / backup), hash, TTL, sahiplik | §5.1, §31.1 | YOK |
-| 13.2 | Artifact şifreleme zarfı: per-artifact data key + KMS/HSM korumalı KEK; DB'de yalnız referans + hash | §31.2 | YOK |
-| 13.3 | S3 uyumlu object storage entegrasyonu (şifreli, versiyonlu, retention'lı) | §4.3, §31.1 | YOK |
-| 13.4 | Private key içeren artifact için zorunlu TTL + secure deletion + erişim audit'i | §5.3, §15.4 | KISMİ (key hiç kalıcı tutulmuyor; politika nesnesi yok) |
-| 13.5 | `POST /api/v1/artifacts/convert` — tek uçtan format dönüşümü (PEM/CRT/CER/P7B/PFX/P12/JKS/fullchain) | §27.1, FR-006 | KISMİ (csr/pfx/pfx-parse/chain/p7b ayrı ayrı var; JKS ve tek uç yok) |
-| 13.6 | Backup retention politikası ve eski backup temizliği (hedefte veya object storage'da) | §31.1, §10.2/11 | KISMİ (hedefte timestamped backup var, retention yok) |
-| 13.7 | Chain Builder derinliği: AIA üzerinden chain retrieval, cross-signed çoklu trust path gösterimi, eksik intermediate'te deployment bloklama | §15.3, FR-008 | KISMİ (sıralı chain kurulumu var) |
+| 13.1 | `Artifact` entity'si | §5.1, §31.1 | ✅ tip, hassasiyet sınıfı, hash, boyut, TTL, sahiplik, storage referansı; Certificates → Files/Artifacts sekmesinde listeleniyor |
+| 13.2 | Envelope encryption | §31.2 | ✅ artifact başına rastgele AES-256-GCM data key, DataProtection KEK ile sarmalanıyor; DB'de yalnız ciphertext + hash, açarken bütünlük doğrulaması |
+| 13.3 | S3 uyumlu object storage | §4.3, §31.1 | ✅ `Storage:S3:*` ayarlanınca devreye girer (MinIO/Ceph dahil), SSE-S3 ile yazar; ayarlanmazsa ciphertext veritabanında kalır |
+| 13.4 | Key'li artifact için TTL + secure deletion + erişim audit'i | §5.3, §15.4 | ✅ Sensitive/HighlySensitive'e zorunlu TTL (varsayılan 24s), retention job'ı içeriği imha eder (metadata kanıt olarak kalır), her okuma `artifact.access` olarak audit'lenir |
+| 13.5 | `POST /api/v1/artifacts/convert` | §27.1, FR-006 | ✅ pem/crt/cer/der/p7b/pfx/p12/**jks**/chain/fullchain/key tek uçta; sonuç inline dönebilir veya şifreli artifact olarak saklanabilir |
+| 13.6 | Backup retention | §31.1 | ✅ adapter'ın hedefte bıraktığı backup'lar artifact metadata'sı olarak kaydediliyor; retention penceresi geçince temizlik gerektiği raporlanıyor (silinmiş gibi gösterilmiyor) |
+| 13.7 | Chain Builder derinliği | §15.3, FR-008 | ✅ `POST /artifacts/chain/analyze`: tüm trust path'ler, cross-signed uyarısı, eksik intermediate isimlendirmesi, AIA URL'leri; eksik chain ile deployment chain'i üretilemez |
+
+Not: RemoteSSL'in sakladığı private key'i içeren bir dönüşüm çıktısı API üzerinden **inline
+dönmez** (§7.3/§22.3) — yalnızca şifreli artifact olarak saklanabilir ve indirme ucu da
+key taşıyan artifact'leri reddeder.
 
 ## F14 — Discovery ve monitoring derinliği
 

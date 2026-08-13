@@ -19,9 +19,13 @@ namespace RemoteSSL.Application.Deployments;
 /// </summary>
 public class DeploymentService(
     IRemoteSslDbContext db, ISecretProtector protector, AuditWriter audit,
-    INotificationSink notifier, ITlsProber prober, Policies.GovernanceService governance)
+    INotificationSink notifier, ITlsProber prober, Policies.GovernanceService governance,
+    Artifacts.ArtifactService artifacts)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    /// <summary>How long a target-side backup is expected to be kept before cleanup (§31.1).</summary>
+    private static readonly TimeSpan BackupRetention = TimeSpan.FromDays(30);
 
     /// <summary>Resolves a strategy name into its execution shape per design doc §21.4.</summary>
     private static (int MaxConcurrency, bool StopOnFailure, bool ManualContinuation) ResolveStrategy(
@@ -427,6 +431,15 @@ public class DeploymentService(
                     CompletedAt = DateTimeOffset.UtcNow
                 });
             }
+            // Backups the adapter left on the target are tracked as artifacts so their
+            // retention is visible (§31.1) — the content stays on the target, only metadata here.
+            foreach (var (_, _, log) in steps.Where(x => x.Step == "Backup" && x.Ok))
+            {
+                artifacts.RecordExternal("backup", Domain.ArtifactSensitivity.Backup, log, "service:orchestrator",
+                    jt.DeploymentJobId, jt.DeploymentBinding.CertificateStore.TargetId,
+                    jt.DeploymentJob.CertificateVersionId, BackupRetention);
+            }
+
             // Post-deployment remote TLS verify (design doc §21.1 / FR-017): the control
             // plane independently probes the endpoint and confirms the expected thumbprint.
             var remoteVerified = true;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { API_BASE, apiGet, apiPost, apiPatch, apiDelete } from '../api/client'
 
@@ -148,6 +148,118 @@ function DeploymentPlanView({ plan }: { plan: DeploymentPlan }) {
         </tbody>
       </table>
     </div>
+  )
+}
+
+interface StoredArtifact {
+  id: string; kind: string; sensitivity: string; fileName: string; sizeBytes: number
+  sha256: string; storageProvider: string; expiresAt: string | null
+  createdBy: string | null; createdAt: string; purgedAt: string | null; purgeReason: string | null
+}
+
+const CONVERT_TARGETS = ['pem', 'der', 'p7b', 'pfx', 'jks', 'chain', 'fullchain'] as const
+
+/**
+ * Stored artifacts (§31) plus the format engine (§15.2): everything RemoteSSL keeps for this
+ * certificate, and a converter that can hand the result back or store it as a classified,
+ * envelope-encrypted artifact with a TTL.
+ */
+function ArtifactsPanel({ versionId }: { versionId: string | undefined }) {
+  const [stored, setStored] = useState<StoredArtifact[]>([])
+  const [to, setTo] = useState<string>('pfx')
+  const [password, setPassword] = useState('')
+  const [alias, setAlias] = useState('remotessl')
+  const [keep, setKeep] = useState(true)
+  const [message, setMessage] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    if (!versionId) return
+    apiGet<StoredArtifact[]>(`/api/v1/artifacts/stored?certificateVersionId=${versionId}`)
+      .then(setStored).catch(() => setStored([]))
+  }, [versionId])
+  useEffect(load, [load])
+
+  const needsPassword = ['pfx', 'p12', 'jks'].includes(to)
+
+  async function convert() {
+    setBusy(true); setMessage(null)
+    try {
+      if (!versionId) { setMessage('No version to convert.'); return }
+      // The API reads the stored PEM (and key, when it holds one) for this version, so no
+      // certificate material needs to travel to the browser and back.
+      const res = await apiPost('/api/v1/artifacts/convert', {
+        to,
+        certificateVersionId: versionId,
+        password: needsPassword ? password : null,
+        alias,
+        store: keep,
+      })
+      const body = await res.json()
+      if (!res.ok) { setMessage(body.title ?? `Conversion failed (${res.status})`); return }
+      setMessage(keep
+        ? `Stored as ${body.fileName} (${body.sensitivity}${body.expiresAt ? `, expires ${new Date(body.expiresAt).toLocaleString()}` : ''}).`
+        : `Converted (${body.contentType}); ${Math.ceil((body.contentBase64.length * 3) / 4)} bytes returned inline.`)
+      load()
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <>
+      <h3>Convert</h3>
+      <div className="deploy-box">
+        <div className="small">
+          Format:{' '}
+          <select value={to} onChange={(e) => setTo(e.target.value)}>
+            {CONVERT_TARGETS.map((f) => <option key={f} value={f}>{f}</option>)}
+          </select>
+          {needsPassword && (
+            <> password: <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" style={{ width: 140 }} /></>
+          )}
+          {to === 'jks' && (
+            <> alias: <input value={alias} onChange={(e) => setAlias(e.target.value)} style={{ width: 120 }} /></>
+          )}
+        </div>
+        <label className="small">
+          <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} />{' '}
+          store the result (encrypted, with a TTL when it carries a key)
+        </label>
+        <button onClick={convert} disabled={busy || (needsPassword && !password)}>
+          {busy ? 'Converting…' : 'Convert'}
+        </button>
+        {message && <span className="small">{message}</span>}
+      </div>
+
+      <h3>Stored artifacts</h3>
+      <table className="data-table">
+        <thead><tr><th>File</th><th>Kind</th><th>Class</th><th>Storage</th><th>Expires</th><th>Created</th><th></th></tr></thead>
+        <tbody>
+          {stored.map((a) => (
+            <tr key={a.id}>
+              <td>
+                {a.fileName}
+                <div className="muted small">{a.sizeBytes} bytes · <code>{a.sha256.slice(0, 16)}…</code></div>
+              </td>
+              <td className="small">{a.kind}</td>
+              <td className="small">
+                <span className={a.sensitivity === 'Public' ? 'muted' : 'warn'}>{a.sensitivity}</span>
+              </td>
+              <td className="small muted">{a.storageProvider}</td>
+              <td className="small muted">{a.expiresAt ? new Date(a.expiresAt).toLocaleString() : '—'}</td>
+              <td className="small muted">{new Date(a.createdAt).toLocaleString()}</td>
+              <td className="actions">
+                {a.purgedAt
+                  ? <span className="muted small">purged — {a.purgeReason}</span>
+                  : a.sensitivity === 'Public'
+                    ? <a className="link-button" href={`${API_BASE}/api/v1/artifacts/stored/${a.id}/download`}>Download</a>
+                    : <span className="muted small">key material — not downloadable</span>}
+              </td>
+            </tr>
+          ))}
+          {stored.length === 0 && <tr><td colSpan={7} className="muted">No stored artifacts for this version.</td></tr>}
+        </tbody>
+      </table>
+    </>
   )
 }
 
@@ -523,6 +635,8 @@ export default function Certificates() {
                   ))}
                 </tbody>
               </table>
+
+              <ArtifactsPanel versionId={selected.versions[0]?.id} />
             </div>
           )}
 

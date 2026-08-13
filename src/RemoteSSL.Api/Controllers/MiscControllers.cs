@@ -15,7 +15,8 @@ namespace RemoteSSL.Api.Controllers;
 [Route("api/v1/artifacts")]
 [Microsoft.AspNetCore.Authorization.Authorize(Policy = "CertOps")]
 public class ArtifactsController(IRemoteSslDbContext db, ISecretProtector protector,
-    InventoryService inventory, AuditWriter audit) : ControllerBase
+    InventoryService inventory, AuditWriter audit, Application.Artifacts.ArtifactService artifacts)
+    : ControllerBase
 {
     public record CsrRequest(string CommonName, List<string>? Sans, string KeyAlgorithm = "RSA", int KeySizeOrCurve = 2048);
     public record BuildPfxRequest(string CertPem, string KeyPem, string? ChainPem, string Password);
@@ -64,6 +65,107 @@ public class ArtifactsController(IRemoteSslDbContext db, ISecretProtector protec
         catch (Exception ex) { return UnprocessableEntity(new ProblemDetails { Title = ex.Message }); }
     }
 
+    public record ConvertRequest(
+        string To, string? CertPem = null, string? KeyPem = null, string? ChainPem = null,
+        string? PfxBase64 = null, string? P7bBase64 = null, string? Password = null, string? Alias = null,
+        bool Store = false, Guid? CertificateVersionId = null);
+
+    /// <summary>
+    /// One conversion surface across every supported artifact format (§27.1, FR-006).
+    /// The result can optionally be stored as a classified, envelope-encrypted artifact
+    /// instead of being returned inline — key-bearing output then gets a TTL (§31.1).
+    /// </summary>
+    [HttpPost("convert")]
+    public async Task<ActionResult<object>> ConvertFormat(ConvertRequest req, CancellationToken ct)
+    {
+        try
+        {
+            var certPem = req.CertPem;
+            var chainPem = req.ChainPem;
+            var keyPem = req.KeyPem;
+            var keyCameFromInventory = false;
+
+            // Convert a stored version without shipping its PEM to the caller and back.
+            if (req.CertificateVersionId is { } versionId && certPem is null)
+            {
+                var version = await db.CertificateVersions.AsNoTracking()
+                    .FirstOrDefaultAsync(v => v.Id == versionId, ct);
+                if (version is null) return NotFound(new ProblemDetails { Title = "Certificate version not found" });
+                certPem = version.PemCertificate;
+                chainPem ??= version.PemChain;
+                if (keyPem is null && version.EncryptedPrivateKeyPem is not null)
+                {
+                    keyPem = protector.Unprotect(version.EncryptedPrivateKeyPem);
+                    keyCameFromInventory = true;
+                }
+            }
+
+            var result = FormatConverter.Convert(
+                req.To, certPem, keyPem, chainPem,
+                req.PfxBase64 is null ? null : Convert.FromBase64String(req.PfxBase64),
+                req.P7bBase64 is null ? null : Convert.FromBase64String(req.P7bBase64),
+                req.Password, req.Alias);
+
+            // A key RemoteSSL holds must not leave over the API (§7.3 / §22.3). Such a
+            // conversion may still be produced — it just has to land in the encrypted
+            // artifact store instead of the response body.
+            if (!req.Store && result.ContainsPrivateKey && keyCameFromInventory)
+            {
+                return UnprocessableEntity(new ProblemDetails
+                {
+                    Title = "This output contains the private key RemoteSSL holds, so it cannot be returned "
+                            + "over the API. Re-run with store=true to keep it as an encrypted artifact."
+                });
+            }
+
+            if (!req.Store)
+            {
+                return new
+                {
+                    req.To,
+                    result.ContentType,
+                    result.ContainsPrivateKey,
+                    ContentBase64 = Convert.ToBase64String(result.Content)
+                };
+            }
+
+            var sensitivity = result.ContainsPrivateKey
+                ? (req.To.Equals("key", StringComparison.OrdinalIgnoreCase)
+                    ? ArtifactSensitivity.HighlySensitive
+                    : ArtifactSensitivity.Sensitive)
+                : ArtifactSensitivity.Public;
+            var stored = await artifacts.StoreAsync(req.To.ToLowerInvariant(), sensitivity,
+                $"converted.{result.FileExtension}", result.ContentType, result.Content, "api", ct,
+                certificateVersionId: req.CertificateVersionId);
+            return new
+            {
+                stored.Id, stored.FileName, stored.Sha256, stored.SizeBytes,
+                Sensitivity = sensitivity.ToString(), stored.ExpiresAt, stored.StorageProvider
+            };
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException
+                                       or System.Security.Cryptography.CryptographicException or FormatException)
+        {
+            return UnprocessableEntity(new ProblemDetails { Title = ex.Message });
+        }
+    }
+
+    public record ChainAnalysisRequest(string LeafPem, string? PoolPem);
+
+    /// <summary>
+    /// Chain analysis (§15.3): every possible trust path, missing intermediates named, and the
+    /// AIA URLs where they could be fetched from.
+    /// </summary>
+    [HttpPost("chain/analyze")]
+    public ActionResult<object> AnalyzeChain(ChainAnalysisRequest req)
+    {
+        try { return ChainBuilder.Analyze(req.LeafPem, req.PoolPem); }
+        catch (Exception ex) when (ex is ArgumentException or System.Security.Cryptography.CryptographicException)
+        {
+            return UnprocessableEntity(new ProblemDetails { Title = ex.Message });
+        }
+    }
+
     /// <summary>Upload an existing certificate (+ optional key/chain) into the inventory for deployment.</summary>
     [HttpPost("upload")]
     public async Task<ActionResult<object>> Upload(UploadCertificateRequest req, CancellationToken ct)
@@ -79,6 +181,68 @@ public class ArtifactsController(IRemoteSslDbContext db, ISecretProtector protec
             return new { version.Id, version.CertificateId, version.Sha256Thumbprint };
         }
         catch (Exception ex) { return UnprocessableEntity(new ProblemDetails { Title = ex.Message }); }
+    }
+}
+
+/// <summary>
+/// Stored artifact metadata and controlled download (design doc §5.1, §31). Content is
+/// envelope-encrypted at rest; every read is audited, and key-bearing artifacts disappear
+/// when their TTL expires.
+/// </summary>
+[ApiController]
+[Route("api/v1/artifacts/stored")]
+[Microsoft.AspNetCore.Authorization.Authorize(Policy = "CertOps")]
+public class StoredArtifactsController(
+    IRemoteSslDbContext db, Application.Artifacts.ArtifactService artifacts) : ControllerBase
+{
+    [HttpGet]
+    public async Task<IEnumerable<object>> List(
+        [FromQuery] Guid? certificateVersionId, [FromQuery] Guid? deploymentJobId,
+        [FromQuery] int take = 100, CancellationToken ct = default)
+    {
+        var q = db.Artifacts.AsNoTracking().OrderByDescending(a => a.CreatedAt).AsQueryable();
+        if (certificateVersionId is not null) q = q.Where(a => a.CertificateVersionId == certificateVersionId);
+        if (deploymentJobId is not null) q = q.Where(a => a.DeploymentJobId == deploymentJobId);
+
+        return await q.Take(Math.Min(take, 500)).Select(a => new
+        {
+            a.Id, a.Kind, Sensitivity = a.Sensitivity.ToString(), a.FileName, a.ContentType,
+            a.SizeBytes, a.Sha256, a.StorageProvider, a.CertificateId, a.CertificateVersionId,
+            a.DeploymentJobId, a.ExpiresAt, a.CreatedBy, a.CreatedAt, a.PurgedAt, a.PurgeReason
+        }).ToListAsync(ct);
+    }
+
+    [HttpGet("{id:guid}/download")]
+    public async Task<IActionResult> Download(Guid id, CancellationToken ct)
+    {
+        try
+        {
+            var classification = await db.Artifacts.AsNoTracking()
+                .Where(a => a.Id == id).Select(a => (ArtifactSensitivity?)a.Sensitivity).FirstOrDefaultAsync(ct);
+            if (classification is null) return NotFound();
+            // Key-bearing artifacts exist for the deployment pipeline, not for download (§7.3, §22.3).
+            if (classification is ArtifactSensitivity.Sensitive or ArtifactSensitivity.HighlySensitive)
+                return UnprocessableEntity(new ProblemDetails
+                {
+                    Title = "This artifact contains private key material and is never served over the API."
+                });
+
+            var (meta, content) = await artifacts.RetrieveAsync(id, User.Identity?.Name ?? "api", ct);
+            return File(content, meta.ContentType, meta.FileName);
+        }
+        catch (KeyNotFoundException) { return NotFound(); }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new ProblemDetails { Title = ex.Message }); }
+    }
+
+    /// <summary>Securely deletes an artifact's content ahead of its TTL (§15.4).</summary>
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Purge(Guid id, CancellationToken ct)
+    {
+        var artifact = await db.Artifacts.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (artifact is null) return NotFound();
+        await artifacts.PurgeAsync(artifact, "purged on request", ct);
+        await db.SaveChangesAsync(ct);
+        return NoContent();
     }
 }
 

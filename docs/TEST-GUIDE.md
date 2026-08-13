@@ -357,6 +357,60 @@ curl -s -X POST http://localhost:5200/api/v1/certificates/requests \
 # aynı key + farklı gövde → 409
 ```
 
+## 17. Artifact yönetimi ve format dönüşümü (F13) — yeni
+
+**Ekran**: **Certificates → sertifika → Files / Artifacts**. Üstte dönüştürücü, altta bu sürüm
+için saklanan artifact'ler (dosya, sınıf, depolama, TTL, hash) listelenir.
+
+**Format dönüşümü** (§15.2, FR-006) — pem / der / p7b / pfx / jks / chain / fullchain:
+
+```bash
+# Public çıktı inline döner
+curl -s -X POST http://localhost:5200/api/v1/artifacts/convert -H 'Content-Type: application/json' \
+  -d '{"to":"pem","certificateVersionId":"<versionId>"}'
+
+# Key taşıyan çıktı (PFX/JKS) inline DÖNMEZ; şifreli artifact olarak saklanır
+curl -s -X POST http://localhost:5200/api/v1/artifacts/convert -H 'Content-Type: application/json' \
+  -d '{"to":"jks","certificateVersionId":"<versionId>","password":"storepass","alias":"app","store":true}'
+```
+
+JKS gerçek bir Java keystore'dur: key varsa PrivateKeyEntry + sıralı chain, yoksa trusted
+certificate entry (truststore) yazılır.
+
+**Güvenlik davranışı**: RemoteSSL'in sakladığı private key'i içeren çıktı API'den inline
+dönmez (422 ile açıklar), saklanan key'li artifact indirilemez (422). Public artifact indirilir.
+
+**Saklama ve imha** (§31): her artifact kendi rastgele AES-256-GCM anahtarıyla şifrelenir,
+anahtar DataProtection KEK'i ile sarmalanır; veritabanında düz içerik yoktur.
+
+```bash
+curl -s "http://localhost:5200/api/v1/artifacts/stored?certificateVersionId=<versionId>"
+curl -s -X DELETE http://localhost:5200/api/v1/artifacts/stored/<artifactId>   # secure delete
+```
+
+Key taşıyan artifact'lere zorunlu TTL verilir (varsayılan 24 saat); arka plan görevi süresi
+dolanların içeriğini imha eder, metadata satırı kanıt olarak kalır (`purgedAt`, `purgeReason`).
+Public artifact'ler için `Storage:PublicArtifactRetentionDays` (varsayılan 365) geçerlidir.
+
+**S3 / MinIO** (opsiyonel): `Storage:S3:BucketName` verilirse ciphertext bucket'a yazılır.
+
+```json
+{ "Storage": {
+    "ArtifactProvider": "s3",
+    "S3": { "BucketName": "remotessl-artifacts", "ServiceUrl": "http://localhost:9000",
+            "AccessKey": "...", "SecretKey": "...", "ForcePathStyle": true } } }
+```
+
+**Chain analizi** (§15.3):
+
+```bash
+curl -s -X POST http://localhost:5200/api/v1/artifacts/chain/analyze -H 'Content-Type: application/json' \
+  -d '{"leafPem":"-----BEGIN CERTIFICATE-----...","poolPem":"<intermediate+root PEM>"}'
+# complete, missingIssuers (eksik ara sertifikanın adı), paths (cross-signed ise birden çok), aiaUrls
+```
+
+Eksik intermediate varsa deployment için chain üretimi hata verir — bozuk chain sahaya çıkmaz.
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

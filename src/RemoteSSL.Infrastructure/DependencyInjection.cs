@@ -27,6 +27,7 @@ public static class DependencyInjection
         services.AddHostedService<ProbeSchedulerService>();
         services.AddHostedService<AutomationSchedulerService>();
         services.AddHostedService<MetricsRetentionService>();
+        services.AddHostedService<ArtifactRetentionService>();
 
         services.AddDataProtection();
         services.AddHttpClient();
@@ -38,6 +39,12 @@ public static class DependencyInjection
         services.AddScoped<Application.Certificates.InventoryService>();
         services.AddScoped<Application.Deployments.DeploymentService>();
         services.AddScoped<Application.Deployments.DeploymentPlanner>();
+        services.AddScoped<Application.Artifacts.ArtifactService>();
+        // The S3 store only registers itself when a bucket is configured; without one the
+        // artifact service keeps ciphertext in the database (§31.1).
+        services.AddSingleton<Storage.S3ArtifactStore>();
+        services.AddSingleton<Application.Artifacts.IArtifactObjectStore>(sp =>
+            sp.GetRequiredService<Storage.S3ArtifactStore>());
         services.AddScoped<Application.Requests.CertificateRequestService>();
         services.AddScoped<Application.Requests.ICaConnectorResolver, Ca.DbCaConnectorResolver>();
         services.AddScoped<Application.Automation.AutomationService>();

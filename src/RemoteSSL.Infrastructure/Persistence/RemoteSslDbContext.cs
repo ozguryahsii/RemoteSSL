@@ -30,9 +30,24 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<MetricSample> MetricSamples => Set<MetricSample>();
     public DbSet<CertificatePolicy> CertificatePolicies => Set<CertificatePolicy>();
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+    public DbSet<Artifact> Artifacts => Set<Artifact>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        b.Entity<Artifact>(e =>
+        {
+            e.Property(x => x.Kind).HasMaxLength(32);
+            e.Property(x => x.FileName).HasMaxLength(256);
+            e.Property(x => x.ContentType).HasMaxLength(128);
+            e.Property(x => x.Sha256).HasMaxLength(64);
+            e.Property(x => x.StorageProvider).HasMaxLength(32);
+            e.Property(x => x.StorageRef).HasMaxLength(256);
+            e.HasIndex(x => x.CertificateVersionId);
+            e.HasIndex(x => x.DeploymentJobId);
+            // The retention job scans by expiry; purged rows stay as audit evidence.
+            e.HasIndex(x => new { x.ExpiresAt, x.PurgedAt });
+        });
+
         b.Entity<IdempotencyRecord>(e =>
         {
             e.Property(x => x.Key).HasMaxLength(200);
