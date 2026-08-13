@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Application.Monitoring;
+using RemoteSSL.Domain;
 using RemoteSSL.Domain.Entities;
 
 namespace RemoteSSL.Api.Controllers;
@@ -20,10 +21,23 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         bool ExternalProbeEnabled,
         VantageDto External, VantageDto Internal,
         string Verdict, string VerdictDetail,
+        // §26.3 endpoint screen: expected certificate, drift, managed target and binding
+        ExpectedDto? Expected, string DriftStatus, IReadOnlyList<BindingLinkDto> Bindings,
         // Legacy flat fields (external vantage) kept for existing consumers.
         string LastProbeStatus, string? LastProbeError, DateTimeOffset? LastProbeAt,
         string? LastTlsProtocol, bool? LastHostnameValid, bool? LastChainValid, string? LastChainError,
         ObservedCertDto? ObservedCertificate);
+
+    /// <summary>The certificate RemoteSSL believes should be live here (§26.3).</summary>
+    public record ExpectedDto(
+        Guid CertificateId, Guid VersionId, string CommonName, string Sha256Thumbprint,
+        DateTimeOffset NotAfter, string Status);
+
+    /// <summary>Managed target + credential + binding behind this endpoint (§26.3).</summary>
+    public record BindingLinkDto(
+        Guid BindingId, Guid TargetId, string TargetName, string Adapter,
+        string StoreType, string StorePath, string? Alias,
+        string? CredentialName, string CredentialStatus, string ServiceBindingJson);
 
     /// <summary>One vantage's view of the endpoint (outside vs inside).</summary>
     public record VantageDto(
@@ -40,10 +54,61 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         var monitors = await db.MonitorEndpoints
             .Include(m => m.LastObservedVersion).ThenInclude(v => v!.Certificate)
             .Include(m => m.InternalObservedVersion).ThenInclude(v => v!.Certificate)
+            .Include(m => m.CertificateLinks)
             .OrderBy(m => m.Host).ThenBy(m => m.Port)
             .AsNoTracking()
             .ToListAsync(ct);
-        return monitors.Select(ToDto);
+
+        var result = new List<MonitorDto>(monitors.Count);
+        foreach (var m in monitors) result.Add(await EnrichAsync(m, ct));
+        return result;
+    }
+
+    /// <summary>
+    /// Adds the §26.3 fields: the expected (active) certificate for this endpoint,
+    /// the resulting drift status, and the managed target/credential/binding behind it.
+    /// </summary>
+    private async Task<MonitorDto> EnrichAsync(MonitorEndpoint m, CancellationToken ct)
+    {
+        var dto = ToDto(m);
+        var certIds = m.CertificateLinks.Select(l => l.CertificateId).ToList();
+        if (certIds.Count == 0)
+            return dto with { DriftStatus = "Unknown", Bindings = [] };
+
+        var expectedVersion = await db.CertificateVersions.AsNoTracking()
+            .Include(v => v.Certificate)
+            .Where(v => certIds.Contains(v.CertificateId) && v.Status == CertificateVersionStatus.Active)
+            .OrderByDescending(v => v.NotAfter)
+            .FirstOrDefaultAsync(ct);
+
+        var expected = expectedVersion is null ? null : new ExpectedDto(
+            expectedVersion.CertificateId, expectedVersion.Id,
+            expectedVersion.Certificate.CommonName, expectedVersion.Sha256Thumbprint,
+            expectedVersion.NotAfter, expectedVersion.Status.ToString());
+
+        var observed = m.LastObservedVersion?.Sha256Thumbprint ?? m.InternalObservedVersion?.Sha256Thumbprint;
+        var drift = expected is null ? "NoExpectedVersion"
+            : observed is null ? "NotObserved"
+            : string.Equals(observed, expected.Sha256Thumbprint, StringComparison.OrdinalIgnoreCase) ? "InSync"
+            : "Drift";
+
+        var bindings = await db.DeploymentBindings.AsNoTracking()
+            .Where(b => certIds.Contains(b.CertificateId))
+            .Select(b => new BindingLinkDto(
+                b.Id, b.CertificateStore.TargetId, b.CertificateStore.Target.Name,
+                b.CertificateStore.Target.AdapterType, b.CertificateStore.StoreType,
+                b.CertificateStore.StorePath, b.CertificateStore.Alias,
+                b.CertificateStore.Target.CredentialRefId == null ? null
+                    : db.CredentialRefs.Where(c => c.Id == b.CertificateStore.Target.CredentialRefId)
+                        .Select(c => c.Name).FirstOrDefault(),
+                b.CertificateStore.Target.CredentialRefId == null ? "none"
+                    : db.CredentialRefs.Where(c => c.Id == b.CertificateStore.Target.CredentialRefId)
+                        .Select(c => c.EncryptedSecret != null ? "stored (encrypted)" : "external provider")
+                        .FirstOrDefault() ?? "unknown",
+                b.ServiceBindingJson))
+            .ToListAsync(ct);
+
+        return dto with { Expected = expected, DriftStatus = drift, Bindings = bindings };
     }
 
     [HttpGet("{id:guid}")]
@@ -52,9 +117,10 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         var monitor = await db.MonitorEndpoints
             .Include(m => m.LastObservedVersion).ThenInclude(v => v!.Certificate)
             .Include(m => m.InternalObservedVersion).ThenInclude(v => v!.Certificate)
+            .Include(m => m.CertificateLinks)
             .AsNoTracking()
             .FirstOrDefaultAsync(m => m.Id == id, ct);
-        return monitor is null ? NotFound() : ToDto(monitor);
+        return monitor is null ? NotFound() : await EnrichAsync(monitor, ct);
     }
 
     [HttpPost]
@@ -144,8 +210,9 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         var m = await db.MonitorEndpoints
             .Include(x => x.LastObservedVersion).ThenInclude(v => v!.Certificate)
             .Include(x => x.InternalObservedVersion).ThenInclude(v => v!.Certificate)
+            .Include(x => x.CertificateLinks)
             .AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
-        return m is null ? null : ToDto(m);
+        return m is null ? null : await EnrichAsync(m, ct);
     }
 
     private static ObservedCertDto? ToCertDto(CertificateVersion? v)
@@ -176,6 +243,7 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         return new MonitorDto(
             m.Id, m.Host, m.Port, m.Sni, m.Enabled, m.ProbeIntervalMinutes, m.RunnerId, m.ExternalProbeEnabled,
             external, inside, verdict.ToString(), detail,
+            null, "Unknown", [],
             m.LastProbeStatus.ToString(), m.LastProbeError, m.LastProbeAt,
             m.LastTlsProtocol, m.LastHostnameValid, m.LastChainValid, m.LastChainError,
             external.Certificate);

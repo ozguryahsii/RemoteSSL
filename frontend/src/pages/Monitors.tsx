@@ -23,6 +23,28 @@ interface Vantage {
   certificate: ObservedCert | null
 }
 
+interface Expected {
+  certificateId: string
+  versionId: string
+  commonName: string
+  sha256Thumbprint: string
+  notAfter: string
+  status: string
+}
+
+interface BindingLink {
+  bindingId: string
+  targetId: string
+  targetName: string
+  adapter: string
+  storeType: string
+  storePath: string
+  alias: string | null
+  credentialName: string | null
+  credentialStatus: string
+  serviceBindingJson: string
+}
+
 interface Monitor {
   id: string
   host: string
@@ -36,6 +58,9 @@ interface Monitor {
   internal: Vantage
   verdict: string
   verdictDetail: string
+  expected: Expected | null
+  driftStatus: string
+  bindings: BindingLink[]
 }
 
 function healthClass(health: string | undefined): string {
@@ -53,6 +78,43 @@ function verdictClass(v: string): string {
     case 'NotConfigured': return 'muted'
     default: return 'warn'
   }
+}
+
+function driftClass(d: string): string {
+  switch (d) {
+    case 'InSync': return 'ok'
+    case 'Drift': return 'bad'
+    case 'NotObserved': return 'warn'
+    default: return 'muted'
+  }
+}
+
+/** §26.3: expected certificate, drift verdict, managed target / credential / binding links. */
+function ExpectedCell({ m }: { m: Monitor }) {
+  return (
+    <div className="small">
+      <span className={driftClass(m.driftStatus)}>{m.driftStatus}</span>
+      {m.expected ? (
+        <>
+          <div>{m.expected.commonName}</div>
+          <div className="muted">
+            {m.expected.sha256Thumbprint.slice(0, 12)}… · {m.expected.status} ·{' '}
+            {new Date(m.expected.notAfter).toLocaleDateString()}
+          </div>
+        </>
+      ) : (
+        <div className="muted">No certificate linked to this endpoint.</div>
+      )}
+      {m.bindings.map((b) => (
+        <div key={b.bindingId} className="muted" style={{ marginTop: 4 }}>
+          → {b.targetName} <span className="tag">{b.adapter}</span>
+          <div>{b.storeType}: {b.storePath}{b.alias ? ` (${b.alias})` : ''}</div>
+          <div>credential: {b.credentialName ?? '—'} ({b.credentialStatus})</div>
+        </div>
+      ))}
+      {m.bindings.length === 0 && <div className="muted">No managed target bound.</div>}
+    </div>
+  )
 }
 
 /** One vantage cell: probe status, the certificate it serves and its expiry. */
@@ -193,6 +255,7 @@ export default function Monitors() {
             <th>Outside (control plane)</th>
             <th>Inside (runner)</th>
             <th>Comparison</th>
+            <th>Expected / target</th>
             <th></th>
           </tr>
         </thead>
@@ -208,7 +271,7 @@ export default function Monitors() {
                   {(runners ?? []).map((r) => <option key={r.id} value={r.id}>via {r.name}</option>)}
                 </select>
               </td>
-              <td colSpan={3} className="small muted">
+              <td colSpan={4} className="small muted">
                 Probe interval (min): <input value={eInterval} onChange={(e) => setEInterval(e.target.value)}
                   placeholder="default" type="number" style={{ width: 90 }} />
                 <label style={{ marginLeft: 10 }}>
@@ -233,6 +296,7 @@ export default function Monitors() {
                 <span className={verdictClass(m.verdict)}>{m.verdict}</span>
                 <div className="muted small" style={{ maxWidth: 320 }}>{m.verdictDetail}</div>
               </td>
+              <td><ExpectedCell m={m} /></td>
               <td className="actions">
                 <button onClick={() => probe(m.id)} disabled={busy === m.id}>
                   {busy === m.id ? t('monitors.probing') : t('monitors.probeNow')}
@@ -244,7 +308,7 @@ export default function Monitors() {
             </tr>
           ))}
           {monitors.length === 0 && (
-            <tr><td colSpan={5} className="muted">{t('monitors.empty')}</td></tr>
+            <tr><td colSpan={6} className="muted">{t('monitors.empty')}</td></tr>
           )}
         </tbody>
       </table>
