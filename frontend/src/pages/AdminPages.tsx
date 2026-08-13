@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { apiPost, setToken, getToken } from '../api/client'
+import { apiPost, apiPatch, apiPut, apiDelete, setToken, getToken } from '../api/client'
 import { useData, post } from './SimplePages'
 
 export function Login() {
@@ -60,6 +60,16 @@ export function Policies() {
     if (certId) await post(`/api/v1/policies/${policyId}/assign`, { certificateId: certId.trim() })
   }
 
+  async function toggleEnabled(p: Policy) {
+    await apiPatch(`/api/v1/policies/${p.id}`, { enabled: !p.enabled })
+    reload()
+  }
+  async function remove(id: string) {
+    if (!window.confirm('Delete this policy? Certificates using it will be unassigned.')) return
+    await apiDelete(`/api/v1/policies/${id}`)
+    reload()
+  }
+
   return (
     <div className="page">
       <h1>Policies</h1>
@@ -77,16 +87,22 @@ export function Policies() {
         <button type="submit">Add policy</button>
       </form>
       <table className="data-table">
-        <thead><tr><th>Name</th><th>Trigger</th><th>Auto deploy</th><th>Approval</th><th>Window</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Trigger</th><th>Auto deploy</th><th>Approval</th><th>Window</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           {(policies ?? []).map((p) => (
             <tr key={p.id}>
               <td>{p.name}</td><td>T-{p.triggerDays}</td>
               <td>{p.autoDeploy ? 'yes' : 'no'}</td><td>{p.approvalRequired ? 'required' : 'no'}</td>
               <td className="small muted">{p.maintenanceWindowJson ?? 'anytime'}</td>
-              <td className="actions"><button onClick={() => assign(p.id)}>Assign to certificate</button></td>
+              <td>{p.enabled ? <span className="ok">yes</span> : <span className="muted">no</span>}</td>
+              <td className="actions">
+                <button onClick={() => assign(p.id)}>Assign</button>
+                <button onClick={() => toggleEnabled(p)}>{p.enabled ? 'Disable' : 'Enable'}</button>
+                <button className="danger" onClick={() => remove(p.id)}>Delete</button>
+              </td>
             </tr>
           ))}
+          {(policies ?? []).length === 0 && <tr><td colSpan={7} className="muted">No policies yet.</td></tr>}
         </tbody>
       </table>
     </div>
@@ -117,6 +133,21 @@ export function CaIntegrations() {
     setResult(body.success ? 'Connection OK' : `Failed: ${body.error}`)
   }
 
+  async function toggleEnabled(c: { id: string; enabled: boolean }) {
+    await apiPatch(`/api/v1/ca-connectors/${c.id}`, { enabled: !c.enabled })
+    reload()
+  }
+  async function removeConnector(id: string) {
+    if (!window.confirm('Delete this CA connector?')) return
+    const res = await apiDelete(`/api/v1/ca-connectors/${id}`)
+    if (!res.ok) alert('Delete failed: ' + ((await res.json()).title ?? res.status))
+    reload()
+  }
+  async function rename(c: { id: string; name: string }) {
+    const name = window.prompt('New name:', c.name)
+    if (name) { await apiPatch(`/api/v1/ca-connectors/${c.id}`, { name }); reload() }
+  }
+
   return (
     <div className="page">
       <h1>CA Integrations</h1>
@@ -145,7 +176,12 @@ export function CaIntegrations() {
             <tr key={c.id}>
               <td>{c.name}</td><td>{c.connectorType}</td>
               <td>{c.enabled ? <span className="ok">yes</span> : <span className="muted">no</span>}</td>
-              <td className="actions"><button onClick={() => test(c.id)}>Test connection</button></td>
+              <td className="actions">
+                <button onClick={() => test(c.id)}>Test connection</button>
+                <button onClick={() => rename(c)}>Rename</button>
+                <button onClick={() => toggleEnabled(c)}>{c.enabled ? 'Disable' : 'Enable'}</button>
+                <button className="danger" onClick={() => removeConnector(c.id)}>Delete</button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -171,6 +207,28 @@ export function Settings() {
     setUsername(''); setPassword(''); reload()
   }
 
+  async function toggleUser(u: { id: string; enabled: boolean }) {
+    await apiPatch(`/api/v1/users/${u.id}?enabled=${!u.enabled}`)
+    reload()
+  }
+  async function resetPassword(u: { id: string; username: string }) {
+    const pw = window.prompt(`New password for ${u.username} (min 8 chars):`)
+    if (pw) { await apiPut(`/api/v1/users/${u.id}`, { password: pw }); reload() }
+  }
+  async function editRoles(u: { id: string; username: string; rolesJson: string }) {
+    const current = JSON.parse(u.rolesJson || '[]').join(',')
+    const next = window.prompt(`Roles for ${u.username} (comma separated):\n${allRoles.join(', ')}`, current)
+    if (next !== null) {
+      await apiPut(`/api/v1/users/${u.id}`, { roles: next.split(',').map((r) => r.trim()).filter(Boolean) })
+      reload()
+    }
+  }
+  async function removeUser(u: { id: string; username: string }) {
+    if (!window.confirm(`Delete user ${u.username}?`)) return
+    await apiDelete(`/api/v1/users/${u.id}`)
+    reload()
+  }
+
   return (
     <div className="page">
       <h1>Settings</h1>
@@ -190,13 +248,19 @@ export function Settings() {
         <button type="submit">Add user</button>
       </form>
       <table className="data-table">
-        <thead><tr><th>Username</th><th>Roles</th><th>Enabled</th></tr></thead>
+        <thead><tr><th>Username</th><th>Roles</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           {(users ?? []).map((u) => (
             <tr key={u.id}>
               <td>{u.username}</td>
               <td className="small">{JSON.parse(u.rolesJson || '[]').join(', ')}</td>
               <td>{u.enabled ? <span className="ok">yes</span> : <span className="bad">no</span>}</td>
+              <td className="actions">
+                <button onClick={() => editRoles(u)}>Roles</button>
+                <button onClick={() => resetPassword(u)}>Reset password</button>
+                <button onClick={() => toggleUser(u)}>{u.enabled ? 'Disable' : 'Enable'}</button>
+                <button className="danger" onClick={() => removeUser(u)}>Delete</button>
+              </td>
             </tr>
           ))}
         </tbody>

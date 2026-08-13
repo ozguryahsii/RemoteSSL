@@ -51,6 +51,40 @@ public class UsersController(IRemoteSslDbContext db, AuditWriter audit) : Contro
         return new { user.Id };
     }
 
+    public record UpdateUserRequest(string? Password, List<string>? Roles);
+
+    [HttpPut("{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, UpdateUserRequest req, CancellationToken ct)
+    {
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
+        if (user is null) return NotFound();
+        if (!string.IsNullOrEmpty(req.Password))
+        {
+            if (req.Password.Length < 8) return ValidationProblem("Password must be at least 8 characters.");
+            user.PasswordHash = Hasher.HashPassword(user.Username, req.Password);
+        }
+        if (req.Roles is not null)
+        {
+            var invalid = req.Roles.FirstOrDefault(r => !ValidRoles.Contains(r));
+            if (invalid is not null) return ValidationProblem($"Unknown role '{invalid}'.");
+            user.RolesJson = JsonSerializer.Serialize(req.Roles);
+        }
+        audit.Append("user:admin", "user.update", "user", id.ToString(), "OK");
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
+        if (user is null) return NotFound();
+        db.Users.Remove(user);
+        audit.Append("user:admin", "user.delete", "user", id.ToString(), "OK", new { user.Username });
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     [HttpPatch("{id:guid}")]
     public async Task<IActionResult> SetEnabled(Guid id, [FromQuery] bool enabled, CancellationToken ct)
     {

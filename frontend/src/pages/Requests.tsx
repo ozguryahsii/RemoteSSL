@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { apiDelete } from '../api/client'
 import { useData, post } from './SimplePages'
 
 interface RequestRow {
@@ -119,6 +120,11 @@ export default function Requests() {
               <td className="actions">
                 {['WaitingForCertificate', 'CsrGenerated', 'PendingIssuance'].includes(r.state) && (
                   <button onClick={() => openUpload(r)}>Upload issued cert</button>
+                )}
+                {r.state !== 'Issued' && (
+                  <button className="danger" onClick={async () => {
+                    if (window.confirm('Delete this request?')) { await apiDelete(`/api/v1/certificates/requests/${r.id}`); reload() }
+                  }}>Delete</button>
                 )}
               </td>
             </tr>

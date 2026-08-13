@@ -45,6 +45,22 @@ export async function apiPost(path: string, body?: unknown): Promise<Response> {
   }))
 }
 
+export async function apiPatch(path: string, body?: unknown): Promise<Response> {
+  return check(await fetch(`${API_BASE}${path}`, {
+    method: 'PATCH',
+    headers: headers(true),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }))
+}
+
+export async function apiPut(path: string, body?: unknown): Promise<Response> {
+  return check(await fetch(`${API_BASE}${path}`, {
+    method: 'PUT',
+    headers: headers(true),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }))
+}
+
 export async function apiDelete(path: string): Promise<Response> {
   return check(await fetch(`${API_BASE}${path}`, { method: 'DELETE', headers: headers() }))
 }

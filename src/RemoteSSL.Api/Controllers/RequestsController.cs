@@ -44,6 +44,18 @@ public class RequestsController(IRemoteSslDbContext db, CertificateRequestServic
         catch (ArgumentException ex) { return ValidationProblem(ex.Message); }
     }
 
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        var req = await db.CertificateRequests.FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (req is null) return NotFound();
+        if (req.State == Domain.CertificateRequestState.Issued)
+            return Conflict(new ProblemDetails { Title = "Issued requests cannot be deleted; the certificate lives in the inventory." });
+        db.CertificateRequests.Remove(req);
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     [HttpGet("{id:guid}/csr")]
     public async Task<IActionResult> DownloadCsr(Guid id, CancellationToken ct)
     {

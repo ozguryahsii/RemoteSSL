@@ -190,6 +190,8 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
     private static WindowsDeployPayload ToWindowsPayload(JsonElement e) => new()
     {
         Connection = e.GetProperty("connection").Deserialize<SshTargetConfig>(Json)!,
+        Method = e.TryGetProperty("method", out var m) ? m.GetString() ?? "winrm" : "winrm",
+        WinRmUseSsl = e.TryGetProperty("winRmUseSsl", out var ws) && ws.GetBoolean(),
         StorePath = e.GetProperty("storePath").GetString()!,
         PfxBytes = Convert.FromBase64String(e.GetProperty("pfxBase64").GetString()!),
         PfxPassword = e.GetProperty("pfxPassword").GetString()!,

@@ -64,6 +64,20 @@ public class RunnersController(
             Capabilities = r.CapabilitiesJson, r.Version, r.LastHeartbeatAt, r.RegisteredAt
         }).ToListAsync(ct);
 
+    [HttpDelete("{id:guid}")]
+    [Microsoft.AspNetCore.Authorization.Authorize(Policy = "Admin")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        var runner = await db.Runners.FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (runner is null) return NotFound();
+        var pinned = await db.Targets.Where(t => t.RunnerId == id).ToListAsync(ct);
+        foreach (var t in pinned) t.RunnerId = null;
+        db.Runners.Remove(runner);
+        audit.Append("user:api", "runner.delete", "runner", id.ToString(), "OK", new { runner.Name });
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     [HttpPost("{id:guid}/heartbeat")]
     public async Task<IActionResult> Heartbeat(Guid id, HeartbeatRequest req, CancellationToken ct)
     {

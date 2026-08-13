@@ -12,8 +12,12 @@ public class DeploymentJob
     public CertificateVersion CertificateVersion { get; set; } = null!;
     public DeploymentJobStatus Status { get; set; }
 
-    /// <summary>Deployment strategy, e.g. "all-at-once", "sequential", "wave".</summary>
+    /// <summary>Deployment strategy: "all-at-once", "sequential", "parallel", "wave" (design doc §21.4).</summary>
     public string Strategy { get; set; } = "sequential";
+    /// <summary>Max targets dispatched concurrently (wave/parallel). 0 = all-at-once.</summary>
+    public int MaxConcurrency { get; set; } = 1;
+    /// <summary>Stop dispatching further waves after any target fails (fail-fast).</summary>
+    public bool StopOnFailure { get; set; } = true;
     public string? RequestedBy { get; set; }
     public string? ApprovedBy { get; set; }
     public string CorrelationId { get; set; } = string.Empty;

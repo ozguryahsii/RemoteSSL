@@ -15,13 +15,28 @@ namespace RemoteSSL.Application.Deployments;
 /// aggregation. One deployment per binding at a time is enforced via the queued
 /// RunnerJob uniqueness check.
 /// </summary>
-public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protector, AuditWriter audit, INotificationSink notifier)
+public class DeploymentService(
+    IRemoteSslDbContext db, ISecretProtector protector, AuditWriter audit,
+    INotificationSink notifier, ITlsProber prober)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
+    /// <summary>Resolves a strategy name into (maxConcurrency, stopOnFailure) per design doc §21.4.</summary>
+    private static (int MaxConcurrency, bool StopOnFailure) ResolveStrategy(string strategy, int maxConcurrency)
+    {
+        var s = strategy.ToLowerInvariant();
+        return s switch
+        {
+            "all-at-once" => (0, false),
+            "parallel" => (maxConcurrency > 0 ? maxConcurrency : 0, false),
+            "wave" => (maxConcurrency > 0 ? maxConcurrency : 2, true),
+            _ => (1, true) // sequential
+        };
+    }
+
     public async Task<DeploymentJob> CreateJobAsync(
         Guid certificateVersionId, IReadOnlyList<Guid> bindingIds, string strategy,
-        string requestedBy, bool approvalRequired, CancellationToken ct)
+        string requestedBy, bool approvalRequired, CancellationToken ct, int maxConcurrency = 0)
     {
         var version = await db.CertificateVersions.Include(v => v.Certificate)
                           .FirstOrDefaultAsync(v => v.Id == certificateVersionId, ct)
@@ -43,12 +58,15 @@ public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protecto
         if (conflict != Guid.Empty)
             throw new InvalidOperationException($"Binding {conflict} already has an active deployment job");
 
+        var (resolvedConcurrency, stopOnFailure) = ResolveStrategy(strategy, maxConcurrency);
         var job = new DeploymentJob
         {
             Id = Guid.NewGuid(),
             CertificateVersionId = version.Id,
             Status = approvalRequired ? DeploymentJobStatus.PendingApproval : DeploymentJobStatus.Approved,
             Strategy = strategy,
+            MaxConcurrency = resolvedConcurrency,
+            StopOnFailure = stopOnFailure,
             RequestedBy = requestedBy,
             CorrelationId = Guid.NewGuid().ToString("N"),
             CreatedAt = DateTimeOffset.UtcNow
@@ -126,9 +144,28 @@ public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protecto
         job.Status = DeploymentJobStatus.Running;
         job.StartedAt = DateTimeOffset.UtcNow;
 
-        foreach (var jt in job.Targets)
+        // Dispatch the first wave according to the strategy (§21.4); further waves
+        // are dispatched as targets complete in CompleteRunnerJobAsync.
+        var dispatched = DispatchWave(job);
+        audit.Append("service:orchestrator", "deployment.execute", "deployment_job", job.Id.ToString(),
+            "RUNNING", new { targets = job.Targets.Count, strategy = job.Strategy, wave = dispatched }, job.CorrelationId);
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Queues runner jobs for the next batch of pending targets, honouring the job's
+    /// max concurrency. Returns how many were dispatched. MaxConcurrency 0 = all at once.
+    /// </summary>
+    private int DispatchWave(DeploymentJob job)
+    {
+        var running = job.Targets.Count(t => t.Status == DeploymentJobStatus.Running);
+        var pending = job.Targets.Where(t => t.Status == DeploymentJobStatus.Pending)
+            .OrderBy(t => t.Id).ToList();
+        var slots = job.MaxConcurrency <= 0 ? pending.Count : Math.Max(0, job.MaxConcurrency - running);
+
+        var dispatched = 0;
+        foreach (var jt in pending.Take(slots))
         {
-            var payload = BuildPayload(job.CertificateVersion, jt);
             jt.Status = DeploymentJobStatus.Running;
             jt.StartedAt = DateTimeOffset.UtcNow;
             db.RunnerJobs.Add(new RunnerJob
@@ -136,15 +173,14 @@ public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protecto
                 Id = Guid.NewGuid(),
                 RunnerId = jt.DeploymentBinding.CertificateStore.Target.RunnerId,
                 JobType = "deploy",
-                PayloadJson = payload,
+                PayloadJson = BuildPayload(job.CertificateVersion, jt),
                 CorrelationId = job.CorrelationId,
                 DeploymentJobTargetId = jt.Id,
                 CreatedAt = DateTimeOffset.UtcNow
             });
+            dispatched++;
         }
-        audit.Append("service:orchestrator", "deployment.execute", "deployment_job", job.Id.ToString(),
-            "RUNNING", new { targets = job.Targets.Count }, job.CorrelationId);
-        await db.SaveChangesAsync(ct);
+        return dispatched;
     }
 
     /// <summary>Runner posted a deploy result: record steps and aggregate statuses.</summary>
@@ -158,7 +194,10 @@ public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protecto
 
         if (rj.DeploymentJobTargetId is { } jtId)
         {
-            var jt = await db.DeploymentJobTargets.Include(t => t.DeploymentJob)
+            var jt = await db.DeploymentJobTargets
+                .Include(t => t.DeploymentJob).ThenInclude(j => j.CertificateVersion)
+                .Include(t => t.DeploymentJob).ThenInclude(j => j.Targets)
+                    .ThenInclude(x => x.DeploymentBinding).ThenInclude(b => b.CertificateStore).ThenInclude(s => s.Target)
                 .FirstAsync(t => t.Id == jtId, ct);
             foreach (var (step, ok, log) in steps)
             {
@@ -173,17 +212,42 @@ public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protecto
                     CompletedAt = DateTimeOffset.UtcNow
                 });
             }
+            // Post-deployment remote TLS verify (design doc §21.1 / FR-017): the control
+            // plane independently probes the endpoint and confirms the expected thumbprint.
+            var remoteVerified = true;
+            if (success)
+            {
+                remoteVerified = await RemoteVerifyAsync(jt, rj, ct);
+                if (!remoteVerified) success = false;
+            }
+
             jt.Status = success ? DeploymentJobStatus.Succeeded
                 : rolledBack ? DeploymentJobStatus.RolledBack : DeploymentJobStatus.Failed;
             jt.CompletedAt = DateTimeOffset.UtcNow;
 
             var job = jt.DeploymentJob;
-            var all = await db.DeploymentJobTargets.Where(t => t.DeploymentJobId == job.Id).ToListAsync(ct);
-            if (all.All(t => t.CompletedAt is not null))
+            var all = job.Targets;
+
+            // Wave orchestration (§21.4): dispatch the next batch unless we should stop.
+            var anyFailed = all.Any(t => t.Status is DeploymentJobStatus.Failed or DeploymentJobStatus.RolledBack);
+            var hasPending = all.Any(t => t.Status == DeploymentJobStatus.Pending);
+            if (hasPending && !(job.StopOnFailure && anyFailed))
             {
+                DispatchWave(job);
+            }
+
+            if (all.All(t => t.Status != DeploymentJobStatus.Running))
+            {
+                // Stop-on-failure left some targets undispatched — cancel them.
+                foreach (var pendingTarget in all.Where(t => t.Status == DeploymentJobStatus.Pending))
+                {
+                    pendingTarget.Status = DeploymentJobStatus.Cancelled;
+                    pendingTarget.CompletedAt = DateTimeOffset.UtcNow;
+                }
+
                 job.Status = all.All(t => t.Status == DeploymentJobStatus.Succeeded) ? DeploymentJobStatus.Succeeded
                     : all.Any(t => t.Status == DeploymentJobStatus.Succeeded) ? DeploymentJobStatus.PartiallyFailed
-                    : all.All(t => t.Status == DeploymentJobStatus.RolledBack) ? DeploymentJobStatus.RolledBack
+                    : all.All(t => t.Status is DeploymentJobStatus.RolledBack or DeploymentJobStatus.Cancelled) ? DeploymentJobStatus.RolledBack
                     : DeploymentJobStatus.Failed;
                 job.CompletedAt = DateTimeOffset.UtcNow;
 
@@ -206,6 +270,70 @@ public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protecto
         }
         await db.SaveChangesAsync(ct);
     }
+
+    /// <summary>
+    /// Independent external verification: probe a monitor endpoint bound to this
+    /// certificate and confirm it now serves the just-deployed thumbprint. When the
+    /// binding carries an explicit verifyHost/verifyPort, that endpoint is probed;
+    /// otherwise any monitor linked to the certificate is used. Absence of a probe
+    /// target is not a failure (best-effort remote verify).
+    /// </summary>
+    private async Task<bool> RemoteVerifyAsync(DeploymentJobTarget jt, RunnerJob rj, CancellationToken ct)
+    {
+        var version = await db.CertificateVersions.FirstAsync(v => v.Id ==
+            db.DeploymentJobs.Where(j => j.Id == jt.DeploymentJobId).Select(j => j.CertificateVersionId).First(), ct);
+
+        string? host = null; int port = 443; string? sni = null;
+        try
+        {
+            using var svc = JsonDocument.Parse(jt.DeploymentBinding.ServiceBindingJson);
+            if (svc.RootElement.TryGetProperty("verifyHost", out var vh)) host = vh.GetString();
+            if (svc.RootElement.TryGetProperty("verifyPort", out var vp) && vp.TryGetInt32(out var pv)) port = pv;
+            if (svc.RootElement.TryGetProperty("verifySni", out var vs)) sni = vs.GetString();
+        }
+        catch { /* no explicit verify config */ }
+
+        if (host is null)
+        {
+            var monitor = await db.MonitorCertificateLinks
+                .Where(l => l.CertificateId == version.CertificateId)
+                .Join(db.MonitorEndpoints, l => l.MonitorEndpointId, m => m.Id, (l, m) => m)
+                .FirstOrDefaultAsync(ct);
+            if (monitor is null)
+            {
+                RecordStep(jt.Id, rj.Id, DeploymentStepType.RemoteVerify, StepStatus.Skipped,
+                    "no monitor endpoint bound to this certificate — remote verify skipped");
+                return true;
+            }
+            host = monitor.Host; port = monitor.Port; sni = monitor.Sni;
+        }
+
+        var result = await prober.ProbeAsync(host, port, sni, ct);
+        if (result.Status != ProbeStatus.Success || result.LeafDer is null)
+        {
+            RecordStep(jt.Id, rj.Id, DeploymentStepType.RemoteVerify, StepStatus.Failed,
+                $"probe {host}:{port} failed: {result.Status} {result.Error}");
+            return false;
+        }
+        var observed = Convert.ToHexString(SHA256.HashData(result.LeafDer));
+        var ok = observed.Equals(version.Sha256Thumbprint, StringComparison.OrdinalIgnoreCase);
+        RecordStep(jt.Id, rj.Id, DeploymentStepType.RemoteVerify, ok ? StepStatus.Succeeded : StepStatus.Failed,
+            ok ? $"{host}:{port} serves expected sha256 {observed}"
+               : $"{host}:{port} serves {observed}, expected {version.Sha256Thumbprint}");
+        return ok;
+    }
+
+    private void RecordStep(Guid jtId, Guid rjId, DeploymentStepType type, StepStatus status, string safeLog) =>
+        db.DeploymentSteps.Add(new DeploymentStep
+        {
+            Id = Guid.NewGuid(),
+            DeploymentJobTargetId = jtId,
+            StepType = type,
+            Status = status,
+            IdempotencyKey = $"{rjId}:{type}",
+            SafeLog = safeLog,
+            CompletedAt = DateTimeOffset.UtcNow
+        });
 
     private string BuildPayload(CertificateVersion version, DeploymentJobTarget jt)
     {
@@ -311,13 +439,18 @@ public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protecto
         var pfxPassword = TempPassword();
         var pfx = CertificateFactory.BuildPfx(version.PemCertificate!, keyPem, version.PemChain, pfxPassword);
         string Get(JsonElement e, string prop, string fb = "") => e.TryGetProperty(prop, out var v) ? v.GetString() ?? fb : fb;
+        var method = conn.TryGetProperty("method", out var mm) ? mm.GetString() ?? "winrm" : "winrm";
+        var winrmSsl = conn.TryGetProperty("winRmUseSsl", out var ws) && ws.GetBoolean();
+        var defaultPort = method == "ssh" ? 22 : (winrmSsl ? 5986 : 5985);
         return new
         {
             kind = "windows",
+            method,
+            winRmUseSsl = winrmSsl,
             connection = new
             {
                 host = Get(conn, "host", target.Name),
-                port = conn.TryGetProperty("port", out var p) && p.TryGetInt32(out var pi) ? pi : 22,
+                port = conn.TryGetProperty("port", out var p) && p.TryGetInt32(out var pi) ? pi : defaultPort,
                 useSudo = false
             },
             credentialRefId = target.CredentialRefId,

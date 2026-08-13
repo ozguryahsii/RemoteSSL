@@ -114,6 +114,34 @@ public class CaConnectorsController(IRemoteSslDbContext db, ISecretProtector pro
         return new { connector.Id };
     }
 
+    public record UpdateConnectorRequest(string? Name, JsonElement? Config, bool? Enabled);
+
+    [HttpPatch("{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, UpdateConnectorRequest req, CancellationToken ct)
+    {
+        var c = await db.CaConnectors.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (c is null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(req.Name)) c.Name = req.Name;
+        if (req.Config is not null) c.EncryptedConfigJson = protector.Protect(req.Config.Value.GetRawText());
+        if (req.Enabled.HasValue) c.Enabled = req.Enabled.Value;
+        audit.Append("user:api", "ca-connector.update", "ca_connector", id.ToString(), "OK", new { c.Name });
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        var c = await db.CaConnectors.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (c is null) return NotFound();
+        if (await db.RenewalPolicies.AnyAsync(pp => pp.CaConnectorId == id, ct))
+            return Conflict(new ProblemDetails { Title = "Connector is referenced by renewal policies." });
+        db.CaConnectors.Remove(c);
+        audit.Append("user:api", "ca-connector.delete", "ca_connector", id.ToString(), "OK");
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     [HttpPost("{id:guid}/test")]
     public async Task<ActionResult<object>> Test(Guid id, CancellationToken ct)
     {
@@ -175,6 +203,43 @@ public class PoliciesController(IRemoteSslDbContext db, AuditWriter audit) : Con
         db.RenewalPolicies.Add(policy);
         await db.SaveChangesAsync(ct);
         return new { policy.Id };
+    }
+
+    public record UpdatePolicyRequest(
+        string? Name, int? TriggerDays, bool? RotateKey, bool? AutoDeploy, bool? ApprovalRequired,
+        JsonElement? MaintenanceWindow, bool ClearMaintenanceWindow = false,
+        Guid? CaConnectorId = null, bool? Enabled = null);
+
+    [HttpPatch("{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, UpdatePolicyRequest req, CancellationToken ct)
+    {
+        var p = await db.RenewalPolicies.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (p is null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(req.Name)) p.Name = req.Name;
+        if (req.TriggerDays.HasValue) p.TriggerDays = req.TriggerDays.Value;
+        if (req.RotateKey.HasValue) p.RotateKey = req.RotateKey.Value;
+        if (req.AutoDeploy.HasValue) p.AutoDeploy = req.AutoDeploy.Value;
+        if (req.ApprovalRequired.HasValue) p.ApprovalRequired = req.ApprovalRequired.Value;
+        if (req.Enabled.HasValue) p.Enabled = req.Enabled.Value;
+        if (req.ClearMaintenanceWindow) p.MaintenanceWindowJson = null;
+        else if (req.MaintenanceWindow is not null) p.MaintenanceWindowJson = req.MaintenanceWindow.Value.GetRawText();
+        if (req.CaConnectorId is not null) p.CaConnectorId = req.CaConnectorId;
+        audit.Append("user:api", "policy.update", "renewal_policy", id.ToString(), "OK", new { p.Name });
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        var p = await db.RenewalPolicies.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (p is null) return NotFound();
+        var assigned = await db.Certificates.Where(c => c.RenewalPolicyId == id).ToListAsync(ct);
+        foreach (var c in assigned) c.RenewalPolicyId = null;
+        db.RenewalPolicies.Remove(p);
+        audit.Append("user:api", "policy.delete", "renewal_policy", id.ToString(), "OK", new { unassigned = assigned.Count });
+        await db.SaveChangesAsync(ct);
+        return NoContent();
     }
 
     [HttpPost("{id:guid}/assign")]

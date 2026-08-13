@@ -55,6 +55,39 @@ public class CertificatesController(IRemoteSslDbContext db) : ControllerBase
             x.MonitorCount, x.VersionCount));
     }
 
+    public record UpdateCertificateRequest(string? DisplayName, string? Environment, string? OwnerId);
+
+    [HttpPatch("{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, UpdateCertificateRequest req, CancellationToken ct)
+    {
+        var cert = await db.Certificates.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (cert is null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(req.DisplayName)) cert.DisplayName = req.DisplayName;
+        if (req.Environment is not null) cert.Environment = req.Environment;
+        if (req.OwnerId is not null) cert.OwnerId = req.OwnerId;
+        cert.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        var cert = await db.Certificates.Include(c => c.Versions).Include(c => c.MonitorLinks)
+            .FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (cert is null) return NotFound();
+        if (await db.DeploymentBindings.AnyAsync(b => b.CertificateId == id, ct))
+            return Conflict(new ProblemDetails { Title = "Certificate has deployment bindings; delete them first." });
+        var versionIds = cert.Versions.Select(v => v.Id).ToList();
+        var monitors = await db.MonitorEndpoints
+            .Where(m => m.LastObservedVersionId != null && versionIds.Contains(m.LastObservedVersionId.Value))
+            .ToListAsync(ct);
+        foreach (var m in monitors) m.LastObservedVersionId = null;
+        db.Certificates.Remove(cert);
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     /// <summary>Deployment bindings of this certificate (for the deploy wizard).</summary>
     [HttpGet("{id:guid}/bindings")]
     public async Task<IEnumerable<object>> Bindings(Guid id, CancellationToken ct) =>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { apiGet, apiPost } from '../api/client'
+import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client'
 
 interface CertificateListItem {
   id: string
@@ -58,6 +58,8 @@ export default function Certificates() {
   const [deployVersion, setDeployVersion] = useState('')
   const [deployMsg, setDeployMsg] = useState<string | null>(null)
   const [needApproval, setNeedApproval] = useState(false)
+  const [strategy, setStrategy] = useState('sequential')
+  const [maxConcurrency, setMaxConcurrency] = useState('2')
 
   function open(id: string) {
     setDeployMsg(null)
@@ -76,6 +78,8 @@ export default function Certificates() {
       certificateVersionId: deployVersion,
       bindingIds: selectedBindings,
       requestedBy: 'ui',
+      strategy,
+      maxConcurrency: strategy === 'wave' || strategy === 'parallel' ? Number(maxConcurrency) : 0,
       approvalRequired: needApproval,
       autoExecute: !needApproval,
     })
@@ -120,7 +124,19 @@ export default function Certificates() {
         <div className="detail-panel">
           <div className="detail-header">
             <h2>{selected.commonName}</h2>
-            <button onClick={() => setSelected(null)}>{t('common.close')}</button>
+            <div className="actions">
+              <button onClick={async () => {
+                const name = window.prompt('Display name:', selected.commonName)
+                if (name) { await apiPatch(`/api/v1/certificates/${selected.id}`, { displayName: name }) }
+              }}>Rename</button>
+              <button className="danger" onClick={async () => {
+                if (!window.confirm('Delete this certificate and all its versions from the inventory?')) return
+                const res = await apiDelete(`/api/v1/certificates/${selected.id}`)
+                if (!res.ok) alert('Delete failed: ' + ((await res.json()).title ?? res.status))
+                else { setSelected(null); window.location.reload() }
+              }}>Delete</button>
+              <button onClick={() => setSelected(null)}>{t('common.close')}</button>
+            </div>
           </div>
 
           <h3>{t('certificates.versions')}</h3>
@@ -152,6 +168,19 @@ export default function Certificates() {
                   {' '}{b.target} ({b.adapter}) — {b.store}
                 </label>
               ))}
+              <div className="small">
+                Strategy:{' '}
+                <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+                  <option value="sequential">Sequential (one at a time)</option>
+                  <option value="wave">Wave (N at a time, stop on failure)</option>
+                  <option value="parallel">Parallel (N at a time)</option>
+                  <option value="all-at-once">All at once</option>
+                </select>
+                {(strategy === 'wave' || strategy === 'parallel') && (
+                  <> concurrency: <input value={maxConcurrency} onChange={(e) => setMaxConcurrency(e.target.value)}
+                    type="number" min={1} style={{ width: 60 }} /></>
+                )}
+              </div>
               <label className="small"><input type="checkbox" checked={needApproval} onChange={(e) => setNeedApproval(e.target.checked)} /> require approval</label>
               <button onClick={deploy} disabled={!deployVersion || selectedBindings.length === 0}>Deploy</button>
               {deployMsg && <span className="small" style={{ marginLeft: 8 }}>{deployMsg}</span>}

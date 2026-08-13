@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { apiGet, apiPost, apiDelete } from '../api/client'
+import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client'
 
 interface ObservedCert {
   certificateId: string
@@ -18,6 +18,7 @@ interface Monitor {
   port: number
   sni: string | null
   enabled: boolean
+  probeIntervalMinutes: number | null
   lastProbeStatus: string
   lastProbeError: string | null
   lastProbeAt: string | null
@@ -44,6 +45,9 @@ export default function Monitors() {
   const [sni, setSni] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [editing, setEditing] = useState<string | null>(null)
+  const [eHost, setEHost] = useState(''); const [ePort, setEPort] = useState('443')
+  const [eSni, setESni] = useState(''); const [eInterval, setEInterval] = useState('')
 
   const reload = useCallback(() => {
     apiGet<Monitor[]>('/api/v1/monitors').then(setMonitors).catch((e) => setError(String(e)))
@@ -80,7 +84,27 @@ export default function Monitors() {
   }
 
   async function remove(id: string) {
+    if (!window.confirm('Delete this monitor?')) return
     await apiDelete(`/api/v1/monitors/${id}`)
+    reload()
+  }
+
+  function startEdit(m: Monitor) {
+    setEditing(m.id); setEHost(m.host); setEPort(String(m.port))
+    setESni(m.sni ?? ''); setEInterval(m.probeIntervalMinutes ? String(m.probeIntervalMinutes) : '')
+  }
+
+  async function saveEdit(id: string) {
+    const res = await apiPatch(`/api/v1/monitors/${id}`, {
+      host: eHost, port: Number(ePort), sni: eSni || null, clearSni: !eSni,
+      probeIntervalMinutes: eInterval ? Number(eInterval) : null,
+    })
+    if (!res.ok) { setError(`Update failed (${res.status})`); return }
+    setEditing(null); reload()
+  }
+
+  async function toggleEnabled(m: Monitor) {
+    await apiPatch(`/api/v1/monitors/${m.id}`, { enabled: !m.enabled })
     reload()
   }
 
@@ -112,11 +136,29 @@ export default function Monitors() {
           </tr>
         </thead>
         <tbody>
-          {monitors.map((m) => (
+          {monitors.map((m) => editing === m.id ? (
+            <tr key={m.id} className="editing-row">
+              <td>
+                <input value={eHost} onChange={(e) => setEHost(e.target.value)} style={{ width: 150 }} />:
+                <input value={ePort} onChange={(e) => setEPort(e.target.value)} type="number" style={{ width: 70 }} />
+                <br /><input value={eSni} onChange={(e) => setESni(e.target.value)} placeholder="SNI" style={{ width: 150 }} />
+              </td>
+              <td colSpan={4} className="small muted">
+                Probe interval (min): <input value={eInterval} onChange={(e) => setEInterval(e.target.value)}
+                  placeholder="default" type="number" style={{ width: 90 }} />
+              </td>
+              <td></td>
+              <td className="actions">
+                <button onClick={() => saveEdit(m.id)}>Save</button>
+                <button onClick={() => setEditing(null)}>Cancel</button>
+              </td>
+            </tr>
+          ) : (
             <tr key={m.id}>
               <td>
                 {m.host}:{m.port}
                 {m.sni && <span className="muted"> (SNI: {m.sni})</span>}
+                {!m.enabled && <span className="tag muted" style={{ marginLeft: 6 }}>disabled</span>}
               </td>
               <td>
                 <span className={m.lastProbeStatus === 'Success' ? 'ok' : m.lastProbeStatus === 'NeverProbed' ? 'muted' : 'bad'}>
@@ -149,6 +191,8 @@ export default function Monitors() {
                 <button onClick={() => probe(m.id)} disabled={busy === m.id}>
                   {busy === m.id ? t('monitors.probing') : t('monitors.probeNow')}
                 </button>
+                <button onClick={() => startEdit(m)}>Edit</button>
+                <button onClick={() => toggleEnabled(m)}>{m.enabled ? 'Disable' : 'Enable'}</button>
                 <button className="danger" onClick={() => remove(m.id)}>{t('common.delete')}</button>
               </td>
             </tr>

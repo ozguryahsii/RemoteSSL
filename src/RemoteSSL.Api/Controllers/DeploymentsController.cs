@@ -11,7 +11,8 @@ public class DeploymentsController(IRemoteSslDbContext db, DeploymentService ser
 {
     public record CreateDeploymentRequest(
         Guid CertificateVersionId, List<Guid> BindingIds, string Strategy = "sequential",
-        string RequestedBy = "api", bool ApprovalRequired = false, bool AutoExecute = false);
+        string RequestedBy = "api", bool ApprovalRequired = false, bool AutoExecute = false,
+        int MaxConcurrency = 0);
     public record DecisionRequest(string Approver, bool Approve = true, string? Reason = null);
 
     [HttpGet]
@@ -20,7 +21,7 @@ public class DeploymentsController(IRemoteSslDbContext db, DeploymentService ser
             .OrderByDescending(j => j.CreatedAt).Take(100)
             .Select(j => new
             {
-                j.Id, Status = j.Status.ToString(), j.Strategy, j.RequestedBy, j.ApprovedBy,
+                j.Id, Status = j.Status.ToString(), j.Strategy, j.MaxConcurrency, j.RequestedBy, j.ApprovedBy,
                 Certificate = j.CertificateVersion.Certificate.CommonName,
                 Thumbprint = j.CertificateVersion.Sha256Thumbprint,
                 TargetCount = j.Targets.Count, j.CreatedAt, j.StartedAt, j.CompletedAt, j.CorrelationId
@@ -58,7 +59,7 @@ public class DeploymentsController(IRemoteSslDbContext db, DeploymentService ser
         try
         {
             var job = await service.CreateJobAsync(req.CertificateVersionId, req.BindingIds,
-                req.Strategy, req.RequestedBy, req.ApprovalRequired, ct);
+                req.Strategy, req.RequestedBy, req.ApprovalRequired, ct, req.MaxConcurrency);
             if (req.AutoExecute && !req.ApprovalRequired) await service.ExecuteAsync(job.Id, ct);
             return CreatedAtAction(nameof(Get), new { id = job.Id }, new { job.Id, Status = job.Status.ToString() });
         }

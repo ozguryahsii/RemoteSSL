@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { apiGet, apiPost } from '../api/client'
+import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client'
 
 export function useData<T>(path: string, refreshMs = 30000): [T | null, () => void] {
   const [data, setData] = useState<T | null>(null)
@@ -73,6 +73,9 @@ export function Credentials() {
   }[]>('/api/v1/credentials')
   const [name, setName] = useState(''); const [username, setUsername] = useState('')
   const [password, setPassword] = useState(''); const [privateKey, setPrivateKey] = useState('')
+  const [editing, setEditing] = useState<string | null>(null)
+  const [eName, setEName] = useState(''); const [eUser, setEUser] = useState('')
+  const [ePass, setEPass] = useState(''); const [eKey, setEKey] = useState('')
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
@@ -82,10 +85,25 @@ export function Credentials() {
     })
     setName(''); setUsername(''); setPassword(''); setPrivateKey(''); reload()
   }
+  function startEdit(c: { id: string; name: string; username: string | null }) {
+    setEditing(c.id); setEName(c.name); setEUser(c.username ?? ''); setEPass(''); setEKey('')
+  }
+  async function saveEdit(id: string) {
+    await apiPatch(`/api/v1/credentials/${id}`, {
+      name: eName, username: eUser, password: ePass || null, privateKeyPem: eKey || null,
+    })
+    setEditing(null); reload()
+  }
+  async function remove(id: string) {
+    if (!window.confirm('Delete this credential?')) return
+    const res = await apiDelete(`/api/v1/credentials/${id}`)
+    if (!res.ok) alert('Delete failed: ' + ((await res.json()).title ?? res.status))
+    reload()
+  }
   return (
     <div className="page">
       <h1>Credentials</h1>
-      <p className="muted small">Secret values are write-only: stored encrypted, never displayed.</p>
+      <p className="muted small">Secret values are write-only: stored encrypted, never displayed. Leave secret fields blank on edit to keep the current secret.</p>
       <form className="inline-form" onSubmit={add}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="name" required />
         <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" required />
@@ -94,15 +112,34 @@ export function Credentials() {
         <button type="submit">Add credential</button>
       </form>
       <table className="data-table">
-        <thead><tr><th>Name</th><th>Type</th><th>Provider</th><th>Username</th><th>Secret</th></tr></thead>
+        <thead><tr><th>Name</th><th>Type</th><th>Provider</th><th>Username</th><th>Secret</th><th></th></tr></thead>
         <tbody>
-          {(creds ?? []).map((c) => (
+          {(creds ?? []).map((c) => editing === c.id ? (
+            <tr key={c.id} className="editing-row">
+              <td><input value={eName} onChange={(e) => setEName(e.target.value)} /></td>
+              <td className="muted small">{c.credentialType}</td><td className="muted small">{c.provider}</td>
+              <td><input value={eUser} onChange={(e) => setEUser(e.target.value)} style={{ width: 120 }} /></td>
+              <td>
+                <input value={ePass} onChange={(e) => setEPass(e.target.value)} placeholder="new password" type="password" style={{ width: 130 }} />
+                <input value={eKey} onChange={(e) => setEKey(e.target.value)} placeholder="new key PEM" style={{ width: 130 }} />
+              </td>
+              <td className="actions">
+                <button onClick={() => saveEdit(c.id)}>Save</button>
+                <button onClick={() => setEditing(null)}>Cancel</button>
+              </td>
+            </tr>
+          ) : (
             <tr key={c.id}>
               <td>{c.name}</td><td>{c.credentialType}</td><td>{c.provider}</td>
               <td>{c.username ?? '—'}</td>
               <td>{c.hasSecret ? <span className="ok">stored (encrypted)</span> : <span className="muted">external</span>}</td>
+              <td className="actions">
+                <button onClick={() => startEdit(c)}>Edit</button>
+                <button className="danger" onClick={() => remove(c.id)}>Delete</button>
+              </td>
             </tr>
           ))}
+          {(creds ?? []).length === 0 && <tr><td colSpan={6} className="muted">No credentials yet.</td></tr>}
         </tbody>
       </table>
     </div>

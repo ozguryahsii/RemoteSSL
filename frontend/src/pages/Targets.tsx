@@ -33,26 +33,41 @@ export default function Targets() {
   const [name, setName] = useState(''); const [adapter, setAdapter] = useState('nginx')
   const [host, setHost] = useState(''); const [port, setPort] = useState('22'); const [credId, setCredId] = useState('')
   const [portTouched, setPortTouched] = useState(false)
+  const [winMethod, setWinMethod] = useState('winrm') // winrm | ssh, for windows adapters
   const [testResult, setTestResult] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
   const [eName, setEName] = useState(''); const [eAdapter, setEAdapter] = useState('nginx')
   const [eHost, setEHost] = useState(''); const [ePort, setEPort] = useState('22'); const [eCred, setECred] = useState('')
+  const [eMethod, setEMethod] = useState('winrm')
+
+  const isWindows = (a: string) => a === 'windows-cert-store' || a === 'iis'
+  const isVendor = (a: string) => ['f5-bigip', 'fortigate', 'paloalto', 'citrix-adc', 'cisco-ise'].includes(a)
 
   function pickAdapter(value: string) {
     setAdapter(value)
     // Auto-fill the default port unless the user already typed one manually.
-    if (!portTouched) setPort(String(DEFAULT_PORTS[value] ?? 22))
+    if (!portTouched) {
+      const p = isWindows(value) ? (winMethod === 'winrm' ? 5985 : 22) : DEFAULT_PORTS[value] ?? 22
+      setPort(String(p))
+    }
+  }
+
+  function pickWinMethod(value: string) {
+    setWinMethod(value)
+    if (!portTouched && isWindows(adapter)) setPort(value === 'winrm' ? '5985' : '22')
   }
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
+    const connectionConfig = isVendor(adapter)
+      ? { managementUrl: `https://${host}:${port}` }
+      : isWindows(adapter)
+        ? { host, port: Number(port), method: winMethod, winRmUseSsl: winMethod === 'winrm' && Number(port) === 5986 }
+        : { host, port: Number(port) }
     const res = await post('/api/v1/targets', {
       name, adapterType: adapter,
-      targetType: adapter.startsWith('windows') || adapter === 'iis' ? 'WindowsServer'
-        : ['f5-bigip', 'fortigate', 'paloalto', 'citrix-adc', 'cisco-ise'].includes(adapter) ? 'NetworkDevice' : 'LinuxServer',
-      connectionConfig: ['f5-bigip', 'fortigate', 'paloalto', 'citrix-adc', 'cisco-ise'].includes(adapter)
-        ? { managementUrl: `https://${host}:${port}` }
-        : { host, port: Number(port) },
+      targetType: isWindows(adapter) ? 'WindowsServer' : isVendor(adapter) ? 'NetworkDevice' : 'LinuxServer',
+      connectionConfig,
       credentialRefId: credId || null,
     })
     if (!res.ok) { alert('Create failed: ' + ((await res.json()).title ?? res.status)); return }
@@ -67,16 +82,19 @@ export default function Targets() {
         const u = new URL(c.managementUrl)
         setEHost(u.hostname); setEPort(u.port || '443')
       } else {
-        setEHost(c.host ?? ''); setEPort(String(c.port ?? 22))
+        setEHost(c.host ?? ''); setEPort(String(c.port ?? 22)); setEMethod(c.method ?? 'winrm')
       }
     } catch { setEHost(''); setEPort('22') }
   }
 
   async function saveEdit(id: string) {
-    const isVendor = ['f5-bigip', 'fortigate', 'paloalto', 'citrix-adc', 'cisco-ise'].includes(eAdapter)
+    const connectionConfig = isVendor(eAdapter)
+      ? { managementUrl: `https://${eHost}:${ePort}` }
+      : isWindows(eAdapter)
+        ? { host: eHost, port: Number(ePort), method: eMethod, winRmUseSsl: eMethod === 'winrm' && Number(ePort) === 5986 }
+        : { host: eHost, port: Number(ePort) }
     const res = await patchTarget(id, {
-      name: eName, adapterType: eAdapter,
-      connectionConfig: isVendor ? { managementUrl: `https://${eHost}:${ePort}` } : { host: eHost, port: Number(ePort) },
+      name: eName, adapterType: eAdapter, connectionConfig,
       credentialRefId: eCred || null, clearCredential: !eCred,
     })
     if (!res.ok) { alert('Update failed: ' + ((await res.json()).title ?? res.status)); return }
@@ -124,6 +142,12 @@ export default function Targets() {
         <select value={adapter} onChange={(e) => pickAdapter(e.target.value)}>
           {ADAPTERS.map((a) => <option key={a}>{a}</option>)}
         </select>
+        {isWindows(adapter) && (
+          <select value={winMethod} onChange={(e) => pickWinMethod(e.target.value)} title="Windows management channel">
+            <option value="winrm">WinRM (PowerShell Remoting)</option>
+            <option value="ssh">SSH (OpenSSH)</option>
+          </select>
+        )}
         <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="host" required />
         <input value={port} onChange={(e) => { setPort(e.target.value); setPortTouched(true) }}
                type="number" min={1} max={65535} style={{ width: 80 }} title="port (auto-filled per adapter, editable)" />
@@ -148,6 +172,11 @@ export default function Targets() {
               <td>
                 <input value={eHost} onChange={(e) => setEHost(e.target.value)} placeholder="host" style={{ width: 160 }} />{' '}
                 <input value={ePort} onChange={(e) => setEPort(e.target.value)} type="number" style={{ width: 80 }} />
+                {isWindows(eAdapter) && (
+                  <select value={eMethod} onChange={(e) => setEMethod(e.target.value)}>
+                    <option value="winrm">WinRM</option><option value="ssh">SSH</option>
+                  </select>
+                )}
               </td>
               <td>
                 <select value={eCred} onChange={(e) => setECred(e.target.value)}>

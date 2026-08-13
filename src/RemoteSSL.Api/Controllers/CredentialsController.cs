@@ -60,6 +60,27 @@ public class CredentialsController(IRemoteSslDbContext db, ISecretProtector prot
         return new { cred.Id };
     }
 
+    public record UpdateCredentialRequest(string? Name, string? Username, string? Password, string? PrivateKeyPem);
+
+    [HttpPatch("{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, UpdateCredentialRequest req, CancellationToken ct)
+    {
+        var cred = await db.CredentialRefs.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (cred is null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(req.Name)) cred.Name = req.Name;
+        if (req.Username is not null) cred.Username = req.Username;
+        if (!string.IsNullOrEmpty(req.Password) || !string.IsNullOrEmpty(req.PrivateKeyPem))
+        {
+            cred.EncryptedSecret = protector.Protect(JsonSerializer.Serialize(new { req.Password, req.PrivateKeyPem }));
+            cred.CredentialType = !string.IsNullOrEmpty(req.PrivateKeyPem)
+                ? Domain.CredentialType.SshPrivateKey : Domain.CredentialType.UsernamePassword;
+        }
+        cred.UpdatedAt = DateTimeOffset.UtcNow;
+        audit.Append("user:api", "credential.update", "credential_ref", id.ToString(), "OK", new { cred.Name });
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {

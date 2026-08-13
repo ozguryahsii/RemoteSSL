@@ -11,7 +11,7 @@ namespace RemoteSSL.Api.Controllers;
 public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService probeService) : ControllerBase
 {
     public record CreateMonitorRequest(string Host, int Port = 443, string? Sni = null, int? ProbeIntervalMinutes = null);
-    public record UpdateMonitorRequest(bool? Enabled, int? ProbeIntervalMinutes);
+    public record UpdateMonitorRequest(bool? Enabled, int? ProbeIntervalMinutes, string? Host, int? Port, string? Sni, bool ClearSni = false);
 
     public record MonitorDto(
         Guid Id, string Host, int Port, string? Sni, bool Enabled, int? ProbeIntervalMinutes,
@@ -80,6 +80,10 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
 
         if (request.Enabled.HasValue) monitor.Enabled = request.Enabled.Value;
         if (request.ProbeIntervalMinutes.HasValue) monitor.ProbeIntervalMinutes = request.ProbeIntervalMinutes;
+        if (!string.IsNullOrWhiteSpace(request.Host)) monitor.Host = request.Host.Trim().ToLowerInvariant();
+        if (request.Port is >= 1 and <= 65535) monitor.Port = request.Port.Value;
+        if (request.ClearSni) monitor.Sni = null;
+        else if (!string.IsNullOrWhiteSpace(request.Sni)) monitor.Sni = request.Sni.Trim().ToLowerInvariant();
         monitor.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         return ToDto(monitor);
