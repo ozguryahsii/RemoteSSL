@@ -14,32 +14,6 @@ export function useData<T>(path: string, refreshMs = 30000): [T | null, () => vo
 
 export const post = apiPost
 
-export function Dashboard() {
-  const [certs] = useData<{ health: string; daysUntilExpiry: number | null }[]>('/api/v1/certificates')
-  const [jobs] = useData<{ status: string }[]>('/api/v1/deployments')
-  const [runners] = useData<{ status: string }[]>('/api/v1/runners')
-  const [approvals] = useData<unknown[]>('/api/v1/deployments/approvals/pending')
-
-  const stat = (label: string, value: number | string, cls = '') => (
-    <div className="stat-card"><div className={`stat-value ${cls}`}>{value}</div><div className="muted">{label}</div></div>
-  )
-  const c = certs ?? [], j = jobs ?? [], r = runners ?? []
-  return (
-    <div className="page">
-      <h1>Dashboard</h1>
-      <div className="stat-row">
-        {stat('Certificates', c.length)}
-        {stat('Critical / Expired', c.filter((x) => ['Critical', 'Expired'].includes(x.health)).length, 'bad')}
-        {stat('Expiring soon', c.filter((x) => x.health === 'ExpiringSoon').length, 'warn')}
-        {stat('Deployment jobs', j.length)}
-        {stat('Failed jobs', j.filter((x) => ['Failed', 'PartiallyFailed', 'RollbackFailed'].includes(x.status)).length, 'bad')}
-        {stat('Runners online', `${r.filter((x) => x.status === 'Online').length}/${r.length}`)}
-        {stat('Pending approvals', (approvals ?? []).length, 'warn')}
-      </div>
-    </div>
-  )
-}
-
 export function Runners() {
   const [runners] = useData<{
     id: string; name: string; segment: string | null; status: string

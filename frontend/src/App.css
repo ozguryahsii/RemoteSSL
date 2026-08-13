@@ -224,3 +224,21 @@ select {
 }
 .hop-list li button { padding: 2px 8px; font-size: 12px; }
 .hop-index { font-weight: 700; color: var(--muted); }
+
+.alert-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px; }
+.alert-row {
+  padding: 9px 14px; border-radius: 6px; font-size: 14px;
+  border-left: 4px solid; background: #fff; border: 1px solid #e2e8f0;
+}
+.alert-row.critical { border-left-color: var(--bad); background: #fef2f2; }
+.alert-row.warning { border-left-color: #d97706; background: #fffbeb; }
+.dash-section { margin-top: 28px; }
+.dash-section h2 {
+  font-size: 16px; margin: 0 0 10px; display: flex; align-items: baseline; gap: 12px;
+}
+.dash-section h2 a { color: var(--sidebar-active); text-decoration: none; font-weight: 400; }
+.dash-section h3 { font-size: 14px; margin: 16px 0 6px; }
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 24px; }
+.stat-row { gap: 12px; }
+.stat-card { padding: 12px 18px; min-width: 120px; }
+.stat-card .stat-value { font-size: 22px; }

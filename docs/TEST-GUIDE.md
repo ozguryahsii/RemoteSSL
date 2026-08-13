@@ -24,7 +24,25 @@ cd frontend && npm install && npm run dev     # → http://localhost:5173
 
 Doğrulama: `curl http://localhost:5200/health` → `Healthy`; UI'da **Runners** ekranında `runner-local` Online görünmeli.
 
-## 2. Faz 1 — SSL Monitoring & Inventory
+## 2. Dashboard (§43 / §32.1 / §32.3)
+
+Dashboard tek çağrıda (`GET /api/v1/dashboard`) şunları gösterir:
+
+- **Aktif alarmlar (§32.3):** critical certificate expiry, deployment partial failure, rollback failure,
+  runner offline, renewal failure, CA error, drift/vantage mismatch, probe failure
+- **Metrikler (§32.1):** toplam/expiring sertifika, probe success rate, deployment success rate,
+  ortalama deploy süresi, rollback sayısı, runner online/total, job queue depth, renewal failure,
+  drift (7 gün), bekleyen onay
+- **Critical & expiring certificates:** 30 günden az kalanlar — durum, kalan gün, issuer, environment,
+  monitor/deployment sayısı, auto-renew durumu
+- **Failed deployment jobs:** başarısız/kısmi/rollback olan işler, kaç hedefin patladığı
+- **Runner health:** her runner'ın durumu, segmenti, son heartbeat'i
+- **Renewal queue:** işlemde olan sertifika talepleri, state ve yaş
+- **Pending approvals** ve son **drift/vantage mismatch** olayları
+
+Her bölümün başlığında ilgili ekrana giden link vardır. Veriler 20 saniyede bir tazelenir.
+
+## 3. Faz 1 — SSL Monitoring & Inventory
 
 1. UI → **Monitors** → `google.com` port `443` ekleyin → **Probe now**.
 2. Beklenen: Success, TLS protokolü, gözlenen sertifika CN'i, kalan gün, chain durumu.
@@ -32,7 +50,7 @@ Doğrulama: `curl http://localhost:5200/health` → `Healthy`; UI'da **Runners**
 4. Sertifika detayında version, SAN, thumbprint ve monitor listesi görünmeli.
 5. **Audit** ekranında `certificate.expiring` eşik olayları (T-90/T-60…) görünür.
 
-## 3. Faz 2+3 — Managed Target & Linux (Nginx) Deployment
+## 4. Faz 2+3 — Managed Target & Linux (Nginx) Deployment
 
 Test hedefi olarak lokal bir nginx + SSH kullanın (`test-lab/README.md`'de Docker imajı var; macOS'te Docker ile):
 
@@ -64,14 +82,14 @@ docker run -d --name remotessl-lab -p 2222:22 -p 8444:443 remotessl-lab
 Uyumsuz key ile yeni bir version yükleyin (`openssl genrsa` ile bağımsız key) ve deploy edin →
 `nginx -t` fail olur, job **RolledBack** biter, eski sertifika sunulmaya devam eder.
 
-## 4. Faz 5 — Certificate Factory
+## 5. Faz 5 — Certificate Factory
 
 Swagger üzerinden:
 - `POST /api/v1/artifacts/csr` — RSA 2048/4096, EC P-256/P-384 CSR + key
 - `POST /api/v1/artifacts/pfx` / `pfx/parse` — PEM↔PFX dönüşümü
 - `POST /api/v1/artifacts/chain` — leaf + karışık intermediate havuzundan sıralı chain (root hariç)
 
-## 5. Faz 7 — CA Connector (Manual + GlobalSign)
+## 6. Faz 7 — CA Connector (Manual + GlobalSign)
 
 Manual akış (GlobalSign hesabı gelene kadar):
 1. UI → **Certificate Requests** → CN girin, CA olarak `Manual CA` seçin (yoksa Swagger `POST /api/v1/ca-connectors` `{"name":"Manual CA","connectorType":"manual"}`).
@@ -80,7 +98,7 @@ Manual akış (GlobalSign hesabı gelene kadar):
 
 GlobalSign geldiğinde: `POST /api/v1/ca-connectors` `{"name":"GlobalSign","connectorType":"globalsign-hvca","config":{"baseUrl":"...","apiKey":"...","apiSecret":"...","clientPfxBase64":"...","clientPfxPassword":"..."}}` → `POST /api/v1/ca-connectors/{id}/test`.
 
-## 6. Faz 8 — Otomasyon (renewal + approval + drift)
+## 7. Faz 8 — Otomasyon (renewal + approval + drift)
 
 1. Swagger → `POST /api/v1/policies` `{ "name":"prod-30", "triggerDays":30, "autoDeploy":true, "approvalRequired":true, "caConnectorId":"<manual-ca-id>" }`
 2. `POST /api/v1/policies/{id}/assign` `{ "certificateId": "<30 günden az kalmış cert>" }`
@@ -89,7 +107,7 @@ GlobalSign geldiğinde: `POST /api/v1/ca-connectors` `{"name":"GlobalSign","conn
 5. Drift: hedefteki sertifikayı elle eski haline döndürün; monitor probe + otomasyon `drift.detected` audit olayı üretir.
 6. Bildirimler: `appsettings.json` → `Notifications:WebhookUrl` / `TeamsWebhookUrl` / `Smtp:*` doldurun; expiring/deployment/drift olayları bu kanallara ve RabbitMQ `remotessl.events` exchange'ine düşer (RabbitMQ UI: http://localhost:15672, remotessl/remotessl_dev).
 
-## 7. Faz 10 — Auth, RBAC ve kullanıcılar
+## 8. Faz 10 — Auth, RBAC ve kullanıcılar
 
 `src/RemoteSSL.Api/appsettings.json` → `"Auth": { "Enabled": true }` yapıp API'yi yeniden başlatın.
 - UI otomatik olarak `/login` sayfasına yönlendirir; `admin` / `admin` ile girin.
@@ -99,12 +117,12 @@ GlobalSign geldiğinde: `POST /api/v1/ca-connectors` `{"name":"GlobalSign","conn
 - Yanlış roldeki kullanıcıyla yazma endpoint'i çağırın → 403 beklenir.
 - Auth kapalıyken tüm ekranlar login'siz çalışır (dev modu).
 
-## 8. UI üzerinden deployment (yeni)
+## 9. UI üzerinden deployment (yeni)
 
 **Certificates** ekranında bir sertifikaya tıklayın → **Deploy** bölümü: version + binding seçin,
 istenirse "require approval" işaretleyin → **Deploy**. Onaysızsa job anında koşar; onaylıysa Approvals ekranına düşer.
 
-## 9. On-target key generation (yeni)
+## 10. On-target key generation (yeni)
 
 Private key'in hedeften hiç çıkmadığı model (tasarım §16.1):
 ```
@@ -115,13 +133,13 @@ POST /api/v1/certificates/requests
 ```
 Runner hedefte `openssl` ile 0600 izinli key + CSR üretir; CSR kontrol düzlemine döner, state `CsrGenerated`/`WaitingForCertificate` olur. İmzalayıp yükleyince deploy sırasında key gönderilmez (hedefte zaten var).
 
-## 10. HashiCorp Vault (opsiyonel)
+## 11. HashiCorp Vault (opsiyonel)
 
 `appsettings.json` → `"Vault": { "Addr": "http://localhost:8200", "Token": "..." }`.
 Credential oluştururken provider `HashiCorpVault`, secretIdentifier `vault://secret/prod/web01`
 (KV v2; data içinde `password` ve/veya `privateKey` alanları). Runner, secret'i broker üzerinden execution anında alır.
 
-## 11. İç DNS endpoint'leri ve katmanlı (F5 → nginx → IIS) analiz — yeni
+## 12. İç DNS endpoint'leri ve katmanlı (F5 → nginx → IIS) analiz — yeni
 
 **Dış + iç çift sorgu (dual vantage) — en pratik yöntem:**
 
@@ -178,7 +196,7 @@ ATTENTION — hop 2 (localhost:8445): StaleCertificate
   hop2 localhost:8445 via=runner       -> StaleCertificate (bu katman son yenilemede atlanmış)
 ```
 
-## 12. Windows / IIS, Java, Oracle, F5, diğer vendorlar (kod hazır, lab gerekli)
+## 13. Windows / IIS, Java, Oracle, F5, diğer vendorlar (kod hazır, lab gerekli)
 
 Bu adapterlar implemente edildi ancak bu ortamda gerçek hedef olmadığı için canlı test edilmedi:
 
