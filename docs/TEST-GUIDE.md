@@ -129,9 +129,22 @@ yapılır, DNS çözümü orada gerçekleşir. Satırda `via runner` etiketi gö
 (Runner'ı ilgili segmentte çalıştırmanız gerekir: `dotnet run --project src/RemoteSSL.Runner`,
 `appsettings.json` → `ControlPlane:Url` kontrol düzlemine bakacak şekilde.)
 
-**Service Paths (katman analizi):** Monitors ekranının altındaki **Service Paths** bölümünde,
-uygulamanın önündeki TLS katmanlarını sırayla (en dıştan içe: F5 VIP → nginx → IIS) bir "path"
-olarak tanımlayın (Cmd+tık ile sırayla seçin) → **Analyze**.
+**Service Paths (katman analizi) — nasıl tanımlanır:**
+
+Önce **her katman için ayrı bir monitor** ekleyin. Hepsinde host o katmanın **kendi adresi**,
+SNI ise **uygulamanın hostname'i** olur (böylece her katman aynı sertifikayı sunmak zorundadır):
+
+| Katman | Host (monitor) | Port | SNI | Probe |
+|---|---|---|---|---|
+| 1. F5 VIP | `10.184.10.20` (VIP IP) | 443 | `emakin.viennalife.com.tr` | via runner |
+| 2. nginx | `10.184.20.31` (nginx sunucu IP) | 443 | `emakin.viennalife.com.tr` | via runner |
+| 3. IIS | `10.184.33.5` (IIS sunucu IP) | 443 | `emakin.viennalife.com.tr` | via runner |
+
+Sonra **Service Paths** bölümünde:
+1. Sol kutuya path adı yazın (ör. `emakin prod`).
+2. Açılır listeden 1. katmanı seçip **Add hop** → sonra 2. katman → sonra 3. katman.
+   Eklenen hop'lar numaralı liste olarak görünür; sıra yanlışsa `↑ ↓` ile düzeltin, `×` ile çıkarın.
+3. **Save path** → tabloda satır oluşur → **Analyze**.
 
 Analiz her hop'u ayrı probe eder ve şu verdict'leri üretir:
 - `Healthy` / `ExpiringSoon` / `Critical` — normal expiry durumu

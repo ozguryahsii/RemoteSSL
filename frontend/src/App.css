@@ -215,3 +215,12 @@ select {
 .store-chip { display: inline-flex; align-items: center; gap: 4px; background: #f1f5f9; border-radius: 10px; padding: 2px 8px; margin: 1px 4px 1px 0; }
 .chip-x { border: none; background: none; padding: 0 2px; color: var(--bad); font-weight: 700; cursor: pointer; }
 .editing-row td { background: #fefce8; }
+
+.path-builder { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.hop-list { list-style: none; padding: 0; margin: 0 0 12px; }
+.hop-list li {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px; margin-bottom: 4px;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 14px; max-width: 640px;
+}
+.hop-list li button { padding: 2px 8px; font-size: 12px; }
+.hop-index { font-weight: 700; color: var(--muted); }

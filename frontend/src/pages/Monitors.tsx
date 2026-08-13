@@ -240,11 +240,31 @@ function ServicePaths({ monitors }: { monitors: Monitor[] }) {
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [busy, setBusy] = useState(false)
 
+  const [pick, setPick] = useState('')
+
   async function addPath(e: React.FormEvent) {
     e.preventDefault()
     const res = await post('/api/v1/paths', { name, monitorIds: hops })
     if (!res.ok) { alert('Create failed: ' + ((await res.json()).title ?? res.status)); return }
     setName(''); setHops([]); reloadPaths()
+  }
+
+  function addHop() {
+    if (pick && !hops.includes(pick)) setHops([...hops, pick])
+    setPick('')
+  }
+
+  function moveHop(i: number, delta: number) {
+    const next = [...hops]
+    const j = i + delta
+    if (j < 0 || j >= next.length) return
+    ;[next[i], next[j]] = [next[j], next[i]]
+    setHops(next)
+  }
+
+  const label = (id: string) => {
+    const m = monitors.find((x) => x.id === id)
+    return m ? `${m.host}:${m.port}${m.sni ? ` (SNI ${m.sni})` : ''}` : '?'
   }
 
   async function analyze(id: string) {
@@ -268,20 +288,42 @@ function ServicePaths({ monitors }: { monitors: Monitor[] }) {
     <div style={{ marginTop: 32 }}>
       <h2>Service Paths</h2>
       <p className="muted small">
-        Model the TLS layers in front of an application (e.g. F5 VIP → nginx → IIS backend, outermost first).
-        Analysis probes every hop and pinpoints the layer whose certificate was skipped during a renewal.
+        Model the TLS layers in front of one application — add a monitor per layer first (each pointing at that
+        layer's own address, with the application hostname as SNI), then chain them here from the outermost hop
+        (F5 VIP) to the innermost (IIS backend). Analysis probes every hop and pinpoints the layer whose
+        certificate was skipped during a renewal.
       </p>
-      <form className="inline-form" onSubmit={addPath} style={{ flexWrap: 'wrap' }}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="path name (e.g. emakin prod)" required />
-        <select multiple value={hops} onChange={(e) => setHops([...e.target.selectedOptions].map((o) => o.value))}
-                style={{ height: 90, minWidth: 260 }} title="Cmd-click to select hops in order (outermost first)">
-          {monitors.map((m) => <option key={m.id} value={m.id}>{m.host}:{m.port}{m.sni ? ` (${m.sni})` : ''}</option>)}
+
+      <div className="path-builder">
+        <input value={name} onChange={(e) => setName(e.target.value)}
+               placeholder="path name (e.g. emakin prod)" style={{ minWidth: 220 }} />
+        <select value={pick} onChange={(e) => setPick(e.target.value)} style={{ minWidth: 280 }}>
+          <option value="">select a monitor to add as the next hop…</option>
+          {monitors.filter((m) => !hops.includes(m.id)).map((m) => (
+            <option key={m.id} value={m.id}>{m.host}:{m.port}{m.sni ? ` (SNI ${m.sni})` : ''}</option>
+          ))}
         </select>
-        <span className="muted small">selected order: {hops.map((h) => {
-          const m = monitors.find((x) => x.id === h); return m ? `${m.host}:${m.port}` : ''
-        }).join(' → ') || '—'}</span>
-        <button type="submit" disabled={hops.length < 2}>Add path</button>
-      </form>
+        <button type="button" onClick={addHop} disabled={!pick}>Add hop</button>
+      </div>
+
+      {hops.length > 0 && (
+        <ol className="hop-list">
+          {hops.map((h, i) => (
+            <li key={h}>
+              <span className="hop-index">{i + 1}.</span> {label(h)}
+              <span className="muted small">{i === 0 ? ' — outermost' : i === hops.length - 1 ? ' — innermost' : ''}</span>
+              <button type="button" onClick={() => moveHop(i, -1)} disabled={i === 0}>↑</button>
+              <button type="button" onClick={() => moveHop(i, 1)} disabled={i === hops.length - 1}>↓</button>
+              <button type="button" className="danger" onClick={() => setHops(hops.filter((x) => x !== h))}>×</button>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      <div className="path-builder">
+        <button type="button" onClick={addPath} disabled={!name || hops.length < 2}>Save path</button>
+        {hops.length < 2 && <span className="muted small">Add at least two hops (outermost first) and a name.</span>}
+      </div>
 
       <table className="data-table">
         <thead><tr><th>Name</th><th>Hops</th><th></th></tr></thead>
