@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { API_BASE, apiGet } from '../api/client'
+import { apiGet, apiPost, apiDelete } from '../api/client'
 
 interface ObservedCert {
   certificateId: string
@@ -58,11 +58,7 @@ export default function Monitors() {
   async function addMonitor(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    const res = await fetch(`${API_BASE}/api/v1/monitors`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host, port: Number(port), sni: sni || null }),
-    })
+    const res = await apiPost('/api/v1/monitors', { host, port: Number(port), sni: sni || null })
     if (!res.ok) {
       setError(`${t('monitors.addFailed')} (${res.status})`)
       return
@@ -76,7 +72,7 @@ export default function Monitors() {
   async function probe(id: string) {
     setBusy(id)
     try {
-      await fetch(`${API_BASE}/api/v1/monitors/${id}/probe`, { method: 'POST' })
+      await apiPost(`/api/v1/monitors/${id}/probe`)
       reload()
     } finally {
       setBusy(null)
@@ -84,7 +80,7 @@ export default function Monitors() {
   }
 
   async function remove(id: string) {
-    await fetch(`${API_BASE}/api/v1/monitors/${id}`, { method: 'DELETE' })
+    await apiDelete(`/api/v1/monitors/${id}`)
     reload()
   }
 

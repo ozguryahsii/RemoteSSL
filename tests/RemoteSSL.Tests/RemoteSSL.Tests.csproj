@@ -27,6 +27,7 @@
     <ProjectReference Include="..\..\src\RemoteSSL.Domain\RemoteSSL.Domain.csproj" />
     <ProjectReference Include="..\..\src\RemoteSSL.Application\RemoteSSL.Application.csproj" />
     <ProjectReference Include="..\..\src\RemoteSSL.Infrastructure\RemoteSSL.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\RemoteSSL.Adapters\RemoteSSL.Adapters.csproj" />
   </ItemGroup>
 
 </Project>

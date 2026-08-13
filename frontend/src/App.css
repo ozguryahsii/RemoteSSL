@@ -192,3 +192,8 @@ select {
   padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px;
   font-size: 14px; background: #fff;
 }
+
+.login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--content-bg); }
+.login-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 32px; width: 320px; display: flex; flex-direction: column; gap: 12px; }
+.login-card input { padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 6px; }
+.deploy-box { border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }

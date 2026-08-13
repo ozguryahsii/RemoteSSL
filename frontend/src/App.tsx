@@ -8,6 +8,7 @@ import Targets from './pages/Targets'
 import Deployments from './pages/Deployments'
 import Requests from './pages/Requests'
 import { Dashboard, Runners, Credentials, Approvals, Audit } from './pages/SimplePages'
+import { Login, Policies, CaIntegrations, Settings } from './pages/AdminPages'
 import './App.css'
 
 const NAV_ITEMS = [
@@ -92,7 +93,11 @@ export default function App() {
             <Route path="/credentials" element={<Credentials />} />
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/audit" element={<Audit />} />
-            {NAV_ITEMS.filter((i) => !['/', '/monitors', '/certificates', '/targets', '/deployments', '/requests', '/runners', '/credentials', '/approvals', '/audit'].includes(i.path)).map((item) => (
+            <Route path="/login" element={<Login />} />
+            <Route path="/policies" element={<Policies />} />
+            <Route path="/ca-integrations" element={<CaIntegrations />} />
+            <Route path="/settings" element={<Settings />} />
+            {NAV_ITEMS.filter((i) => !['/', '/monitors', '/certificates', '/targets', '/deployments', '/requests', '/runners', '/credentials', '/approvals', '/audit', '/policies', '/ca-integrations', '/settings'].includes(i.path)).map((item) => (
               <Route key={item.path} path={item.path} element={<Placeholder titleKey={item.key} />} />
             ))}
           </Routes>

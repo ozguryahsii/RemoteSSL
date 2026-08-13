@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { apiGet } from '../api/client'
+import { apiGet, apiPost } from '../api/client'
 
 interface CertificateListItem {
   id: string
@@ -53,8 +53,36 @@ export default function Certificates() {
     apiGet<CertificateListItem[]>('/api/v1/certificates').then(setCerts).catch(() => {})
   }, [])
 
+  const [bindings, setBindings] = useState<{ id: string; target: string; adapter: string; store: string }[]>([])
+  const [selectedBindings, setSelectedBindings] = useState<string[]>([])
+  const [deployVersion, setDeployVersion] = useState('')
+  const [deployMsg, setDeployMsg] = useState<string | null>(null)
+  const [needApproval, setNeedApproval] = useState(false)
+
   function open(id: string) {
-    apiGet<CertificateDetail>(`/api/v1/certificates/${id}`).then(setSelected).catch(() => {})
+    setDeployMsg(null)
+    apiGet<CertificateDetail>(`/api/v1/certificates/${id}`).then((d) => {
+      setSelected(d)
+      setDeployVersion(d.versions[0]?.id ?? '')
+    }).catch(() => {})
+    apiGet<{ id: string; target: string; adapter: string; store: string }[]>(`/api/v1/certificates/${id}/bindings`)
+      .then((b) => { setBindings(b); setSelectedBindings(b.map((x) => x.id)) })
+      .catch(() => setBindings([]))
+  }
+
+  async function deploy() {
+    setDeployMsg('creating job…')
+    const res = await apiPost('/api/v1/deployments', {
+      certificateVersionId: deployVersion,
+      bindingIds: selectedBindings,
+      requestedBy: 'ui',
+      approvalRequired: needApproval,
+      autoExecute: !needApproval,
+    })
+    const body = await res.json()
+    setDeployMsg(res.ok
+      ? (needApproval ? 'Job created — waiting for approval (see Approvals screen).' : 'Job started — follow it on the Deployments screen.')
+      : `Failed: ${body.title ?? res.status}`)
   }
 
   return (
@@ -105,6 +133,30 @@ export default function Certificates() {
               {v.sans.length > 0 && <div><strong>SAN:</strong> {v.sans.join(', ')}</div>}
             </div>
           ))}
+
+          <h3>Deploy</h3>
+          {bindings.length === 0 ? (
+            <p className="muted small">No deployment bindings. Create a store + binding under Managed Targets first.</p>
+          ) : (
+            <div className="deploy-box">
+              <select value={deployVersion} onChange={(e) => setDeployVersion(e.target.value)}>
+                {selected.versions.map((v) => (
+                  <option key={v.id} value={v.id}>{v.serialNumber.slice(0, 16)}… ({v.status}, {v.daysUntilExpiry}d left)</option>
+                ))}
+              </select>
+              {bindings.map((b) => (
+                <label key={b.id} className="small" style={{ display: 'block' }}>
+                  <input type="checkbox" checked={selectedBindings.includes(b.id)}
+                    onChange={(e) => setSelectedBindings(e.target.checked
+                      ? [...selectedBindings, b.id] : selectedBindings.filter((x) => x !== b.id))} />
+                  {' '}{b.target} ({b.adapter}) — {b.store}
+                </label>
+              ))}
+              <label className="small"><input type="checkbox" checked={needApproval} onChange={(e) => setNeedApproval(e.target.checked)} /> require approval</label>
+              <button onClick={deploy} disabled={!deployVersion || selectedBindings.length === 0}>Deploy</button>
+              {deployMsg && <span className="small" style={{ marginLeft: 8 }}>{deployMsg}</span>}
+            </div>
+          )}
 
           <h3>{t('nav.monitors')}</h3>
           <ul>

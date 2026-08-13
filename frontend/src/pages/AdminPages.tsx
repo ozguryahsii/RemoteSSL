@@ -1,0 +1,213 @@
+import { useState } from 'react'
+import { apiPost, setToken, getToken } from '../api/client'
+import { useData, post } from './SimplePages'
+
+export function Login() {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  async function login(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    const res = await apiPost('/api/v1/auth/login', { username, password })
+    if (!res.ok) { setError('Invalid credentials'); return }
+    const body = await res.json()
+    setToken(body.token)
+    window.location.href = '/'
+  }
+
+  return (
+    <div className="login-wrap">
+      <form className="login-card" onSubmit={login}>
+        <h1>RemoteSSL</h1>
+        <p className="muted small">Sign in to continue. If authentication is disabled on the server, any page works without signing in.</p>
+        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" required autoFocus />
+        <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password" type="password" required />
+        {error && <p className="error small">{error}</p>}
+        <button type="submit">Sign in</button>
+      </form>
+    </div>
+  )
+}
+
+interface Policy {
+  id: string; name: string; enabled: boolean; triggerDays: number; rotateKey: boolean
+  autoDeploy: boolean; approvalRequired: boolean; maintenanceWindowJson: string | null
+  caConnectorId: string | null
+}
+
+export function Policies() {
+  const [policies, reload] = useData<Policy[]>('/api/v1/policies')
+  const [certs] = useData<{ id: string; commonName: string }[]>('/api/v1/certificates')
+  const [connectors] = useData<{ id: string; name: string }[]>('/api/v1/ca-connectors')
+  const [name, setName] = useState(''); const [days, setDays] = useState('30')
+  const [autoDeploy, setAutoDeploy] = useState(true); const [approval, setApproval] = useState(false)
+  const [caId, setCaId] = useState(''); const [window_, setWindow] = useState('')
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault()
+    await post('/api/v1/policies', {
+      name, triggerDays: Number(days), autoDeploy, approvalRequired: approval,
+      caConnectorId: caId || null,
+      maintenanceWindow: window_ ? JSON.parse(window_) : null,
+    })
+    setName(''); reload()
+  }
+
+  async function assign(policyId: string) {
+    const certId = window.prompt(`Certificate id to attach:\n${(certs ?? []).map((c) => `${c.commonName}: ${c.id}`).join('\n')}`)
+    if (certId) await post(`/api/v1/policies/${policyId}/assign`, { certificateId: certId.trim() })
+  }
+
+  return (
+    <div className="page">
+      <h1>Policies</h1>
+      <form className="inline-form" onSubmit={add}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="policy name" required />
+        <input value={days} onChange={(e) => setDays(e.target.value)} type="number" style={{ width: 90 }} title="renew before days" />
+        <label className="small"><input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} /> auto-deploy</label>
+        <label className="small"><input type="checkbox" checked={approval} onChange={(e) => setApproval(e.target.checked)} /> approval</label>
+        <select value={caId} onChange={(e) => setCaId(e.target.value)}>
+          <option value="">no CA (manual)</option>
+          {(connectors ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <input value={window_} onChange={(e) => setWindow(e.target.value)}
+               placeholder='window e.g. {"days":["SUN"],"start":"01:00","end":"04:00"}' style={{ width: 280 }} />
+        <button type="submit">Add policy</button>
+      </form>
+      <table className="data-table">
+        <thead><tr><th>Name</th><th>Trigger</th><th>Auto deploy</th><th>Approval</th><th>Window</th><th></th></tr></thead>
+        <tbody>
+          {(policies ?? []).map((p) => (
+            <tr key={p.id}>
+              <td>{p.name}</td><td>T-{p.triggerDays}</td>
+              <td>{p.autoDeploy ? 'yes' : 'no'}</td><td>{p.approvalRequired ? 'required' : 'no'}</td>
+              <td className="small muted">{p.maintenanceWindowJson ?? 'anytime'}</td>
+              <td className="actions"><button onClick={() => assign(p.id)}>Assign to certificate</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+export function CaIntegrations() {
+  const [connectors, reload] = useData<{ id: string; name: string; connectorType: string; enabled: boolean }[]>('/api/v1/ca-connectors')
+  const [name, setName] = useState(''); const [type, setType] = useState('manual')
+  const [apiKey, setApiKey] = useState(''); const [apiSecret, setApiSecret] = useState('')
+  const [baseUrl, setBaseUrl] = useState('https://emea.api.hvca.globalsign.com:8443/v2')
+  const [pfx, setPfx] = useState(''); const [pfxPass, setPfxPass] = useState('')
+  const [result, setResult] = useState<string | null>(null)
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault()
+    const config = type === 'globalsign-hvca'
+      ? { baseUrl, apiKey, apiSecret, clientPfxBase64: pfx || null, clientPfxPassword: pfxPass || null }
+      : {}
+    await post('/api/v1/ca-connectors', { name, connectorType: type, config })
+    setName(''); reload()
+  }
+
+  async function test(id: string) {
+    setResult('testing…')
+    const res = await post(`/api/v1/ca-connectors/${id}/test`)
+    const body = await res.json()
+    setResult(body.success ? 'Connection OK' : `Failed: ${body.error}`)
+  }
+
+  return (
+    <div className="page">
+      <h1>CA Integrations</h1>
+      <form className="inline-form" onSubmit={add} style={{ flexWrap: 'wrap' }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="connector name" required />
+        <select value={type} onChange={(e) => setType(e.target.value)}>
+          <option value="manual">Manual / offline CA</option>
+          <option value="globalsign-hvca">GlobalSign (HVCA/Atlas)</option>
+        </select>
+        {type === 'globalsign-hvca' && (
+          <>
+            <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="base URL" style={{ width: 300 }} />
+            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="API key" />
+            <input value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} placeholder="API secret" type="password" />
+            <input value={pfx} onChange={(e) => setPfx(e.target.value)} placeholder="mTLS client PFX (base64)" />
+            <input value={pfxPass} onChange={(e) => setPfxPass(e.target.value)} placeholder="PFX password" type="password" />
+          </>
+        )}
+        <button type="submit">Add connector</button>
+      </form>
+      {result && <p className="small">{result}</p>}
+      <table className="data-table">
+        <thead><tr><th>Name</th><th>Type</th><th>Enabled</th><th></th></tr></thead>
+        <tbody>
+          {(connectors ?? []).map((c) => (
+            <tr key={c.id}>
+              <td>{c.name}</td><td>{c.connectorType}</td>
+              <td>{c.enabled ? <span className="ok">yes</span> : <span className="muted">no</span>}</td>
+              <td className="actions"><button onClick={() => test(c.id)}>Test connection</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted small">
+        GlobalSign connector is implemented against the documented HVCA v2 API and will be validated once account
+        credentials are available. Configuration secrets are stored encrypted.
+      </p>
+    </div>
+  )
+}
+
+export function Settings() {
+  const [users, reload] = useData<{ id: string; username: string; rolesJson: string; enabled: boolean }[]>('/api/v1/users')
+  const [username, setUsername] = useState(''); const [password, setPassword] = useState('')
+  const [roles, setRoles] = useState<string[]>(['Viewer'])
+  const allRoles = ['Viewer', 'CertificateOperator', 'DeploymentOperator', 'CertificateApprover', 'SecurityAuditor', 'PlatformAdministrator']
+
+  async function addUser(e: React.FormEvent) {
+    e.preventDefault()
+    const res = await post('/api/v1/users', { username, password, roles })
+    if (!res.ok) alert('Create failed (auth may be disabled server-side, or password too short)')
+    setUsername(''); setPassword(''); reload()
+  }
+
+  return (
+    <div className="page">
+      <h1>Settings</h1>
+      <h3>Session</h3>
+      <p className="small">
+        {getToken() ? <>Signed in. <button onClick={() => { setToken(null); window.location.href = '/login' }}>Sign out</button></>
+          : 'Not signed in (server auth may be disabled — set Auth:Enabled=true in appsettings.json to enforce login).'}
+      </p>
+
+      <h3>Users</h3>
+      <form className="inline-form" onSubmit={addUser} style={{ flexWrap: 'wrap' }}>
+        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" required />
+        <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password (min 8)" type="password" required />
+        <select multiple value={roles} onChange={(e) => setRoles([...e.target.selectedOptions].map((o) => o.value))} style={{ height: 90 }}>
+          {allRoles.map((r) => <option key={r}>{r}</option>)}
+        </select>
+        <button type="submit">Add user</button>
+      </form>
+      <table className="data-table">
+        <thead><tr><th>Username</th><th>Roles</th><th>Enabled</th></tr></thead>
+        <tbody>
+          {(users ?? []).map((u) => (
+            <tr key={u.id}>
+              <td>{u.username}</td>
+              <td className="small">{JSON.parse(u.rolesJson || '[]').join(', ')}</td>
+              <td>{u.enabled ? <span className="ok">yes</span> : <span className="bad">no</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h3>Notifications</h3>
+      <p className="muted small">
+        Configured server-side in appsettings.json: <code>Notifications:WebhookUrl</code> (generic webhook),{' '}
+        <code>Notifications:TeamsWebhookUrl</code> (Microsoft Teams), <code>Notifications:Smtp:*</code> (e-mail).
+        Events are also published to the RabbitMQ topic exchange <code>remotessl.events</code> for SIEM/downstream consumers.
+      </p>
+    </div>
+  )
+}

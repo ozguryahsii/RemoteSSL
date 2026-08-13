@@ -67,7 +67,7 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
         }
     }
 
-    private sealed record ClaimedJob(Guid Id, string JobType, string PayloadJson, string CorrelationId);
+    private sealed record ClaimedJob(Guid Id, string JobType, string PayloadJson, string CorrelationId, string? Signature);
 
     private async Task<bool> RegisterAsync(HttpClient http, CancellationToken ct)
     {
@@ -106,13 +106,31 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
         var steps = new List<object>();
         string? resultJson = null;
 
+        // Refuse jobs without a valid short-lived signature (design doc §8.2)
+        var signingSecret = config["Runner:JobSigningSecret"] ?? config["Runner:BootstrapToken"] ?? "";
+        if (job.Signature is null || !RemoteSSL.Domain.Abstractions.JobSigner.Verify(
+                signingSecret, job.Id, job.PayloadJson, job.Signature, DateTimeOffset.UtcNow))
+        {
+            logger.LogWarning("Job {Id} rejected: missing or invalid signature", job.Id);
+            await PostAsync(http, $"api/v1/runners/{_runnerId}/jobs/{job.Id}/complete",
+                new { success = false, rolledBack = false, steps = new[] { new { step = "PreCheck", success = false, safeLog = "job signature invalid or expired" } }, resultJson = (string?)null }, ct);
+            return;
+        }
+
         try
         {
             using var doc = JsonDocument.Parse(job.PayloadJson);
             var kind = doc.RootElement.GetProperty("kind").GetString();
             var creds = await ResolveCredentialsAsync(http, doc.RootElement, ct);
 
-            if (job.JobType == "test-connection")
+            if (job.JobType == "generate-csr")
+            {
+                var (ok, csrPem, log) = GenerateCsrOnTarget(doc.RootElement, creds);
+                success = ok;
+                resultJson = JsonSerializer.Serialize(new { csrPem });
+                steps.Add(new { step = "PreCheck", success = ok, safeLog = log });
+            }
+            else if (job.JobType == "test-connection")
             {
                 var conn = doc.RootElement.GetProperty("connection").Deserialize<SshTargetConfig>(Json)!;
                 using var ssh = new SshConnection(conn, creds);
@@ -131,6 +149,7 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
                     "java" => JavaKeystoreDeployer.Deploy(ToJavaPayload(doc.RootElement, creds), creds),
                     "oracle" => OracleWalletDeployer.Deploy(ToOraclePayload(doc.RootElement, creds), creds),
                     "f5" => await F5BigIpDeployer.DeployAsync(ToF5Payload(doc.RootElement, creds), ct),
+                    "vendor" => await VendorDeployers.DeployAsync(ToVendorPayload(doc.RootElement, creds), ct),
                     _ => new DeployOutcome(false, false, [new("PreCheck", false, $"unknown payload kind '{kind}'")])
                 };
                 success = outcome.Success;
@@ -204,6 +223,54 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
         CertKind = e.TryGetProperty("certKind", out var ck) ? ck.GetString() ?? "trusted" : "trusted",
         CertPem = e.GetProperty("certPem").GetString()!,
         ReloadCmd = e.TryGetProperty("reloadCmd", out var rc) ? rc.GetString() : null
+    };
+
+    /// <summary>On-target key + CSR via openssl over SSH; the key never leaves the target (design doc §16.1).</summary>
+    private (bool Ok, string? CsrPem, string Log) GenerateCsrOnTarget(JsonElement e, SshCredentials creds)
+    {
+        var conn = e.GetProperty("connection").Deserialize<SshTargetConfig>(Json)!;
+        var keyPath = e.GetProperty("keyPath").GetString()!;
+        var cn = e.GetProperty("commonName").GetString()!;
+        var sans = e.TryGetProperty("sans", out var s)
+            ? s.EnumerateArray().Select(x => x.GetString()).Where(x => x is not null).ToList()
+            : [];
+        var alg = e.TryGetProperty("keyAlgorithm", out var a) ? a.GetString() ?? "RSA" : "RSA";
+        var size = e.TryGetProperty("keySizeOrCurve", out var k) ? k.GetInt32() : 2048;
+
+        using var ssh = new SshConnection(conn, creds);
+        try { ssh.Connect(); }
+        catch (Exception ex) { return (false, null, $"ssh connect failed: {ex.Message}"); }
+
+        if (!ssh.Exec("command -v openssl").Ok) return (false, null, "openssl not found on target");
+
+        var genKey = alg.Equals("EC", StringComparison.OrdinalIgnoreCase)
+            ? $"openssl ecparam -name {(size >= 384 ? "secp384r1" : "prime256v1")} -genkey -noout -out {Shell.Quote(keyPath)}"
+            : $"openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:{Math.Max(size, 2048)} -out {Shell.Quote(keyPath)}";
+        var r = ssh.Exec($"umask 077 && {genKey} && chmod 0600 {Shell.Quote(keyPath)}");
+        if (!r.Ok) return (false, null, $"key generation failed: {r.Stderr}");
+
+        var sanList = string.Join(",", sans.Select(x => $"DNS:{x}"));
+        var csrCmd = $"openssl req -new -key {Shell.Quote(keyPath)} -subj {Shell.Quote($"/CN={cn}")}"
+                     + (sanList.Length > 0 ? $" -addext {Shell.Quote($"subjectAltName={sanList}")}" : "");
+        var csr = ssh.Exec(csrCmd);
+        if (!csr.Ok || !csr.Stdout.Contains("BEGIN CERTIFICATE REQUEST"))
+            return (false, null, $"csr generation failed: {csr.Stderr}");
+        return (true, csr.Stdout, $"key {keyPath} (0600) + CSR generated on target");
+    }
+
+    private static VendorDeployPayload ToVendorPayload(JsonElement e, SshCredentials creds) => new()
+    {
+        Vendor = e.GetProperty("vendor").GetString()!,
+        ManagementUrl = e.GetProperty("managementUrl").GetString()!,
+        Username = creds.Username,
+        Password = creds.Password ?? "",
+        ApiToken = e.TryGetProperty("apiToken", out var at) ? at.GetString() : null,
+        CertObjectName = e.GetProperty("certObjectName").GetString()!,
+        BindingRef = e.TryGetProperty("bindingRef", out var br) ? br.GetString() : null,
+        CertPem = e.GetProperty("certPem").GetString()!,
+        KeyPem = e.TryGetProperty("keyPem", out var kp) && kp.ValueKind == JsonValueKind.String ? kp.GetString() : null,
+        ChainPem = e.TryGetProperty("chainPem", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null,
+        AllowInsecureTls = e.TryGetProperty("allowInsecureTls", out var ai) && ai.GetBoolean()
     };
 
     private static F5DeployPayload ToF5Payload(JsonElement e, SshCredentials creds) => new()

@@ -87,13 +87,41 @@ GlobalSign geldiğinde: `POST /api/v1/ca-connectors` `{"name":"GlobalSign","conn
 3. ~1 dk içinde otomasyon renewal request üretir (**Certificate Requests**'te `automation` tarafından).
 4. Manual CA ise imzalayıp yükleyin → binding'i varsa otomatik deployment job'ı oluşur → **Approvals** ekranında onaylayın (requester ≠ approver kuralı zorunlu) → maintenance window açıksa otomatik execute edilir.
 5. Drift: hedefteki sertifikayı elle eski haline döndürün; monitor probe + otomasyon `drift.detected` audit olayı üretir.
+6. Bildirimler: `appsettings.json` → `Notifications:WebhookUrl` / `TeamsWebhookUrl` / `Smtp:*` doldurun; expiring/deployment/drift olayları bu kanallara ve RabbitMQ `remotessl.events` exchange'ine düşer (RabbitMQ UI: http://localhost:15672, remotessl/remotessl_dev).
 
-## 7. Faz 10 — Auth (opsiyonel)
+## 7. Faz 10 — Auth, RBAC ve kullanıcılar
 
-`src/RemoteSSL.Api/appsettings.json` → `"Auth": { "Enabled": true, ... }` yapıp API'yi yeniden başlatın.
-`POST /api/v1/auth/login` `{"username":"admin","password":"admin"}` → JWT. Artık tüm endpoint'ler (runner + health hariç) `Authorization: Bearer <token>` ister. UI login akışı henüz yok — API üzerinden test edin.
+`src/RemoteSSL.Api/appsettings.json` → `"Auth": { "Enabled": true }` yapıp API'yi yeniden başlatın.
+- UI otomatik olarak `/login` sayfasına yönlendirir; `admin` / `admin` ile girin.
+- **Settings** ekranından yeni kullanıcılar oluşturun (rol seçerek). Rol → yetki eşlemesi:
+  Viewer (okuma), CertificateOperator (request/factory), DeploymentOperator (target/deployment),
+  CertificateApprover (onay), PlatformAdministrator (credential/CA/policy/user).
+- Yanlış roldeki kullanıcıyla yazma endpoint'i çağırın → 403 beklenir.
+- Auth kapalıyken tüm ekranlar login'siz çalışır (dev modu).
 
-## 8. Windows / IIS, Java, Oracle, F5 (kod hazır, lab gerekli)
+## 8. UI üzerinden deployment (yeni)
+
+**Certificates** ekranında bir sertifikaya tıklayın → **Deploy** bölümü: version + binding seçin,
+istenirse "require approval" işaretleyin → **Deploy**. Onaysızsa job anında koşar; onaylıysa Approvals ekranına düşer.
+
+## 9. On-target key generation (yeni)
+
+Private key'in hedeften hiç çıkmadığı model (tasarım §16.1):
+```
+POST /api/v1/certificates/requests
+{ "commonName":"ontarget.local", "keyOrigin":"target",
+  "targetId":"<lab-nginx-target-id>", "targetKeyPath":"/etc/nginx/ssl/ontarget.key",
+  "caConnectorId":"<manual-ca-id>" }
+```
+Runner hedefte `openssl` ile 0600 izinli key + CSR üretir; CSR kontrol düzlemine döner, state `CsrGenerated`/`WaitingForCertificate` olur. İmzalayıp yükleyince deploy sırasında key gönderilmez (hedefte zaten var).
+
+## 10. HashiCorp Vault (opsiyonel)
+
+`appsettings.json` → `"Vault": { "Addr": "http://localhost:8200", "Token": "..." }`.
+Credential oluştururken provider `HashiCorpVault`, secretIdentifier `vault://secret/prod/web01`
+(KV v2; data içinde `password` ve/veya `privateKey` alanları). Runner, secret'i broker üzerinden execution anında alır.
+
+## 11. Windows / IIS, Java, Oracle, F5, diğer vendorlar (kod hazır, lab gerekli)
 
 Bu adapterlar implemente edildi ancak bu ortamda gerçek hedef olmadığı için canlı test edilmedi:
 
@@ -101,10 +129,11 @@ Bu adapterlar implemente edildi ancak bu ortamda gerçek hedef olmadığı için
 - **Java keystore**: adapter `java-keystore`/`java-truststore`, store path JKS yolu, alias verin; parola credential'dan gelir, `storepass:env` ile komut satırına sızmaz.
 - **Oracle Wallet**: adapter `oracle-wallet`, store path wallet dizini; `ewallet.p12`+`cwallet.sso` birlikte yedeklenip birlikte döner.
 - **F5 BIG-IP**: adapter `f5-bigip`, connection `{"managementUrl":"https://...","allowInsecureTls":true}`; cert/key objeleri timestamped oluşturulur, client-ssl profili yeniden bağlanır, rollback profili eski objelere döndürür.
+- **FortiGate / Palo Alto / Citrix ADC / Cisco ISE**: adapter tipleri `fortigate`, `paloalto`, `citrix-adc`, `cisco-ise`; connection `{"managementUrl":"...","apiToken":"..."}` (token'lı vendorlar), binding'e `certObjectName` + `bindingRef` (PA'da commit otomatik, ADC'de config save otomatik). Gerçek cihazda doğrulanmalı.
 
-## Bilinen sınırlar / sonraki adımlar
+## Bilinen sınırlar
 
-- RabbitMQ/Redis bağlı ama job akışı şu an DB-polling ile (tasarımda öngörülen outbox/queue geçişi hazır altyapı üzerinde yapılacak).
-- Runner mTLS yerine bootstrap-token + API key kullanıyor (mTLS production hardening adımı).
-- HVCA connector canlı GlobalSign hesabıyla doğrulanacak (docs/ca-connector.md).
-- UI login ekranı, RBAC'ın ekranlara işlenmesi, e-posta/Teams bildirimi ve F9 dışındaki network vendorları sonraki iterasyon.
+- **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).
+- Runner transport'u API key + kısa ömürlü HMAC-imzalı job context kullanır (ADR-002 pull modeli); tam mTLS production'da LB/ingress katmanında sonlandırılmalıdır.
+- Job dağıtımı DB-claim ile (at-least-once, idempotent); domain olayları RabbitMQ'ya yayınlanır. Windows/Java/Oracle/network adapterları gerçek hedef gerektirir.
+- Scheduler'lar Postgres advisory lock ile leader-elected; çok node'lu API güvenlidir.

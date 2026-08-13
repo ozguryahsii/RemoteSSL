@@ -37,11 +37,21 @@ if (authEnabled)
         });
     builder.Services.AddAuthorizationBuilder()
         .SetFallbackPolicy(new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
-            .RequireAuthenticatedUser().Build());
+            .RequireAuthenticatedUser().Build())
+        // Role policies per design doc §24.1
+        .AddPolicy("Admin", p => p.RequireRole("PlatformAdministrator"))
+        .AddPolicy("CertOps", p => p.RequireRole("CertificateOperator", "PlatformAdministrator"))
+        .AddPolicy("DeployOps", p => p.RequireRole("DeploymentOperator", "PlatformAdministrator"))
+        .AddPolicy("Approver", p => p.RequireRole("CertificateApprover", "PlatformAdministrator"));
 }
 else
 {
-    builder.Services.AddAuthorization();
+    // Auth disabled (dev): all policies pass so [Authorize(Policy=...)] attributes stay inert.
+    builder.Services.AddAuthorizationBuilder()
+        .AddPolicy("Admin", p => p.RequireAssertion(_ => true))
+        .AddPolicy("CertOps", p => p.RequireAssertion(_ => true))
+        .AddPolicy("DeployOps", p => p.RequireAssertion(_ => true))
+        .AddPolicy("Approver", p => p.RequireAssertion(_ => true));
 }
 
 var app = builder.Build();

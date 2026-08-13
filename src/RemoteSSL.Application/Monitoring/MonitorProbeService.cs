@@ -15,6 +15,7 @@ namespace RemoteSSL.Application.Monitoring;
 public class MonitorProbeService(
     IRemoteSslDbContext db,
     ITlsProber prober,
+    INotificationSink notifier,
     ILogger<MonitorProbeService> logger)
 {
     public async Task<MonitorEndpoint> ProbeAsync(Guid monitorId, CancellationToken ct = default)
@@ -153,6 +154,11 @@ public class MonitorProbeService(
         {
             logger.LogWarning("Certificate {Cn} on {Host}:{Port} expires in {Days} days (T-{Threshold} crossed)",
                 parsed.CommonName, monitor.Host, monitor.Port, daysLeft, threshold);
+            notifier.Notify("certificate.expiring", new
+            {
+                commonName = parsed.CommonName, host = monitor.Host, port = monitor.Port,
+                daysLeft, threshold
+            });
             db.AuditEvents.Add(new AuditEvent
             {
                 Timestamp = now,

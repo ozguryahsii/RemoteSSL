@@ -16,8 +16,11 @@ namespace RemoteSSL.Infrastructure.Scheduling;
 public class ProbeSchedulerService(
     IServiceScopeFactory scopeFactory,
     IConfiguration configuration,
+    PostgresLeaderLock leaderLock,
     ILogger<ProbeSchedulerService> logger) : BackgroundService
 {
+    private const long LockKey = 0x52535350; // "RSSP" — probe scheduler leader lock
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var tick = TimeSpan.FromSeconds(configuration.GetValue("Monitoring:SchedulerTickSeconds", 60));
@@ -32,7 +35,8 @@ public class ProbeSchedulerService(
         {
             try
             {
-                await RunDueProbesAsync(defaultInterval, maxParallel, stoppingToken);
+                await leaderLock.RunAsLeaderAsync(LockKey,
+                    () => RunDueProbesAsync(defaultInterval, maxParallel, stoppingToken), stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

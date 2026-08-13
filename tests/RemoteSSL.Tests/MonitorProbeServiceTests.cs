@@ -10,6 +10,11 @@ namespace RemoteSSL.Tests;
 
 public class MonitorProbeServiceTests
 {
+    private sealed class NullSink : INotificationSink
+    {
+        public void Notify(string eventType, object payload) { }
+    }
+
     private sealed class FakeProber : ITlsProber
     {
         public TlsProbeResult Next { get; set; } = new(ProbeStatus.ConnectionFailed, "not configured", null, [], null, null, null, null);
@@ -43,7 +48,7 @@ public class MonitorProbeServiceTests
     {
         await using var db = CreateDb();
         var prober = new FakeProber();
-        var service = new MonitorProbeService(db, prober, NullLogger<MonitorProbeService>.Instance);
+        var service = new MonitorProbeService(db, prober, new NullSink(), NullLogger<MonitorProbeService>.Instance);
         var monitor = await AddMonitor(db, "web.example.com");
 
         using var cert = CertificateParserTests.CreateSelfSigned(
@@ -67,7 +72,7 @@ public class MonitorProbeServiceTests
     {
         await using var db = CreateDb();
         var prober = new FakeProber();
-        var service = new MonitorProbeService(db, prober, NullLogger<MonitorProbeService>.Instance);
+        var service = new MonitorProbeService(db, prober, new NullSink(), NullLogger<MonitorProbeService>.Instance);
         var monitorA = await AddMonitor(db, "app.example.com");
         var monitorB = await AddMonitor(db, "api.example.com");
 
@@ -88,7 +93,7 @@ public class MonitorProbeServiceTests
     {
         await using var db = CreateDb();
         var prober = new FakeProber();
-        var service = new MonitorProbeService(db, prober, NullLogger<MonitorProbeService>.Instance);
+        var service = new MonitorProbeService(db, prober, new NullSink(), NullLogger<MonitorProbeService>.Instance);
         var monitor = await AddMonitor(db, "shop.example.com");
 
         using var oldCert = CertificateParserTests.CreateSelfSigned(
@@ -117,7 +122,7 @@ public class MonitorProbeServiceTests
         {
             Next = new TlsProbeResult(ProbeStatus.Timeout, "connect timed out", null, [], null, null, null, null)
         };
-        var service = new MonitorProbeService(db, prober, NullLogger<MonitorProbeService>.Instance);
+        var service = new MonitorProbeService(db, prober, new NullSink(), NullLogger<MonitorProbeService>.Instance);
         var monitor = await AddMonitor(db, "down.example.com");
 
         await service.ProbeAsync(monitor.Id);

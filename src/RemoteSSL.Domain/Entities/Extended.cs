@@ -40,6 +40,10 @@ public class CertificateRequestEntity
     public int KeySizeOrCurve { get; set; } = 2048;
     /// <summary>"central" (control plane) | "target" | "hsm".</summary>
     public string KeyOrigin { get; set; } = "central";
+    /// <summary>On-target key origin: target that generates and keeps the private key.</summary>
+    public Guid? TargetId { get; set; }
+    /// <summary>On-target key origin: absolute path of the key file on the target.</summary>
+    public string? TargetKeyPath { get; set; }
     public Guid? CaConnectorId { get; set; }
     public string? ProfileId { get; set; }
     public CertificateRequestState State { get; set; }

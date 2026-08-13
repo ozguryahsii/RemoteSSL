@@ -55,6 +55,19 @@ public class CertificatesController(IRemoteSslDbContext db) : ControllerBase
             x.MonitorCount, x.VersionCount));
     }
 
+    /// <summary>Deployment bindings of this certificate (for the deploy wizard).</summary>
+    [HttpGet("{id:guid}/bindings")]
+    public async Task<IEnumerable<object>> Bindings(Guid id, CancellationToken ct) =>
+        await db.DeploymentBindings.AsNoTracking()
+            .Where(b => b.CertificateId == id)
+            .Select(b => new
+            {
+                b.Id,
+                Target = b.CertificateStore.Target.Name,
+                Adapter = b.CertificateStore.Target.AdapterType,
+                Store = b.CertificateStore.StorePath
+            }).ToListAsync(ct);
+
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<CertificateDetail>> Get(Guid id, CancellationToken ct)
     {

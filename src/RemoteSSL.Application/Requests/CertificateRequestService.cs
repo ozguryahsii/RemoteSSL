@@ -26,7 +26,8 @@ public class CertificateRequestService(
 {
     public async Task<CertificateRequestEntity> CreateAsync(
         string commonName, IReadOnlyList<string> sans, string keyAlgorithm, int keySizeOrCurve,
-        string keyOrigin, Guid? caConnectorId, string? profileId, string requestedBy, CancellationToken ct)
+        string keyOrigin, Guid? caConnectorId, string? profileId, string requestedBy, CancellationToken ct,
+        Guid? targetId = null, string? targetKeyPath = null)
     {
         if (keyAlgorithm.Equals("RSA", StringComparison.OrdinalIgnoreCase) && keySizeOrCurve < 2048)
             throw new ArgumentException("RSA key size below policy minimum 2048");
@@ -57,6 +58,41 @@ public class CertificateRequestService(
             req.CsrPem = artifacts.CsrPem;
             req.EncryptedPrivateKeyPem = protector.Protect(artifacts.PrivateKeyPem);
             req.State = CertificateRequestState.CsrGenerated;
+        }
+        else if (keyOrigin == "target")
+        {
+            // Preferred model (design doc §16.1): key is generated on the target and never leaves it.
+            var target = await db.Targets.AsNoTracking().FirstOrDefaultAsync(t => t.Id == targetId, ct)
+                         ?? throw new ArgumentException("On-target key origin requires a valid targetId");
+            if (string.IsNullOrWhiteSpace(targetKeyPath))
+                throw new ArgumentException("On-target key origin requires targetKeyPath");
+            req.TargetId = target.Id;
+            req.TargetKeyPath = targetKeyPath;
+
+            using var conn = JsonDocument.Parse(target.ConnectionConfigJson);
+            string Host() => conn.RootElement.TryGetProperty("host", out var h) ? h.GetString() ?? target.Name : target.Name;
+            int Port() => conn.RootElement.TryGetProperty("port", out var p) && p.TryGetInt32(out var pi) ? pi : 22;
+
+            db.RunnerJobs.Add(new RunnerJob
+            {
+                Id = Guid.NewGuid(),
+                RunnerId = target.RunnerId,
+                JobType = "generate-csr",
+                PayloadJson = JsonSerializer.Serialize(new
+                {
+                    kind = "linux",
+                    requestId = req.Id,
+                    connection = new { host = Host(), port = Port(), useSudo = false },
+                    credentialRefId = target.CredentialRefId,
+                    keyPath = targetKeyPath,
+                    commonName,
+                    sans = normalizedSans,
+                    keyAlgorithm = req.KeyAlgorithm,
+                    keySizeOrCurve
+                }),
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                CreatedAt = DateTimeOffset.UtcNow
+            });
         }
 
         db.CertificateRequests.Add(req);
@@ -128,6 +164,20 @@ public class CertificateRequestService(
             }
         }
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>Runner completed an on-target CSR generation job: attach the CSR and continue the lifecycle.</summary>
+    public async Task AttachTargetCsrAsync(Guid requestId, string csrPem, CancellationToken ct)
+    {
+        var req = await db.CertificateRequests.FirstOrDefaultAsync(r => r.Id == requestId, ct)
+                  ?? throw new KeyNotFoundException("Request not found");
+        req.CsrPem = csrPem;
+        req.State = CertificateRequestState.CsrGenerated;
+        req.UpdatedAt = DateTimeOffset.UtcNow;
+        audit.Append("service:lifecycle", "certificate.request.csr-on-target", "certificate_request",
+            req.Id.ToString(), "CSR_GENERATED");
+        await db.SaveChangesAsync(ct);
+        if (req.CaConnectorId is not null) await SubmitAsync(req, ct);
     }
 
     /// <summary>Manual CA path: operator uploads the signed leaf + chain.</summary>

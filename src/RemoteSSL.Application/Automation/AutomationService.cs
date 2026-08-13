@@ -20,6 +20,7 @@ public class AutomationService(
     CertificateRequestService requests,
     DeploymentService deployments,
     AuditWriter audit,
+    INotificationSink notifier,
     ILogger<AutomationService> logger)
 {
     public async Task TickAsync(CancellationToken ct)
@@ -155,6 +156,12 @@ public class AutomationService(
             if (already) continue;
             logger.LogWarning("Drift: {Host}:{Port} serves an older certificate than the active version",
                 d.Monitor.Host, d.Monitor.Port);
+            notifier.Notify("drift.detected", new
+            {
+                host = d.Monitor.Host, port = d.Monitor.Port,
+                observed = d.Monitor.LastObservedVersion!.Sha256Thumbprint,
+                expected = d.Expected.Sha256Thumbprint
+            });
             audit.Append("service:automation", "drift.detected", "monitor_endpoint", d.Monitor.Id.ToString(),
                 "DRIFT", new
                 {

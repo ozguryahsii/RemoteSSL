@@ -15,7 +15,7 @@ namespace RemoteSSL.Application.Deployments;
 /// aggregation. One deployment per binding at a time is enforced via the queued
 /// RunnerJob uniqueness check.
 /// </summary>
-public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protector, AuditWriter audit)
+public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protector, AuditWriter audit, INotificationSink notifier)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -199,6 +199,9 @@ public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protecto
                 }
                 audit.Append("service:orchestrator", "deployment.complete", "deployment_job",
                     job.Id.ToString(), job.Status.ToString(), null, job.CorrelationId);
+                notifier.Notify(
+                    job.Status == DeploymentJobStatus.Succeeded ? "deployment.succeeded" : "deployment.failed",
+                    new { jobId = job.Id, status = job.Status.ToString(), correlationId = job.CorrelationId });
             }
         }
         await db.SaveChangesAsync(ct);
@@ -267,6 +270,20 @@ public class DeploymentService(IRemoteSslDbContext db, ISecretProtector protecto
                 certKind = Get(svc, "certKind", "trusted"),
                 certPem = version.PemCertificate,
                 reloadCmd = svc.TryGetProperty("reloadCmd", out var orc) ? orc.GetString() : null
+            },
+            "fortigate" or "paloalto" or "citrix-adc" or "cisco-ise" => new
+            {
+                kind = "vendor",
+                vendor = target.AdapterType,
+                managementUrl = Get(conn, "managementUrl"),
+                credentialRefId = target.CredentialRefId,
+                apiToken = conn.TryGetProperty("apiToken", out var at) ? at.GetString() : null,
+                certObjectName = Get(svc, "certObjectName", store.Alias ?? "remotessl"),
+                bindingRef = svc.TryGetProperty("bindingRef", out var br) ? br.GetString() : null,
+                certPem = version.PemCertificate,
+                keyPem,
+                chainPem = version.PemChain,
+                allowInsecureTls = GetBool(conn, "allowInsecureTls")
             },
             "f5-bigip" => new
             {

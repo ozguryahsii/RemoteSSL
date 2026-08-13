@@ -12,8 +12,10 @@ namespace RemoteSSL.Infrastructure.Scheduling;
 /// <summary>Periodic automation tick: CA polling, renewals, windowed execution, drift, runner health.</summary>
 public class AutomationSchedulerService(
     IServiceScopeFactory scopeFactory, IConfiguration configuration,
-    ILogger<AutomationSchedulerService> logger) : BackgroundService
+    PostgresLeaderLock leaderLock, ILogger<AutomationSchedulerService> logger) : BackgroundService
 {
+    private const long LockKey = 0x52535341; // "RSSA" — automation scheduler leader lock
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var tick = TimeSpan.FromSeconds(configuration.GetValue("Automation:TickSeconds", 60));
@@ -23,15 +25,18 @@ public class AutomationSchedulerService(
         {
             try
             {
-                await using var scope = scopeFactory.CreateAsyncScope();
-                await scope.ServiceProvider.GetRequiredService<AutomationService>().TickAsync(stoppingToken);
+                await leaderLock.RunAsLeaderAsync(LockKey, async () =>
+                {
+                    await using var scope = scopeFactory.CreateAsyncScope();
+                    await scope.ServiceProvider.GetRequiredService<AutomationService>().TickAsync(stoppingToken);
 
-                // Runner health (design doc §29.1)
-                var db = scope.ServiceProvider.GetRequiredService<RemoteSslDbContext>();
-                var cutoff = DateTimeOffset.UtcNow - offlineAfter;
-                await db.Runners
-                    .Where(r => r.Status == RunnerStatus.Online && (r.LastHeartbeatAt == null || r.LastHeartbeatAt < cutoff))
-                    .ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, RunnerStatus.Offline), stoppingToken);
+                    // Runner health (design doc §29.1)
+                    var db = scope.ServiceProvider.GetRequiredService<RemoteSslDbContext>();
+                    var cutoff = DateTimeOffset.UtcNow - offlineAfter;
+                    await db.Runners
+                        .Where(r => r.Status == RunnerStatus.Online && (r.LastHeartbeatAt == null || r.LastHeartbeatAt < cutoff))
+                        .ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, RunnerStatus.Offline), stoppingToken);
+                }, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex)

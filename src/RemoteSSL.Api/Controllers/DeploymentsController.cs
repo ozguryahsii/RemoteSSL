@@ -11,7 +11,7 @@ public class DeploymentsController(IRemoteSslDbContext db, DeploymentService ser
 {
     public record CreateDeploymentRequest(
         Guid CertificateVersionId, List<Guid> BindingIds, string Strategy = "sequential",
-        string RequestedBy = "api", bool ApprovalRequired = false);
+        string RequestedBy = "api", bool ApprovalRequired = false, bool AutoExecute = false);
     public record DecisionRequest(string Approver, bool Approve = true, string? Reason = null);
 
     [HttpGet]
@@ -52,12 +52,14 @@ public class DeploymentsController(IRemoteSslDbContext db, DeploymentService ser
     }
 
     [HttpPost]
+    [Microsoft.AspNetCore.Authorization.Authorize(Policy = "DeployOps")]
     public async Task<ActionResult<object>> Create(CreateDeploymentRequest req, CancellationToken ct)
     {
         try
         {
             var job = await service.CreateJobAsync(req.CertificateVersionId, req.BindingIds,
                 req.Strategy, req.RequestedBy, req.ApprovalRequired, ct);
+            if (req.AutoExecute && !req.ApprovalRequired) await service.ExecuteAsync(job.Id, ct);
             return CreatedAtAction(nameof(Get), new { id = job.Id }, new { job.Id, Status = job.Status.ToString() });
         }
         catch (KeyNotFoundException ex) { return NotFound(new ProblemDetails { Title = ex.Message }); }
@@ -68,6 +70,7 @@ public class DeploymentsController(IRemoteSslDbContext db, DeploymentService ser
     }
 
     [HttpPost("{id:guid}/approve")]
+    [Microsoft.AspNetCore.Authorization.Authorize(Policy = "Approver")]
     public async Task<IActionResult> Approve(Guid id, DecisionRequest req, CancellationToken ct)
     {
         try
@@ -80,6 +83,7 @@ public class DeploymentsController(IRemoteSslDbContext db, DeploymentService ser
     }
 
     [HttpPost("{id:guid}/execute")]
+    [Microsoft.AspNetCore.Authorization.Authorize(Policy = "DeployOps")]
     public async Task<IActionResult> Execute(Guid id, CancellationToken ct)
     {
         try

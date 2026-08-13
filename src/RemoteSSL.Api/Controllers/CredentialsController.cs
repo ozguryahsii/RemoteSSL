@@ -11,6 +11,7 @@ namespace RemoteSSL.Api.Controllers;
 /// <summary>Credential references. Secret values are write-only: accepted on create, never returned.</summary>
 [ApiController]
 [Route("api/v1/credentials")]
+[Microsoft.AspNetCore.Authorization.Authorize(Policy = "Admin")]
 public class CredentialsController(IRemoteSslDbContext db, ISecretProtector protector, AuditWriter audit) : ControllerBase
 {
     public record CreateCredentialRequest(

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { API_BASE, apiGet } from '../api/client'
+import { apiGet, apiPost } from '../api/client'
 
 export function useData<T>(path: string, refreshMs = 30000): [T | null, () => void] {
   const [data, setData] = useState<T | null>(null)
@@ -12,13 +12,7 @@ export function useData<T>(path: string, refreshMs = 30000): [T | null, () => vo
   return [data, reload]
 }
 
-export async function post(path: string, body?: unknown): Promise<Response> {
-  return fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-}
+export const post = apiPost
 
 export function Dashboard() {
   const [certs] = useData<{ health: string; daysUntilExpiry: number | null }[]>('/api/v1/certificates')

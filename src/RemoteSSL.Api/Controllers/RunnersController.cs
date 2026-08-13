@@ -94,7 +94,12 @@ public class RunnersController(
         job.RunnerId = id;
         job.ClaimedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
-        return new { job.Id, job.JobType, job.PayloadJson, job.CorrelationId };
+
+        // Short-lived signed execution context (design doc §8.2)
+        var signature = Domain.Abstractions.JobSigner.Sign(
+            config["Runner:JobSigningSecret"] ?? config["Runner:BootstrapToken"] ?? "",
+            job.Id, job.PayloadJson, DateTimeOffset.UtcNow.AddMinutes(15));
+        return new { job.Id, job.JobType, job.PayloadJson, job.CorrelationId, Signature = signature };
     }
 
     [HttpPost("{id:guid}/jobs/{jobId:guid}/complete")]
@@ -106,6 +111,18 @@ public class RunnersController(
         if (job is null) return NotFound();
 
         job.ResultJson = req.ResultJson;
+        if (job.JobType == "generate-csr" && req.Success && req.ResultJson is not null)
+        {
+            using var payload = JsonDocument.Parse(job.PayloadJson);
+            using var result = JsonDocument.Parse(req.ResultJson);
+            if (payload.RootElement.TryGetProperty("requestId", out var reqId)
+                && result.RootElement.TryGetProperty("csrPem", out var csr))
+            {
+                var requestService = HttpContext.RequestServices
+                    .GetRequiredService<Application.Requests.CertificateRequestService>();
+                await requestService.AttachTargetCsrAsync(reqId.GetGuid(), csr.GetString()!, ct);
+            }
+        }
         if (job.DeploymentJobTargetId is not null)
         {
             await deployments.CompleteRunnerJobAsync(jobId, req.Success, req.RolledBack,
@@ -134,17 +151,26 @@ public class RunnersController(
         if (runner is null) return Unauthorized();
         var cred = await db.CredentialRefs.AsNoTracking().FirstOrDefaultAsync(c => c.Id == credId, ct);
         if (cred is null) return NotFound();
-        if (cred.Provider != SecretProviderType.InternalVault || cred.EncryptedSecret is null)
-            return UnprocessableEntity(new ProblemDetails { Title = "External secret providers arrive in a later phase; runner should fetch directly." });
+
+        string secretJson;
+        switch (cred.Provider)
+        {
+            case SecretProviderType.InternalVault when cred.EncryptedSecret is not null:
+                secretJson = protector.Unprotect(cred.EncryptedSecret);
+                break;
+            case SecretProviderType.HashiCorpVault:
+                var vault = HttpContext.RequestServices.GetRequiredService<Infrastructure.Security.VaultSecretClient>();
+                var (password, key) = await vault.ReadAsync(cred.SecretIdentifier, ct);
+                secretJson = System.Text.Json.JsonSerializer.Serialize(new { Password = password, PrivateKeyPem = key });
+                break;
+            default:
+                return UnprocessableEntity(new ProblemDetails
+                { Title = $"Secret provider {cred.Provider} is not yet wired; configure InternalVault or HashiCorpVault." });
+        }
 
         audit.Append($"runner:{runner.Name}", "credential.access", "credential_ref", credId.ToString(), "OK");
         await db.SaveChangesAsync(ct);
-        return new
-        {
-            cred.CredentialType,
-            cred.Username,
-            Secret = protector.Unprotect(cred.EncryptedSecret)
-        };
+        return new { cred.CredentialType, cred.Username, Secret = secretJson };
     }
 
     private async Task<RunnerNode?> AuthenticateAsync(Guid id, CancellationToken ct)

@@ -13,6 +13,7 @@ namespace RemoteSSL.Api.Controllers;
 /// <summary>Certificate factory operations (design doc §15). Outputs are returned, never stored.</summary>
 [ApiController]
 [Route("api/v1/artifacts")]
+[Microsoft.AspNetCore.Authorization.Authorize(Policy = "CertOps")]
 public class ArtifactsController(IRemoteSslDbContext db, ISecretProtector protector,
     InventoryService inventory, AuditWriter audit) : ControllerBase
 {
@@ -83,6 +84,7 @@ public class ArtifactsController(IRemoteSslDbContext db, ISecretProtector protec
 
 [ApiController]
 [Route("api/v1/ca-connectors")]
+[Microsoft.AspNetCore.Authorization.Authorize(Policy = "Admin")]
 public class CaConnectorsController(IRemoteSslDbContext db, ISecretProtector protector,
     CaConnectorFactory factory, AuditWriter audit) : ControllerBase
 {
@@ -137,6 +139,7 @@ public class CaConnectorsController(IRemoteSslDbContext db, ISecretProtector pro
 
 [ApiController]
 [Route("api/v1/policies")]
+[Microsoft.AspNetCore.Authorization.Authorize(Policy = "Admin")]
 public class PoliciesController(IRemoteSslDbContext db, AuditWriter audit) : ControllerBase
 {
     public record CreatePolicyRequest(

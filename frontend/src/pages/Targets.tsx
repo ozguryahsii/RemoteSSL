@@ -38,7 +38,7 @@ export default function Targets() {
     const { jobId } = await res.json()
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 2000))
-      const job = await (await fetch(`${import.meta.env.VITE_API_BASE ?? 'http://localhost:5200'}/api/v1/targets/jobs/${jobId}`)).json()
+      const job = await (await import('../api/client')).apiGet<{ status: string; resultJson: string | null }>(`/api/v1/targets/jobs/${jobId}`)
       if (job.status === 'Succeeded') { setTestResult(`OK: ${JSON.parse(job.resultJson ?? '{}').output ?? ''}`); return }
       if (job.status === 'Failed') { setTestResult('FAILED'); return }
     }

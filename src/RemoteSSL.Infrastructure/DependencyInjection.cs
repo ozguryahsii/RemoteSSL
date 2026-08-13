@@ -33,6 +33,9 @@ public static class DependencyInjection
         services.AddScoped<Application.Automation.AutomationService>();
         services.AddScoped<Ca.CaConnectorFactory>();
         services.AddSingleton<Notifications.WebhookNotificationService>();
+        services.AddSingleton<Application.Abstractions.INotificationSink, Notifications.CompositeNotificationSink>();
+        services.AddSingleton<Security.VaultSecretClient>();
+        services.AddSingleton<Scheduling.PostgresLeaderLock>();
 
         return services;
     }

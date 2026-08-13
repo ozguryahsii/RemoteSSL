@@ -10,6 +10,7 @@ namespace RemoteSSL.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/targets")]
+[Microsoft.AspNetCore.Authorization.Authorize(Policy = "DeployOps")]
 public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : ControllerBase
 {
     public record CreateTargetRequest(
