@@ -17,8 +17,22 @@ public sealed class VendorDeployPayload
     /// <summary>API key/token for vendors using token auth (FortiGate/PA). Falls back to Password.</summary>
     public string? ApiToken { get; set; }
     public string CertObjectName { get; set; } = string.Empty;
-    /// <summary>Vendor-specific binding: PA template/vsys, ADC vserver name, ISE usage list…</summary>
+    /// <summary>Vendor-specific binding: PA SSL/TLS profile, ADC vserver name, ISE usage list…</summary>
     public string? BindingRef { get; set; }
+
+    /// <summary>
+    /// The tenant/context the objects belong to (design doc §14.3): FortiGate VDOM, Palo Alto
+    /// virtual system, F5 or Citrix administrative partition. Devices are multi-tenant, and an
+    /// object created in the wrong context is invisible to the service that needs it.
+    /// </summary>
+    public string? Context { get; set; }
+
+    /// <summary>
+    /// Whether to make the change permanent (§14.3). PAN-OS needs a commit, Citrix needs the
+    /// running config saved; without it the certificate is live but lost on the next reboot.
+    /// Defaults to true — a deployment that silently does not survive a reboot is a trap.
+    /// </summary>
+    public bool Commit { get; set; } = true;
     public string CertPem { get; set; } = string.Empty;
     public string? KeyPem { get; set; }
     public string? ChainPem { get; set; }
@@ -63,7 +77,11 @@ public static class VendorDeployers
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", p.ApiToken ?? p.Password);
         var name = $"{p.CertObjectName}-{Ts()}";
 
-        var ping = await http.GetAsync("/api/v2/monitor/system/status", ct);
+        // Every FortiOS call is scoped to a VDOM; without it the device uses the management VDOM,
+        // which is rarely where the service certificate belongs (§14.3).
+        var vdom = string.IsNullOrWhiteSpace(p.Context) ? "" : $"?vdom={Uri.EscapeDataString(p.Context)}";
+
+        var ping = await http.GetAsync($"/api/v2/monitor/system/status{vdom}", ct);
         if (!ping.IsSuccessStatusCode)
         {
             steps.Add(new("PreCheck", false, $"management API unreachable: {(int)ping.StatusCode}"));
@@ -71,13 +89,14 @@ public static class VendorDeployers
         }
         steps.Add(new("PreCheck", true, "API reachable"));
 
-        var import = await http.PostAsJsonAsync("/api/v2/monitor/vpn-certificate/local/import", new
+        var import = await http.PostAsJsonAsync($"/api/v2/monitor/vpn-certificate/local/import{vdom}", new
         {
             type = "regular",
             certname = name,
             file_content = Convert.ToBase64String(Encoding.UTF8.GetBytes(FullCert(p))),
             key_file_content = p.KeyPem is null ? null : Convert.ToBase64String(Encoding.UTF8.GetBytes(p.KeyPem)),
-            scope = "global"
+            // A VDOM-scoped certificate belongs to that VDOM; only an unscoped one is global.
+            scope = string.IsNullOrWhiteSpace(p.Context) ? "global" : "vdom"
         }, ct);
         if (!import.IsSuccessStatusCode)
         {
@@ -88,7 +107,7 @@ public static class VendorDeployers
 
         if (p.BindingRef is not null) // admin GUI cert binding: system.global admin-server-cert
         {
-            var bind = await http.SendAsync(new HttpRequestMessage(HttpMethod.Put, "/api/v2/cmdb/system/global")
+            var bind = await http.SendAsync(new HttpRequestMessage(HttpMethod.Put, $"/api/v2/cmdb/system/global{vdom}")
             { Content = JsonContent.Create(new { json = new Dictionary<string, string> { [p.BindingRef] = name } }) }, ct);
             if (!bind.IsSuccessStatusCode)
             {
@@ -97,7 +116,11 @@ public static class VendorDeployers
             }
             steps.Add(new("Activate", true, $"{p.BindingRef} → {name}"));
         }
-        steps.Add(new("Commit", true, "previous certificate object retained for rollback"));
+        // FortiOS writes straight to the running configuration, so there is nothing to commit —
+        // the step is recorded anyway so every adapter's step list reads the same way.
+        steps.Add(new("Commit", true, string.IsNullOrWhiteSpace(p.Context)
+            ? "previous certificate object retained for rollback"
+            : $"vdom '{p.Context}'; previous certificate object retained for rollback"));
         return new DeployOutcome(true, false, steps);
     }
 
@@ -109,10 +132,13 @@ public static class VendorDeployers
         var key = p.ApiToken ?? p.Password;
         var name = $"{p.CertObjectName}-{Ts()}";
 
+        // PAN-OS objects live in a virtual system unless they are explicitly shared (§14.3).
+        var vsys = string.IsNullOrWhiteSpace(p.Context) ? "" : $"&vsys={Uri.EscapeDataString(p.Context)}";
+
         async Task<(bool Ok, string Body)> Import(string category, string content, string? extra = null)
         {
             using var form = new MultipartFormDataContent { { new StringContent(content), "file", $"{name}.pem" } };
-            var url = $"/api/?type=import&category={category}&certificate-name={name}&format=pem&key={Uri.EscapeDataString(key)}{extra}";
+            var url = $"/api/?type=import&category={category}&certificate-name={name}&format=pem&key={Uri.EscapeDataString(key)}{vsys}{extra}";
             var res = await http.PostAsync(url, form, ct);
             var body = await res.Content.ReadAsStringAsync(ct);
             return (res.IsSuccessStatusCode && body.Contains("success"), body);
@@ -133,9 +159,35 @@ public static class VendorDeployers
                 return new DeployOutcome(false, false, steps);
             }
         }
-        steps.Add(new("Install", true, $"certificate '{name}' imported"));
+        steps.Add(new("Install", true, $"certificate '{name}' imported"
+            + (string.IsNullOrWhiteSpace(p.Context) ? " (shared)" : $" into vsys '{p.Context}'")));
 
-        // COMMIT is mandatory on PAN-OS (design doc §14.3)
+        // ACTIVATE: point the SSL/TLS service profile at the new certificate. Without this the
+        // certificate is merely present on the device and nothing serves it.
+        if (p.BindingRef is not null)
+        {
+            var xpath = string.IsNullOrWhiteSpace(p.Context)
+                ? $"/config/shared/ssl-tls-service-profile/entry[@name='{p.BindingRef}']/certificate"
+                : $"/config/devices/entry/vsys/entry[@name='{p.Context}']/ssl-tls-service-profile/entry[@name='{p.BindingRef}']/certificate";
+            var bind = await http.GetAsync(
+                $"/api/?type=config&action=edit&xpath={Uri.EscapeDataString(xpath)}"
+                + $"&element={Uri.EscapeDataString($"<certificate>{name}</certificate>")}"
+                + $"&key={Uri.EscapeDataString(key)}", ct);
+            var bindBody = await bind.Content.ReadAsStringAsync(ct);
+            if (!bind.IsSuccessStatusCode || !bindBody.Contains("success"))
+            {
+                steps.Add(new("Activate", false, $"profile binding failed: {Trunc(bindBody)}"));
+                return new DeployOutcome(false, false, steps);
+            }
+            steps.Add(new("Activate", true, $"ssl-tls-service-profile '{p.BindingRef}' → {name}"));
+        }
+
+        // COMMIT: PAN-OS keeps a candidate configuration, so nothing above is live until this runs.
+        if (!p.Commit)
+        {
+            steps.Add(new("Commit", true, "commit skipped by configuration; the change is still a candidate"));
+            return new DeployOutcome(true, false, steps);
+        }
         var commit = await http.GetAsync($"/api/?type=commit&cmd=<commit></commit>&key={Uri.EscapeDataString(key)}", ct);
         var commitBody = await commit.Content.ReadAsStringAsync(ct);
         var committed = commit.IsSuccessStatusCode && commitBody.Contains("success");
@@ -150,6 +202,9 @@ public static class VendorDeployers
         using var http = Client(p);
         http.DefaultRequestHeaders.Add("X-NITRO-USER", p.Username);
         http.DefaultRequestHeaders.Add("X-NITRO-PASS", p.Password);
+        // Admin partitions are separate configuration namespaces; the header selects one (§14.3).
+        if (!string.IsNullOrWhiteSpace(p.Context) && p.Context != "default")
+            http.DefaultRequestHeaders.Add("X-NITRO-PARTITION", p.Context);
         var name = $"{p.CertObjectName}-{Ts()}";
 
         async Task<bool> UploadSystemFile(string filename, string content)
@@ -197,6 +252,13 @@ public static class VendorDeployers
                 return new DeployOutcome(false, false, steps);
             }
             steps.Add(new("Activate", true, $"vserver '{p.BindingRef}' → {name}"));
+        }
+        // Saving is what makes the binding survive a reboot; skipping it leaves a change that
+        // works now and disappears later, which is worse than a visible failure.
+        if (!p.Commit)
+        {
+            steps.Add(new("Commit", true, "running configuration not saved, by configuration"));
+            return new DeployOutcome(true, false, steps);
         }
         var save = await http.PostAsJsonAsync("/nitro/v1/config/nsconfig?action=save", new { nsconfig = new { } }, ct);
         steps.Add(new("Commit", save.IsSuccessStatusCode, save.IsSuccessStatusCode ? "config saved" : "config save failed"));

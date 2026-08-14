@@ -401,12 +401,30 @@ public class DeploymentService(
         var restorable = job.Targets
             .Where(t => t.Status == DeploymentJobStatus.Succeeded && t.PreviousVersionId is not null)
             .ToList();
+
+        // §9.3: some adapters replace the certificate in place and keep no previous object, so
+        // there is nothing to point back at. Say so per target instead of failing halfway through.
+        var irreversible = restorable
+            .Where(t => !AdapterCatalog.SupportsRollback(t.DeploymentBinding.CertificateStore.Target.AdapterType))
+            .ToList();
+        restorable = restorable.Except(irreversible).ToList();
+
+        if (restorable.Count == 0 && irreversible.Count > 0)
+            throw new InvalidOperationException(
+                "Nothing to roll back: "
+                + string.Join("; ", irreversible.Select(t =>
+                    $"{t.DeploymentBinding.CertificateStore.Target.Name} uses "
+                    + $"'{t.DeploymentBinding.CertificateStore.Target.AdapterType}', which replaces the certificate in place")));
+
         if (restorable.Count == 0)
             throw new InvalidOperationException(
                 "Nothing to roll back: no target of this job succeeded with a recorded previous version.");
 
         var jobs = new List<Guid>();
-        var skipped = new List<string>();
+        var skipped = irreversible.Select(t =>
+            $"{t.DeploymentBinding.CertificateStore.Target.Name}: "
+            + $"'{t.DeploymentBinding.CertificateStore.Target.AdapterType}' replaces the certificate in place, "
+            + "so there is no previous object to restore").ToList();
 
         // One job per previous version — targets may have been on different versions.
         foreach (var group in restorable.GroupBy(t => t.PreviousVersionId!.Value))
@@ -685,7 +703,27 @@ public class DeploymentService(
                 chainPem = version.PemChain,
                 expectedSha256Thumbprint = version.Sha256Thumbprint
             },
-            "windows-cert-store" or "iis" => BuildWindowsPayload(version, target, store, svc, conn, keyPem),
+            "generic-ssh" => new
+            {
+                kind = "generic-ssh",
+                connection = new { host = Get(conn, "host", target.Name), port = GetInt(conn, "port", 22), useSudo = GetBool(conn, "useSudo") },
+                credentialRefId = target.CredentialRefId,
+                certPath = Get(svc, "certPath", store.StorePath),
+                keyPath = svc.TryGetProperty("keyPath", out var gkp) ? gkp.GetString() : null,
+                chainPath = svc.TryGetProperty("chainPath", out var gcp) ? gcp.GetString() : null,
+                // Command templates come from the target's configuration only (§14.2).
+                installCmd = svc.TryGetProperty("installCmd", out var gic) ? gic.GetString() : null,
+                validateCmd = svc.TryGetProperty("validateCmd", out var gvc) ? gvc.GetString() : null,
+                reloadCmd = svc.TryGetProperty("reloadCmd", out var grc) ? grc.GetString() : null,
+                verifyCmd = svc.TryGetProperty("verifyCmd", out var gvfc) ? gvfc.GetString() : null,
+                rollbackCmd = svc.TryGetProperty("rollbackCmd", out var grbc) ? grbc.GetString() : null,
+                owner = svc.TryGetProperty("owner", out var gow) ? gow.GetString() : null,
+                certPem = version.PemCertificate,
+                keyPem,
+                chainPem = version.PemChain,
+                expectedSha256Thumbprint = version.Sha256Thumbprint
+            },
+            "windows-cert-store" or "iis" or "windows-ccs" => BuildWindowsPayload(version, target, store, svc, conn, keyPem),
             "java-keystore" or "java-truststore" => new
             {
                 kind = "java",
@@ -723,6 +761,10 @@ public class DeploymentService(
                 apiToken = conn.TryGetProperty("apiToken", out var at) ? at.GetString() : null,
                 certObjectName = Get(svc, "certObjectName", store.Alias ?? "remotessl"),
                 bindingRef = svc.TryGetProperty("bindingRef", out var br) ? br.GetString() : null,
+                // §14.3 tenant/context: VDOM, virtual system or admin partition, whichever this
+                // vendor calls it. The connection config names it per adapter.
+                context = Get(conn, "vdom", Get(conn, "vsys", Get(conn, "partition"))),
+                commit = !conn.TryGetProperty("skipCommit", out var sc) || !sc.GetBoolean(),
                 certPem = version.PemCertificate,
                 keyPem,
                 chainPem = version.PemChain,
@@ -783,7 +825,21 @@ public class DeploymentService(
                                      && acc.ValueKind == JsonValueKind.Array
                 ? acc.EnumerateArray().Select(a => a.GetString() ?? string.Empty)
                     .Where(a => a.Length > 0).ToArray()
-                : []
+                : [],
+            // §11.4 system service bindings: RDP and the WinRM HTTPS listener share the store.
+            bindingTargets = svc.TryGetProperty("bindingTargets", out var bt) && bt.ValueKind == JsonValueKind.Array
+                ? bt.EnumerateArray().Select(t => t.GetString() ?? string.Empty)
+                    .Where(t => t.Length > 0).ToArray()
+                : [],
+            // §11.4 Centralized Certificate Store: when a share is configured the certificate goes
+            // there by host name instead of into this machine's store.
+            ccsPath = target.AdapterType == "windows-ccs"
+                ? Get(svc, "ccsPath", store.StorePath)
+                : svc.TryGetProperty("ccsPath", out var cc) ? cc.GetString() : null,
+            ccsFileName = svc.TryGetProperty("ccsFileName", out var cf)
+                ? cf.GetString()
+                : version.Certificate?.CommonName,
+            enableCcs = svc.TryGetProperty("enableCcs", out var ec) && ec.GetBoolean()
         };
     }
 

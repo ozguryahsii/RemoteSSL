@@ -26,7 +26,11 @@ public class Worker(
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private Guid _runnerId;
     private string _apiKey = string.Empty;
-    private static readonly string[] Capabilities = ["ssh", "sftp", "linux-deploy", "windows-deploy", "java-keystore", "oracle-wallet", "f5-bigip"];
+    private static readonly string[] Capabilities =
+    [
+        "ssh", "sftp", "linux-deploy", "windows-deploy", "windows-ccs", "generic-ssh",
+        "java-keystore", "java-inventory", "oracle-wallet", "f5-bigip"
+    ];
 
     /// <summary>
     /// Adapter versions this runner ships, reported at registration and heartbeat so the
@@ -35,7 +39,8 @@ public class Worker(
     private static readonly Dictionary<string, string> AdapterVersions = new()
     {
         ["nginx"] = "1.0.0", ["apache"] = "1.0.0", ["haproxy"] = "1.0.0", ["generic-file"] = "1.0.0",
-        ["iis"] = "1.0.0", ["windows-cert-store"] = "1.0.0",
+        ["generic-ssh"] = "1.0.0",
+        ["iis"] = "1.0.0", ["windows-cert-store"] = "1.0.0", ["windows-ccs"] = "1.0.0",
         ["java-keystore"] = "1.0.0", ["java-truststore"] = "1.0.0", ["oracle-wallet"] = "1.0.0",
         ["f5-bigip"] = "1.0.0", ["fortigate"] = "1.0.0", ["paloalto"] = "1.0.0",
         ["citrix-adc"] = "1.0.0", ["cisco-ise"] = "1.0.0"
@@ -224,6 +229,23 @@ public class Worker(
                 resultJson = JsonSerializer.Serialize(new { output });
                 steps.Add(new { step = "PreCheck", success = ok, safeLog = ok ? "store discovery completed" : output });
             }
+            else if (job.JobType == "java-inventory")
+            {
+                // §12.3 store discovery: read what is actually in the keystore, not just the alias
+                // this platform deploys to.
+                var inventory = JavaKeystoreInventory.Inventory(
+                    ToJavaInventoryPayload(doc.RootElement, creds), creds);
+                success = inventory.Success;
+                resultJson = JsonSerializer.Serialize(inventory, Json);
+                steps.Add(new
+                {
+                    step = "PreCheck",
+                    success,
+                    safeLog = success
+                        ? $"{inventory.Entries.Count} entr{(inventory.Entries.Count == 1 ? "y" : "ies")} listed"
+                        : inventory.Error ?? "keystore listing failed"
+                });
+            }
             else if (job.JobType == "test-connection")
             {
                 var conn = doc.RootElement.GetProperty("connection").Deserialize<SshTargetConfig>(Json)!;
@@ -244,6 +266,8 @@ public class Worker(
                     "oracle" => OracleWalletDeployer.Deploy(ToOraclePayload(doc.RootElement, creds), creds),
                     "f5" => await F5BigIpDeployer.DeployAsync(ToF5Payload(doc.RootElement, creds), ct),
                     "vendor" => await VendorDeployers.DeployAsync(ToVendorPayload(doc.RootElement, creds), ct),
+                    "generic-ssh" => GenericSshDeployer.Deploy(
+                        doc.RootElement.Deserialize<GenericSshPayload>(Json)!, creds),
                     _ => new DeployOutcome(false, false, [new("PreCheck", false, $"unknown payload kind '{kind}'")])
                 };
                 success = outcome.Success;
@@ -305,6 +329,15 @@ public class Worker(
         return element.TryGetProperty(pascal, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
     }
 
+    private static JavaKeystoreInventory.InventoryPayload ToJavaInventoryPayload(JsonElement e, SshCredentials creds) => new()
+    {
+        Connection = e.GetProperty("connection").Deserialize<SshTargetConfig>(Json)!,
+        StorePath = e.GetProperty("storePath").GetString()!,
+        StoreType = e.TryGetProperty("storeType", out var st) ? st.GetString() ?? "JKS" : "JKS",
+        KeytoolPath = e.TryGetProperty("keytoolPath", out var kt) ? kt.GetString() : null,
+        StorePassword = creds.Password ?? "changeit"
+    };
+
     private static WindowsDeployPayload ToWindowsPayload(JsonElement e) => new()
     {
         Connection = e.GetProperty("connection").Deserialize<SshTargetConfig>(Json)!,
@@ -320,7 +353,13 @@ public class Worker(
         NonExportablePrivateKey = !e.TryGetProperty("nonExportablePrivateKey", out var ne) || ne.GetBoolean(),
         PrivateKeyReadAccounts = e.TryGetProperty("privateKeyReadAccounts", out var acc) && acc.ValueKind == JsonValueKind.Array
             ? acc.EnumerateArray().Select(a => a.GetString() ?? string.Empty).Where(a => a.Length > 0).ToList()
-            : []
+            : [],
+        BindingTargets = e.TryGetProperty("bindingTargets", out var bt) && bt.ValueKind == JsonValueKind.Array
+            ? bt.EnumerateArray().Select(b => b.GetString() ?? string.Empty).Where(b => b.Length > 0).ToList()
+            : [],
+        CcsPath = e.TryGetProperty("ccsPath", out var cc) ? cc.GetString() : null,
+        CcsFileName = e.TryGetProperty("ccsFileName", out var cf) ? cf.GetString() : null,
+        EnableCcs = e.TryGetProperty("enableCcs", out var ec) && ec.GetBoolean()
     };
 
     private static JavaKeystorePayload ToJavaPayload(JsonElement e, SshCredentials creds) => new()
@@ -533,6 +572,8 @@ public class Worker(
 
     private static VendorDeployPayload ToVendorPayload(JsonElement e, SshCredentials creds) => new()
     {
+        Context = e.TryGetProperty("context", out var vctx) ? vctx.GetString() : null,
+        Commit = !e.TryGetProperty("commit", out var vc) || vc.GetBoolean(),
         Vendor = e.GetProperty("vendor").GetString()!,
         ManagementUrl = e.GetProperty("managementUrl").GetString()!,
         Username = creds.Username,

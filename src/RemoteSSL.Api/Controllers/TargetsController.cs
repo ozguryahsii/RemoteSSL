@@ -219,6 +219,54 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
         return Accepted(new { jobId = job.Id });
     }
 
+    /// <summary>
+    /// Queues a Java keystore inventory job (design doc §12.3). Deployment only ever touches one
+    /// alias, so without this the store's other entries — old key pairs, expired trust anchors —
+    /// never reach the inventory.
+    /// </summary>
+    [HttpPost("{id:guid}/stores/{storeId:guid}/inventory")]
+    public async Task<ActionResult<object>> InventoryKeystore(Guid id, Guid storeId, CancellationToken ct)
+    {
+        var target = await db.Targets.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, ct);
+        if (target is null) return NotFound();
+        if (target.AdapterType is not ("java-keystore" or "java-truststore"))
+            return ValidationProblem($"Adapter '{target.AdapterType}' has no keystore to inventory.");
+
+        var store = await db.CertificateStores.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == storeId && s.TargetId == id, ct);
+        if (store is null) return NotFound();
+
+        var conn = JsonDocument.Parse(target.ConnectionConfigJson).RootElement;
+        var job = new RunnerJob
+        {
+            Id = Guid.NewGuid(),
+            RunnerId = target.RunnerId,
+            JobType = "java-inventory",
+            PayloadJson = JsonSerializer.Serialize(new
+            {
+                kind = "java",
+                connection = new
+                {
+                    host = conn.TryGetProperty("host", out var h) ? h.GetString() : target.Name,
+                    port = conn.TryGetProperty("port", out var p) && p.TryGetInt32(out var pi) ? pi : 22,
+                    useSudo = conn.TryGetProperty("useSudo", out var us) && us.GetBoolean()
+                },
+                credentialRefId = target.CredentialRefId,
+                storePath = store.StorePath,
+                storeType = conn.TryGetProperty("storeType", out var st) ? st.GetString() : "JKS",
+                keytoolPath = JsonDocument.Parse(store.ConfigJson).RootElement
+                    .TryGetProperty("keytoolPath", out var kt) ? kt.GetString() : null
+            }),
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.RunnerJobs.Add(job);
+        audit.Append("user:api", "target.inventory-keystore", "certificate_store", storeId.ToString(),
+            "QUEUED", new { store.StorePath }, job.CorrelationId);
+        await db.SaveChangesAsync(ct);
+        return Accepted(new { jobId = job.Id });
+    }
+
     /// <summary>Queues a test-connection runner job for this target (design doc §27.1).</summary>
     [HttpPost("{id:guid}/test-connection")]
     public async Task<ActionResult<object>> TestConnection(Guid id, CancellationToken ct)

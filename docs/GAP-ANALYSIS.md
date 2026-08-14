@@ -134,17 +134,26 @@ key taşıyan artifact'leri reddeder.
 - Trigger, retention işine `SET LOCAL remotessl.audit_retention = 'on'` ile izin verir; başka
   hiçbir yol audit satırı silemez. Canlı Postgres'te dört senaryo da doğrulandı.
 
-## F19 — Platform adapter derinliği ve capability-driven UI
+## F19 — Platform adapter derinliği ve capability-driven UI ✅ TAMAMLANDI (19.7 hariç — lab gerekli)
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 19.1 | Capability-driven UI: adapter yeteneğine göre buton/aksiyon gösterimi | §9.3 | YOK |
-| 19.2 | Windows Centralized Certificate Store (CCS) adapter'ı | §11.4 | YOK |
-| 19.3 | RDP/WinRM sistem servis binding'leri | §11.4 | YOK |
-| 19.4 | Network cihazlarında partition/tenant/context, HA pair sırası, commit/publish, management vs data plane ayrımı | §14.3 | KISMİ |
-| 19.5 | Generic SSH/API fallback adapter'ı (kontrollü custom script/template) | §14.2 | YOK |
-| 19.6 | Java: `keytool -list` çıktısından alias envanteri çıkarma (store discovery) | §12.3 | KISMİ |
-| 19.7 | Vendor adapter'larının gerçek lab'da doğrulanması (IIS, Java, Oracle, F5, FortiGate, PA, ADC, ISE) | §36.2 | YOK (kod hazır, lab gerekli) |
+| 19.1 | Capability-driven UI: adapter yeteneğine göre buton/aksiyon gösterimi | §9.3 | ✅ `AdapterCatalog` + `GET /api/v1/adapters`; UI adapter listesini, alan tanımlarını ve aksiyonları buradan alıyor. Rollback yeteneği sunucuda da uygulanıyor |
+| 19.2 | Windows Centralized Certificate Store (CCS) adapter'ı | §11.4 | ✅ `windows-ccs`: PFX UNC paylaşımına host adıyla yazılır, önceki dosya yedeklenir, `Enable-WebCentralCertProvider` opsiyonel |
+| 19.3 | RDP/WinRM sistem servis binding'leri | §11.4 | ✅ `bindingTargets: ["rdp","winrm"]` — RDP thumbprint'i WMI'ya yazılır, WinRM HTTPS listener'ı yeniden oluşturulur |
+| 19.4 | Network cihazlarında partition/tenant/context, HA pair sırası, commit/publish, management vs data plane ayrımı | §14.3 | ✅ FortiGate VDOM, PA vsys, Citrix admin partition, F5 partition; PA'da SSL/TLS profil binding + commit, Citrix'te config save; `skipCommit` ile kontrol. HA sırası F12'den (`HaRank`) |
+| 19.5 | Generic SSH/API fallback adapter'ı (kontrollü custom script/template) | §14.2 | ✅ `generic-ssh`: install/validate/reload/verify/rollback komut şablonları, sabit placeholder seti, aynı transactional boru hattı |
+| 19.6 | Java: `keytool -list` çıktısından alias envanteri çıkarma (store discovery) | §12.3 | ✅ `JavaKeystoreInventory` — alias, entry type, subject/issuer, serial, SHA-256, expiry; `POST /targets/{id}/stores/{storeId}/inventory` ve UI'da **Inventory** düğmesi |
+| 19.7 | Vendor adapter'larının gerçek lab'da doğrulanması | §36.2 | ⛔ ERTELENDİ — bu ortamda gerçek IIS/Java/Oracle/F5/FortiGate/PA/ADC/ISE cihazı yok. Kod ve birim testleri hazır; doğrulama fiziksel/sanal lab gerektiriyor |
+
+### F19 notları
+- Capability kataloğu tek kaynak: UI'nın gösterdiği ile runner'ın yapabildiği ayrışamaz. Katalogda
+  olmayan bir adapter UI'da görünmez, katalogda `supportsRollback=false` olan bir adapter için
+  rollback ne UI'da sunulur ne de sunucuda kabul edilir (Cisco ISE sertifikayı yerinde değiştirir).
+- `generic-ssh` komutları yalnızca target'ın kendi yapılandırmasından gelir; sertifika alanı,
+  target adı veya dışarıdan etkilenebilen hiçbir veri komut üretmez.
+- PAN-OS ve Citrix'te commit/save adımı varsayılan açık: sonradan kaybolan bir değişiklik,
+  görünür bir hatadan daha kötüdür.
 
 ## F20 — CA connector genişlemesi
 

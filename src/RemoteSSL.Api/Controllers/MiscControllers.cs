@@ -531,3 +531,22 @@ public class AuditController(
         return new { CorrelationId = correlationId, Request = request, DeploymentJobs = jobs, RunnerJobs = runnerJobs, Events = events, Metrics = samples };
     }
 }
+
+/// <summary>
+/// The adapter catalog (design doc §9.3). The UI reads this to know which fields an adapter
+/// needs and which actions it can offer, instead of hard-coding per-adapter behaviour.
+/// </summary>
+[ApiController]
+[Route("api/v1/adapters")]
+public class AdaptersController : ControllerBase
+{
+    [HttpGet]
+    public IEnumerable<RemoteSSL.Application.Deployments.AdapterDescriptor> List() =>
+        RemoteSSL.Application.Deployments.AdapterCatalog.All;
+
+    [HttpGet("{type}")]
+    public ActionResult<RemoteSSL.Application.Deployments.AdapterDescriptor> Get(string type) =>
+        RemoteSSL.Application.Deployments.AdapterCatalog.Find(type) is { } descriptor
+            ? descriptor
+            : NotFound();
+}

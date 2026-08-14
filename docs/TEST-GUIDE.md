@@ -709,6 +709,84 @@ curl -s "localhost:5200/api/v1/audit?actor=ozgur&action=certificate.revoke&from=
 curl -s localhost:5200/api/v1/audit/facets   # formdaki açılır listeler
 ```
 
+## 23. Adapter derinliği ve capability-driven UI (F19)
+
+**Adapter kataloğu** (§9.3). Her adapter'ın ne yapabildiği tek bir yerde tanımlı; UI hem adapter
+listesini hem alanları hem de hangi aksiyonun sunulacağını buradan okur.
+
+```bash
+curl -s localhost:5200/api/v1/adapters | jq '.[] | {type, channel, supportsRollback, requiresCommit}'
+curl -s localhost:5200/api/v1/adapters/paloalto
+```
+
+**Managed Targets** ekranında adapter seçilince altında bir satır çıkar: kanal (ssh/winrm/rest),
+private key gerekiyor mu, rollback var mı, commit gerekiyor mu. Adapter yeteneği yoksa aksiyon
+gösterilmez — Cisco ISE sertifikayı yerinde değiştirdiği için rollback ne UI'da sunulur ne de
+sunucuda kabul edilir (deneme, hangi target'ın neden geri alınamadığını söyleyen bir hata döner).
+
+**Windows CCS** (§11.4). Yeni `windows-ccs` adapter'ı sertifikayı makine store'una değil, IIS'in
+host adına göre okuduğu UNC paylaşımına yazar:
+
+```json
+{ "ccsPath": "\\\\fileserver\\certs", "ccsFileName": "app.example.com", "enableCcs": true }
+```
+
+Önceki dosya `.<timestamp>.bak` olarak yedeklenir; herhangi bir adım başarısız olursa geri konur.
+
+**RDP / WinRM binding'leri** (§11.4). IIS veya windows-cert-store store'unun service binding
+JSON'una eklenir:
+
+```json
+{ "iisSiteName": "Default Web Site", "bindingTargets": ["rdp", "winrm"] }
+```
+
+RDP için thumbprint `Win32_TSGeneralSetting` üzerinden yazılır, WinRM için HTTPS listener'ı yeni
+thumbprint'le yeniden oluşturulur. Job adımlarında `Activate:rdp` / `Activate:winrm` görünür.
+
+**Network cihaz context'i** (§14.3). Target'ın connection config'inde:
+
+| Cihaz | Alan | Örnek |
+|-------|------|-------|
+| FortiGate | `vdom` | `"vdom": "root"` |
+| Palo Alto | `vsys` | `"vsys": "vsys1"` |
+| Citrix ADC | `partition` | `"partition": "prod"` |
+| F5 BIG-IP | `partition` | `"partition": "Common"` |
+
+PAN-OS'ta SSL/TLS service profile binding'i `bindingRef` ile yapılır ve ardından **commit** çalışır;
+Citrix'te binding sonrası **config save** yapılır. İkisi de varsayılan açıktır; kapatmak için
+connection config'e `"skipCommit": true` eklenir (değişiklik canlı olur ama reboot'ta kaybolur).
+
+**Generic SSH şablonu** (§14.2). Adapter'ı olmayan bir cihaz için, komutları operatörün yazdığı
+kontrollü şablon:
+
+```json
+{
+  "certPath": "/opt/app/tls/server.crt",
+  "keyPath": "/opt/app/tls/server.key",
+  "installCmd": "/opt/app/bin/import-cert {certPath} {keyPath}",
+  "validateCmd": "/opt/app/bin/check-config",
+  "reloadCmd": "systemctl reload app",
+  "verifyCmd": "/opt/app/bin/show-cert | grep -q {thumbprint}",
+  "rollbackCmd": "/opt/app/bin/import-cert {backupPath} && systemctl reload app"
+}
+```
+
+Placeholder seti sabittir: `{certPath} {keyPath} {chainPath} {backupPath} {thumbprint} {host}`.
+Tanınmayan bir `{...}` olduğu gibi bırakılır. Komutlar yalnızca bu yapılandırmadan gelir; sertifika
+alanları veya target adı komut üretmez. Boru hattı diğer adapter'larla aynı: pre-check → backup →
+upload → install → validate → reload → verify, hata olursa yedekten geri dönüş.
+
+**Java alias envanteri** (§12.3). Deployment tek bir alias'a dokunur; store'da başka ne olduğunu
+görmek için **Managed Targets → Inventory**:
+
+```bash
+curl -s -X POST localhost:5200/api/v1/targets/<targetId>/stores/<storeId>/inventory
+curl -s localhost:5200/api/v1/targets/jobs/<jobId>
+```
+
+Sonuç her alias için entry type, subject/issuer, serial, SHA-256 parmak izi ve son kullanma
+tarihini içerir. Salt okunur — store'a hiçbir şey yazılmaz.
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

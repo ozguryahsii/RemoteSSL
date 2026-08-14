@@ -34,6 +34,22 @@ public sealed class WindowsDeployPayload
     /// service that needs it.
     /// </summary>
     public List<string> PrivateKeyReadAccounts { get; set; } = [];
+
+    /// <summary>
+    /// System services to point at the same certificate after it is in the store (§11.4):
+    /// "rdp" for Remote Desktop, "winrm" for the WinRM HTTPS listener.
+    /// </summary>
+    public List<string> BindingTargets { get; set; } = [];
+
+    /// <summary>
+    /// Centralized Certificate Store share (§11.4). When set, the PFX is placed on this UNC path
+    /// instead of being imported into the machine store, and IIS serves it by host name.
+    /// </summary>
+    public string? CcsPath { get; set; }
+    /// <summary>CCS file name without extension; defaults to the certificate's common name.</summary>
+    public string? CcsFileName { get; set; }
+    /// <summary>Turn the central certificate provider on for the site if it is off.</summary>
+    public bool EnableCcs { get; set; }
 }
 
 /// <summary>
@@ -64,6 +80,10 @@ public static class WindowsDeployer
 
         using (channel)
         {
+            // CCS is a different shape of deployment: the certificate is never imported into this
+            // machine's store, it is placed on a share that IIS reads by host name (§11.4).
+            if (p.CcsPath is not null) return DeployToCcs(channel, p, steps);
+
             var ts = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss");
             var tempPfx = $"C:/Windows/Temp/rssl-{ts}.pfx";
             var tempPwd = $"C:/Windows/Temp/rssl-{ts}.pwd";
@@ -127,6 +147,25 @@ public static class WindowsDeployer
                         $"read access granted to {string.Join(", ", p.PrivateKeyReadAccounts)}"));
                 }
 
+                // ACTIVATE (system services): RDP and the WinRM HTTPS listener share the machine
+                // store, so pointing them at the new thumbprint is all that is needed (§11.4).
+                foreach (var service in p.BindingTargets)
+                {
+                    var script = ServiceBindingScript(service, newThumb);
+                    if (script is null)
+                    {
+                        steps.Add(new("Activate", false, $"unknown system binding target '{service}'"));
+                        return new DeployOutcome(false, false, steps);
+                    }
+                    var bound = channel.RunPs(script);
+                    if (!bound.Ok)
+                    {
+                        steps.Add(new($"Activate:{service}", false, $"binding failed: {Trunc(bound.Stderr)}"));
+                        return new DeployOutcome(false, false, steps);
+                    }
+                    steps.Add(new($"Activate:{service}", true, $"{service} now serves {newThumb}"));
+                }
+
                 // ACTIVATE: IIS https binding update
                 if (p.IisSiteName is not null)
                 {
@@ -185,6 +224,101 @@ public static class WindowsDeployer
     }
 
     private static string Trunc(string s) => s.Length <= 400 ? s : s[..400];
+
+    /// <summary>
+    /// Points a Windows system service at a certificate already in the machine store (§11.4).
+    /// Returns null for an unrecognised target rather than running something unintended.
+    /// </summary>
+    public static string? ServiceBindingScript(string service, string thumbprint) =>
+        service.ToLowerInvariant() switch
+        {
+            // Terminal Services keeps the thumbprint in WMI, not in an HTTP binding.
+            "rdp" => "$ts = Get-WmiObject -Class Win32_TSGeneralSetting "
+                     + "-Namespace root\\CIMV2\\TerminalServices -Filter \"TerminalName='RDP-tcp'\"; "
+                     + $"$ts.SSLCertificateSHA1Hash = '{thumbprint}'; $ts.Put()",
+            // The WinRM HTTPS listener is recreated rather than edited: changing the certificate
+            // of an existing listener is not supported, and a missing listener must be created.
+            "winrm" => "winrm delete winrm/config/Listener?Address=*+Transport=HTTPS 2>$null; "
+                       + "winrm create winrm/config/Listener?Address=*+Transport=HTTPS "
+                       + $"'@{{Hostname=\"'+$env:COMPUTERNAME+'\";CertificateThumbprint=\"{thumbprint}\"}}'",
+            _ => null
+        };
+
+    /// <summary>
+    /// Centralized Certificate Store deployment (§11.4). CCS matches the requested host name to a
+    /// PFX file on a share, so the work is placing the file under the right name — no machine
+    /// store, no per-server binding. The previous file is kept alongside for rollback.
+    /// </summary>
+    private static DeployOutcome DeployToCcs(IWindowsChannel channel, WindowsDeployPayload p, List<StepOutcome> steps)
+    {
+        var name = (p.CcsFileName ?? p.IisHostHeader ?? "certificate").TrimEnd('.');
+        var target = $"{p.CcsPath!.TrimEnd('\\', '/')}\\{name}.pfx";
+        var backup = $"{target}.{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.bak";
+
+        var check = channel.RunPs($"Test-Path '{p.CcsPath}'");
+        if (!check.Ok || !check.Stdout.Trim().Equals("True", StringComparison.OrdinalIgnoreCase))
+        {
+            steps.Add(new("PreCheck", false, $"CCS share '{p.CcsPath}' is not reachable from the target"));
+            return new DeployOutcome(false, false, steps);
+        }
+        steps.Add(new("PreCheck", true, $"CCS share reachable; target file {target}"));
+
+        var existing = channel.RunPs($"if (Test-Path '{target}') {{ Copy-Item '{target}' '{backup}' -Force; 'backed-up' }} else {{ 'none' }}");
+        var hadPrevious = existing.Stdout.Contains("backed-up");
+        steps.Add(new("Backup", true, hadPrevious ? $"previous file copied to {backup}" : "no previous file"));
+
+        try
+        {
+            channel.PutFile(p.PfxBytes, target.Replace('\\', '/'));
+            steps.Add(new("Install", true, $"pfx written to {target}"));
+        }
+        catch (Exception ex)
+        {
+            steps.Add(new("Install", false, $"could not write to the CCS share: {ex.Message}"));
+            return new DeployOutcome(false, false, steps);
+        }
+
+        if (p.EnableCcs)
+        {
+            var enable = channel.RunPs(
+                "Import-Module WebAdministration; "
+                + $"Enable-WebCentralCertProvider -CertStoreLocation '{p.CcsPath}' "
+                + "-UserName $env:USERNAME -Password (ConvertTo-SecureString ' ' -AsPlainText -Force) "
+                + "-ErrorAction SilentlyContinue; "
+                + "(Get-WebCentralCertProvider).Enabled");
+            steps.Add(new("Activate", enable.Ok, enable.Ok
+                ? "central certificate provider enabled"
+                : $"could not enable CCS: {Trunc(enable.Stderr)}"));
+            if (!enable.Ok) return RollbackCcs(channel, steps, target, hadPrevious ? backup : null);
+        }
+
+        var verify = channel.RunPs($"(Get-Item '{target}').Length");
+        if (!verify.Ok || verify.Stdout.Trim() == "0")
+        {
+            steps.Add(new("LocalVerify", false, "the written file is missing or empty"));
+            return RollbackCcs(channel, steps, target, hadPrevious ? backup : null);
+        }
+        steps.Add(new("LocalVerify", true, $"{verify.Stdout.Trim()} bytes on the share"));
+
+        steps.Add(new("Commit", true, hadPrevious
+            ? $"previous file kept at {backup} for rollback"
+            : "done"));
+        return new DeployOutcome(true, false, steps);
+    }
+
+    private static DeployOutcome RollbackCcs(IWindowsChannel channel, List<StepOutcome> steps,
+        string target, string? backup)
+    {
+        if (backup is null)
+        {
+            channel.RunPs($"Remove-Item -Force -ErrorAction SilentlyContinue '{target}'");
+            steps.Add(new("Rollback", true, "the file this deployment added was removed"));
+            return new DeployOutcome(false, true, steps);
+        }
+        var restore = channel.RunPs($"Copy-Item '{backup}' '{target}' -Force");
+        steps.Add(new("Rollback", restore.Ok, restore.Ok ? "previous file restored" : Trunc(restore.Stderr)));
+        return new DeployOutcome(false, restore.Ok, steps);
+    }
 
     /// <summary>
     /// Grants read access on the certificate's private key file to the given accounts (§11.4).

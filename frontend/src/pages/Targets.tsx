@@ -9,13 +9,29 @@ interface TargetRow {
   stores: { id: string; storeType: string; storePath: string; alias: string | null }[]
 }
 
-const ADAPTERS = ['nginx', 'apache', 'haproxy', 'generic-file', 'windows-cert-store', 'iis',
-  'java-keystore', 'java-truststore', 'oracle-wallet', 'f5-bigip', 'fortigate', 'paloalto', 'citrix-adc', 'cisco-ise']
+/**
+ * What an adapter can do, as the server describes it (design doc §9.3). The screen reads this
+ * instead of hard-coding per-adapter behaviour, so a new adapter appears here without a UI change
+ * and no action is ever offered that the platform would refuse.
+ */
+export interface AdapterDescriptor {
+  type: string; displayName: string; category: string; channel: string
+  requiresPrivateKey: boolean; supportsChain: boolean; supportsRollback: boolean
+  supportsAlias: boolean; supportsRemoteVerify: boolean; supportsStoreDiscovery: boolean
+  requiresCommit: boolean
+  connectionFields: AdapterField[]; serviceFields: AdapterField[]
+  notes: string | null
+}
+
+export interface AdapterField {
+  key: string; label: string; help: string | null; required: boolean
+  options: string[] | null; default: string | null
+}
 
 /// Default management port per adapter — auto-filled on selection, always hand-editable.
 const DEFAULT_PORTS: Record<string, number> = {
-  nginx: 22, apache: 22, haproxy: 22, 'generic-file': 22,
-  'windows-cert-store': 22, iis: 22, // Windows OpenSSH
+  nginx: 22, apache: 22, haproxy: 22, 'generic-file': 22, 'generic-ssh': 22,
+  'windows-cert-store': 22, iis: 22, 'windows-ccs': 22, // Windows OpenSSH
   'java-keystore': 22, 'java-truststore': 22, 'oracle-wallet': 22,
   'f5-bigip': 443, fortigate: 443, paloalto: 443, 'citrix-adc': 443, 'cisco-ise': 443,
 }
@@ -31,6 +47,7 @@ async function patchTarget(id: string, body: unknown): Promise<Response> {
 export default function Targets() {
   const [targets, reload] = useData<TargetRow[]>('/api/v1/targets')
   const [creds] = useData<{ id: string; name: string }[]>('/api/v1/credentials')
+  const [adapters] = useData<AdapterDescriptor[]>('/api/v1/adapters', 600000)
   const [name, setName] = useState(''); const [adapter, setAdapter] = useState('nginx')
   const [host, setHost] = useState(''); const [port, setPort] = useState('22'); const [credId, setCredId] = useState('')
   const [portTouched, setPortTouched] = useState(false)
@@ -127,6 +144,8 @@ export default function Targets() {
     reload()
   }
 
+  const capability = (type: string) => (adapters ?? []).find((a) => a.type === type)
+
   async function discoverStores(targetId: string) {
     setDiscovery('discovering…')
     const res = await post(`/api/v1/targets/${targetId}/stores/discover`)
@@ -136,6 +155,34 @@ export default function Targets() {
       const job = await apiGet<{ status: string; resultJson: string | null }>(`/api/v1/targets/jobs/${jobId}`)
       if (job.status === 'Succeeded') { setDiscovery(JSON.parse(job.resultJson ?? '{}').output ?? ''); return }
       if (job.status === 'Failed') { setDiscovery('Discovery failed: ' + (JSON.parse(job.resultJson ?? '{}').output ?? '')); return }
+    }
+    setDiscovery('timeout — is a runner online?')
+  }
+
+  /** §12.3: list everything in a Java keystore, not just the alias we deploy to. */
+  async function inventoryKeystore(targetId: string, storeId: string) {
+    setDiscovery('reading the keystore…')
+    const res = await post(`/api/v1/targets/${targetId}/stores/${storeId}/inventory`)
+    if (!res.ok) { setDiscovery((await res.json()).detail ?? `Inventory failed (${res.status})`); return }
+    const { jobId } = await res.json()
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const job = await apiGet<{ status: string; resultJson: string | null }>(`/api/v1/targets/jobs/${jobId}`)
+      if (job.status === 'Succeeded') {
+        const result = JSON.parse(job.resultJson ?? '{}')
+        setDiscovery((result.entries ?? []).length === 0
+          ? 'The keystore is empty.'
+          : (result.entries as { alias: string; entryType: string; subject: string | null; notAfter: string | null }[])
+              .map((e) => `${e.alias}  [${e.entryType}]`
+                + (e.subject ? `\n    ${e.subject}` : '')
+                + (e.notAfter ? `\n    expires ${new Date(e.notAfter).toLocaleDateString()}` : ''))
+              .join('\n'))
+        return
+      }
+      if (job.status === 'Failed') {
+        setDiscovery('Inventory failed: ' + (JSON.parse(job.resultJson ?? '{}').error ?? ''))
+        return
+      }
     }
     setDiscovery('timeout — is a runner online?')
   }
@@ -159,7 +206,7 @@ export default function Targets() {
       <form className="inline-form" onSubmit={add}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="target name" required />
         <select value={adapter} onChange={(e) => pickAdapter(e.target.value)}>
-          {ADAPTERS.map((a) => <option key={a}>{a}</option>)}
+          {(adapters ?? []).map((a) => <option key={a.type} value={a.type}>{a.displayName}</option>)}
         </select>
         {isWindows(adapter) && (
           <select value={winMethod} onChange={(e) => pickWinMethod(e.target.value)} title="Windows management channel">
@@ -176,6 +223,15 @@ export default function Targets() {
         </select>
         <button type="submit">Add target</button>
       </form>
+      {capability(adapter) && (
+        <p className="small muted">
+          {capability(adapter)!.displayName} · {capability(adapter)!.channel} ·{' '}
+          {capability(adapter)!.requiresPrivateKey ? 'needs the private key' : 'certificate only'}
+          {capability(adapter)!.supportsRollback ? ' · can roll back' : ' · no rollback'}
+          {capability(adapter)!.requiresCommit ? ' · needs a commit to persist' : ''}
+          {capability(adapter)!.notes ? <><br />{capability(adapter)!.notes}</> : null}
+        </p>
+      )}
       {testResult && <p className="small">{testResult}</p>}
       {discovery && (
         <div className="detail-panel">
@@ -191,7 +247,7 @@ export default function Targets() {
               <td><input value={eName} onChange={(e) => setEName(e.target.value)} /></td>
               <td>
                 <select value={eAdapter} onChange={(e) => { setEAdapter(e.target.value); setEPort(String(DEFAULT_PORTS[e.target.value] ?? 22)) }}>
-                  {ADAPTERS.map((a) => <option key={a}>{a}</option>)}
+                  {(adapters ?? []).map((a) => <option key={a.type} value={a.type}>{a.displayName}</option>)}
                 </select>
               </td>
               <td>
@@ -243,6 +299,10 @@ export default function Targets() {
               <td className="actions">
                 <button onClick={() => testConnection(t.id)}>Test connection</button>
                 <button onClick={() => discoverStores(t.id)}>Discover stores</button>
+                {/* §9.3: only offered where the adapter can actually read the store back. */}
+                {capability(t.adapterType)?.supportsStoreDiscovery && t.stores.length > 0 && (
+                  <button onClick={() => inventoryKeystore(t.id, t.stores[0].id)}>Inventory</button>
+                )}
                 <button onClick={() => addStore(t.id)}>Add store</button>
                 <button onClick={() => startEdit(t)}>Edit</button>
                 <button className="danger" onClick={() => remove(t)}>Delete</button>
