@@ -9,7 +9,7 @@ namespace RemoteSSL.Infrastructure.Ca;
 /// touching its code, and it never alters the result or the exception it passes through.
 /// </summary>
 public class MeasuredCaConnector(ICertificateAuthorityConnector inner, MetricsRecorder metrics)
-    : ICertificateAuthorityConnector
+    : ICertificateAuthorityConnector, Application.Requests.IOrderValidationConnector
 {
     public string ConnectorType => inner.ConnectorType;
 
@@ -43,4 +43,22 @@ public class MeasuredCaConnector(ICertificateAuthorityConnector inner, MetricsRe
 
     public Task<DomainValidationChallenge?> RequestDomainValidationAsync(string domain, string method, CancellationToken ct) =>
         Measure("request-domain-validation", () => inner.RequestDomainValidationAsync(domain, method, ct), ct);
+
+    // §18.1: connectors that carry domain validation inside the order (ACME) are forwarded to as
+    // well, so wrapping one for metrics does not hide that capability.
+
+    public Task<IReadOnlyList<DomainValidationChallenge>> GetOrderChallengesAsync(
+        CaRequestRef request, CancellationToken ct) =>
+        Order().GetOrderChallengesAsync(request, ct);
+
+    public Task<bool> AnswerChallengeAsync(string challengeReference, CancellationToken ct) =>
+        Order().AnswerChallengeAsync(challengeReference, ct);
+
+    public Task FinalizeAsync(CaRequestRef request, string csrPem, CancellationToken ct) =>
+        Order().FinalizeAsync(request, csrPem, ct);
+
+    private Application.Requests.IOrderValidationConnector Order() =>
+        inner as Application.Requests.IOrderValidationConnector
+        ?? throw new NotSupportedException(
+            $"Connector '{inner.ConnectorType}' handles domain validation outside RemoteSSL.");
 }

@@ -64,6 +64,7 @@ public static class DependencyInjection
             sp.GetRequiredService<Storage.S3ArtifactStore>());
         services.AddScoped<Application.Requests.CertificateRequestService>();
         services.AddScoped<Application.Requests.ICaConnectorResolver, Ca.DbCaConnectorResolver>();
+        services.AddScoped<Application.Requests.DomainValidationService>();
         services.AddScoped<Application.Automation.AutomationService>();
         services.AddScoped<Ca.CaConnectorFactory>();
         // §28.2 transactional outbox: notifying writes a row in the caller's own transaction, and

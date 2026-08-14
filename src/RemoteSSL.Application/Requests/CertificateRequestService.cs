@@ -254,6 +254,17 @@ public class CertificateRequestService(
                 var connector = await connectors.ResolveAsync(req.CaConnectorId!.Value, ct);
                 var reference = new CaRequestRef(connector.ConnectorType, req.ProviderRequestId!);
                 var status = await connector.GetRequestStatusAsync(reference, ct);
+
+                // ACME makes finalize an explicit step once every authorization is valid; without
+                // it the order sits at "ready" forever and never produces a certificate (§18.3).
+                if (status.State == CaRequestState.Pending
+                    && connector is IOrderValidationConnector orderConnector
+                    && req.CsrPem is not null)
+                {
+                    await orderConnector.FinalizeAsync(reference, req.CsrPem, ct);
+                    status = await connector.GetRequestStatusAsync(reference, ct);
+                }
+
                 if (status.State == CaRequestState.Issued)
                 {
                     var issued = await connector.DownloadCertificateAsync(reference, ct);
@@ -273,6 +284,46 @@ public class CertificateRequestService(
             }
         }
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Polls one request now (ADR-009). A CA webhook says "something changed about this request";
+    /// what changed still has to be read from the CA, because a callback is a hint, never a source
+    /// of truth about issuance. Polling remains the fallback for CAs that send nothing.
+    /// </summary>
+    public async Task<CertificateRequestState> PollOneAsync(Guid requestId, CancellationToken ct)
+    {
+        var req = await db.CertificateRequests.FirstOrDefaultAsync(r => r.Id == requestId, ct)
+                  ?? throw new KeyNotFoundException("Request not found");
+        if (req.CaConnectorId is null || req.ProviderRequestId is null) return req.State;
+        if (req.State is CertificateRequestState.Issued or CertificateRequestState.FailedBlocked) return req.State;
+
+        using var trace = TraceContext.Begin("certificate.request.webhook-poll", NonEmpty(req.CorrelationId));
+        var connector = await connectors.ResolveAsync(req.CaConnectorId.Value, ct);
+        var reference = new CaRequestRef(connector.ConnectorType, req.ProviderRequestId);
+        var status = await connector.GetRequestStatusAsync(reference, ct);
+
+        if (status.State == CaRequestState.Pending
+            && connector is IOrderValidationConnector orderConnector && req.CsrPem is not null)
+        {
+            await orderConnector.FinalizeAsync(reference, req.CsrPem, ct);
+            status = await connector.GetRequestStatusAsync(reference, ct);
+        }
+
+        if (status.State == CaRequestState.Issued)
+        {
+            var issued = await connector.DownloadCertificateAsync(reference, ct);
+            await BindIssuedAsync(req, issued.LeafPem, issued.ChainPem, ct);
+        }
+        else if (status.State is CaRequestState.Rejected or CaRequestState.Failed)
+        {
+            req.State = CertificateRequestState.FailedBlocked;
+            req.ErrorMessage = status.Detail;
+            req.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync(ct);
+        return req.State;
     }
 
     /// <summary>Runner completed an on-target CSR generation job: attach the CSR and continue the lifecycle.</summary>

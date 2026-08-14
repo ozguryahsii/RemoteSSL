@@ -155,16 +155,27 @@ key taşıyan artifact'leri reddeder.
 - PAN-OS ve Citrix'te commit/save adımı varsayılan açık: sonradan kaybolan bir değişiklik,
   görünür bir hatadan daha kötüdür.
 
-## F20 — CA connector genişlemesi
+## F20 — CA connector genişlemesi ✅ TAMAMLANDI (20.1 hariç — canlı hesap gerekli)
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 20.1 | GlobalSign HVCA'nın canlı hesapla doğrulanması | §18.2 | Bekliyor (hesap gelince) |
-| 20.2 | ACME connector (Let's Encrypt / enterprise ACME) | §18.3 | YOK |
-| 20.3 | Microsoft AD CS connector | §18.3 | YOK |
-| 20.4 | DigiCert, Sectigo, internal REST CA connector'ları | §18.3 | YOK |
-| 20.5 | Asenkron durum modeli: polling + **webhook** hibriti | ADR-009 | KISMİ (polling var) |
-| 20.6 | Domain validation akışı (HVCA domain claim / ACME challenge) uçtan uca UI | §18.1 | KISMİ (interface var) |
+| 20.1 | GlobalSign HVCA'nın canlı hesapla doğrulanması | §18.2 | ⛔ BEKLİYOR — hesap gelince. Kod ve endpoint eşlemesi hazır (docs/ca-connector.md) |
+| 20.2 | ACME connector (Let's Encrypt / enterprise ACME) | §18.3 | ✅ RFC 8555: directory, nonce, ES256 JWS, EAB, order → authorization → challenge → finalize → download; dns-01/http-01; revocation |
+| 20.3 | Microsoft AD CS connector | §18.3 | ✅ certsrv web enrollment: template = profile, certfnsh.asp submit, request id çıkarımı, manager onayı bekleyen istek ayrımı, certnew.cer/p7b indirme |
+| 20.4 | DigiCert, Sectigo, internal REST CA connector'ları | §18.3 | ✅ `digicert` (CertCentral), `sectigo` (SCM preset), `rest-ca` (endpoint yolları yapılandırmadan) |
+| 20.5 | Asenkron durum modeli: polling + **webhook** hibriti | ADR-009 | ✅ `POST /api/v1/ca/webhook/{connectorId}` (HMAC veya token), callback yalnızca ipucu — durum daima CA'dan okunur; polling fallback olarak açık kalır |
+| 20.6 | Domain validation akışı uçtan uca UI | §18.1 | ✅ `DomainValidation` entity + `IOrderValidationConnector`; `GET/POST /api/v1/requests/{id}/validations`; Requests ekranında "Domain validation" paneli (yayımlanacak DNS/HTTP kaydı + Verify) |
+
+### F20 notları
+- Webhook gövdesinden **hiçbir** issuance bilgisi alınmaz; sahte bir callback en fazla fazladan bir
+  poll'a yol açar. Callback'te tanınan bir request id yoksa o connector'ın tüm açık istekleri
+  yeniden kontrol edilir.
+- ACME'de finalize ayrı bir adımdır; polling döngüsü sipariş "ready" olduğunda CSR'ı gönderir,
+  aksi halde sipariş sonsuza kadar orada kalırdı.
+- Canlı doğrulama sınırı: bu ortamdan dışarı ACME dizinine (Let's Encrypt staging) erişim yok,
+  bu yüzden protokol alışverişi uçtan uca çalıştırılamadı. Kriptografik kısım (key authorization,
+  JWK thumbprint, dns-01 kayıt değeri, CSR isim çıkarımı, PEM bundle ayrımı) birim testleriyle
+  doğrulandı; webhook kimlik doğrulaması canlı API'de doğrulandı.
 
 ## F21 — Multi-tenant, HA/DR ve ölçek
 

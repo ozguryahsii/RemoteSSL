@@ -197,10 +197,24 @@ public class CaConnectorFactory(RemoteSSL.Application.Abstractions.ISecretProtec
         return connectorType switch
         {
             "manual" => new ManualCaConnector(),
-            "globalsign-hvca" => new GlobalSignHvcaConnector(
-                JsonSerializer.Deserialize<HvcaConfig>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))!,
-                httpFactory),
+            "globalsign-hvca" => new GlobalSignHvcaConnector(Config<HvcaConfig>(json), httpFactory),
+            "acme" => new AcmeConnector(Config<AcmeConfig>(json), httpFactory),
+            "adcs" => new AdcsConnector(Config<AdcsConfig>(json), httpFactory),
+            "digicert" => new DigiCertConnector(Config<RestCaConfig>(json), httpFactory),
+            "sectigo" => new GenericRestCaConnector(
+                Config<RestCaConfig>(json), GenericRestCaConfig.Sectigo(), httpFactory),
+            // Anything else that speaks "post a CSR, poll an id, download a PEM"; the endpoint
+            // paths live in the connector's own configuration (§18.3).
+            "rest-ca" => new GenericRestCaConnector(
+                Config<RestCaConfig>(json), Config<GenericRestCaConfig>(json), httpFactory),
             _ => throw new NotSupportedException($"Unknown CA connector type '{connectorType}'")
         };
     }
+
+    private static T Config<T>(string json) where T : new() =>
+        JsonSerializer.Deserialize<T>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? new T();
+
+    /// <summary>The connector types this build can create, for the CA integrations screen.</summary>
+    public static IReadOnlyList<string> SupportedTypes =>
+        ["manual", "globalsign-hvca", "acme", "adcs", "digicert", "sectigo", "rest-ca"];
 }

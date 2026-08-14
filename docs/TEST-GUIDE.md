@@ -787,6 +787,81 @@ curl -s localhost:5200/api/v1/targets/jobs/<jobId>
 Sonuç her alias için entry type, subject/issuer, serial, SHA-256 parmak izi ve son kullanma
 tarihini içerir. Salt okunur — store'a hiçbir şey yazılmaz.
 
+## 24. CA connector'ları, webhook ve domain validation (F20)
+
+**Desteklenen connector tipleri.** **CA Integrations** ekranında tip seçilir; her tipin kendi
+yapılandırma JSON'u vardır (şifreli saklanır).
+
+| Tip | Ne | Zorunlu ayarlar |
+|-----|-----|-----------------|
+| `manual` | Offline CA — CSR üret, imzalıyı elle yükle | — |
+| `globalsign-hvca` | GlobalSign Atlas | `baseUrl`, `apiKey`, `apiSecret`, `clientPfxBase64` |
+| `acme` | Let's Encrypt / kurumsal ACME | `directoryUrl`, `contact`, `challengeType` |
+| `adcs` | Microsoft AD CS (certsrv) | `baseUrl`, `username`, `password`, `templates` |
+| `digicert` | DigiCert CertCentral | `apiKey`, `organizationId` |
+| `sectigo` | Sectigo Certificate Manager | `baseUrl`, `apiKey`, `profiles` |
+| `rest-ca` | Kurum içi REST CA | `baseUrl`, `apiKey` + endpoint yolları |
+
+**ACME** (§18.3). Yapılandırma:
+
+```json
+{ "directoryUrl": "https://acme-v02.api.letsencrypt.org/directory",
+  "contact": "pki@acme.com", "challengeType": "dns-01",
+  "eabKeyId": "...", "eabHmacKeyBase64Url": "..." }
+```
+
+Hesap anahtarı ilk kullanımda üretilir ve connector yapılandırmasında saklanır — **kaybedilirse
+hesap ve kazanılmış tüm yetkilendirmeler kaybolur**. `dns-01` wildcard verebilir, `http-01` veremez;
+profil listesi bu ikisini gösterir. ACME'de yenileme diye bir uç yoktur, aynı isimler için yeni
+sipariş açılır.
+
+**Domain validation** (§18.1). Sipariş açıldıktan sonra **Certificate Requests** ekranında ilgili
+satırda **Domain validation** düğmesi çıkar. Panel her isim için:
+
+- yayımlanacak DNS TXT kaydını (`_acme-challenge.<host> IN TXT "..."`), veya
+- sunulacak HTTP yolunu ve gövdesini
+
+gösterir. Yayımladıktan sonra **I have published it — verify** denir; CA asenkron doğrular, durum
+kendiliğinden `Valid`'e geçer.
+
+```bash
+curl -s localhost:5200/api/v1/requests/<requestId>/validations
+curl -s -X POST localhost:5200/api/v1/requests/<requestId>/validations/<id>/submit
+```
+
+**AD CS** (§18.3). certsrv web enrollment üzerinden:
+
+```json
+{ "baseUrl": "https://ca01.corp", "username": "CORP\\svc_pki", "password": "…",
+  "authScheme": "ntlm", "templates": ["WebServer", "WebServerV2"] }
+```
+
+Template'ler profil olarak listelenir (certsrv bunları API ile vermez). Manager onayı gerektiren
+bir template'te istek `ValidationRequired` olarak görünür ve onaylanınca kendiliğinden toplanır.
+Revocation certsrv'de yoktur; CA üzerinde `certutil -revoke` ile yapılır.
+
+**Webhook + polling hibriti** (ADR-009). Connector başına paylaşılan sır:
+
+```json
+{ "Ca": { "Webhook": { "Secret": "…",
+    "<connectorGuid>": { "Secret": "connector'a özel sır" } } } }
+```
+
+CA'nın çağıracağı adres: `POST /api/v1/ca/webhook/{connectorId}`. Kimlik doğrulama iki şekilde:
+
+```bash
+# HMAC-SHA256 (tercih edilen)
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | sed 's/.*= //')
+curl -X POST localhost:5200/api/v1/ca/webhook/$CID -H "X-RemoteSSL-Signature: $SIG" -d "$BODY"
+
+# İmzalayamayan CA'lar için düz token
+curl -X POST localhost:5200/api/v1/ca/webhook/$CID -H "X-RemoteSSL-Token: $SECRET" -d "$BODY"
+```
+
+Yanlış imza → 401 ve audit'e `ca.webhook.rejected / DENIED`. **Callback gövdesinden hiçbir issuance
+bilgisi alınmaz**: sadece hangi isteğin etkilendiği okunur, durum daima CA'dan sorulur. Callback
+hiç gelmezse zamanlanmış polling zaten toplar.
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { apiDelete } from '../api/client'
+import { apiDelete, apiGet, apiPost } from '../api/client'
 import { useData, post } from './SimplePages'
 
 interface RequestRow {
@@ -9,6 +9,13 @@ interface RequestRow {
 }
 
 interface PolicyFinding { rule: string; message: string }
+
+/** One outstanding proof of domain control (design doc §18.1). */
+interface DomainValidationRow {
+  id: string; domain: string; method: string; state: string
+  expectedDnsRecord: string | null; expectedHttpResponse: string | null
+  detail: string | null; expiresAt: string | null
+}
 
 export default function Requests() {
   const [requests, reload] = useData<RequestRow[]>('/api/v1/certificates/requests', 15000)
@@ -28,6 +35,10 @@ export default function Requests() {
   const [certPem, setCertPem] = useState(''); const [chainPem, setChainPem] = useState('')
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
+  // §18.1 domain validation: what the CA wants published, for which name.
+  const [validationFor, setValidationFor] = useState<RequestRow | null>(null)
+  const [validations, setValidations] = useState<DomainValidationRow[] | null>(null)
+  const [validationBusy, setValidationBusy] = useState(false)
 
   async function create(e: React.FormEvent) {
     e.preventDefault()
@@ -96,6 +107,27 @@ export default function Requests() {
   const stateClass = (s: string) =>
     s === 'Issued' || s === 'ReadyForDeployment' ? 'ok'
       : s.startsWith('Failed') || s === 'Rejected' ? 'bad' : 'warn'
+
+  async function openValidations(r: RequestRow) {
+    setValidationFor(r); setValidations(null)
+    try {
+      setValidations(await apiGet<DomainValidationRow[]>(`/api/v1/requests/${r.id}/validations`))
+    } catch (e: unknown) {
+      setNotice(e instanceof Error ? e.message : String(e))
+      setValidationFor(null)
+    }
+  }
+
+  /** Tells the CA the proof is published; the CA verifies asynchronously. */
+  async function submitValidation(v: DomainValidationRow) {
+    if (!validationFor) return
+    setValidationBusy(true)
+    try {
+      const res = await apiPost(`/api/v1/requests/${validationFor.id}/validations/${v.id}/submit`)
+      if (!res.ok) setNotice((await res.json()).title ?? `Submit failed (${res.status})`)
+      await openValidations(validationFor)
+    } finally { setValidationBusy(false) }
+  }
 
   return (
     <div className="page">
@@ -178,6 +210,9 @@ export default function Requests() {
                 {['WaitingForCertificate', 'CsrGenerated', 'PendingIssuance'].includes(r.state) && (
                   <button onClick={() => openUpload(r)}>Upload issued cert</button>
                 )}
+                {['PendingIssuance', 'SubmittedToCa', 'CsrGenerated'].includes(r.state) && (
+                  <button onClick={() => openValidations(r)}>Domain validation</button>
+                )}
                 {r.state !== 'Issued' && (
                   <button className="danger" onClick={async () => {
                     if (window.confirm('Delete this request?')) { await apiDelete(`/api/v1/certificates/requests/${r.id}`); reload() }
@@ -191,6 +226,45 @@ export default function Requests() {
           )}
         </tbody>
       </table>
+
+      {validationFor && (
+        <div className="detail-panel">
+          <div className="detail-header">
+            <h3>Domain validation — {validationFor.commonName}</h3>
+            <button onClick={() => { setValidationFor(null); setValidations(null) }}>Close</button>
+          </div>
+          <p className="muted small">
+            The CA needs proof that you control each name. Publish what it asks for, then press
+            Verify — the CA checks asynchronously, so the state moves to Valid on its own.
+          </p>
+          {validations === null && <p className="small">Loading…</p>}
+          {validations?.length === 0 && (
+            <p className="small ok">Nothing outstanding: every name on this request is already authorized.</p>
+          )}
+          {(validations ?? []).map((v) => (
+            <div key={v.id} className="plan-box">
+              <h4>{v.domain} <span className="tag">{v.method}</span></h4>
+              <dl className="kv">
+                <dt>State</dt>
+                <dd>
+                  <span className={v.state === 'Valid' ? 'ok' : v.state === 'Failed' ? 'bad' : ''}>{v.state}</span>
+                  {v.detail ? ` — ${v.detail}` : ''}
+                </dd>
+                {v.expectedDnsRecord && <><dt>Publish this DNS record</dt>
+                  <dd><pre className="pem-block">{v.expectedDnsRecord}</pre></dd></>}
+                {v.expectedHttpResponse && <><dt>Serve this over HTTP</dt>
+                  <dd><pre className="pem-block">{v.expectedHttpResponse}</pre></dd></>}
+                {v.expiresAt && <><dt>Expires</dt><dd>{new Date(v.expiresAt).toLocaleString()}</dd></>}
+              </dl>
+              {v.state !== 'Valid' && (
+                <button onClick={() => submitValidation(v)} disabled={validationBusy}>
+                  {validationBusy ? 'Asking the CA…' : 'I have published it — verify'}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {uploadFor && (
         <div className="modal-overlay" onClick={() => !uploading && setUploadFor(null)}>

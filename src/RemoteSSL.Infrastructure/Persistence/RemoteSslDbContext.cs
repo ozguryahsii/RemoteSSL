@@ -17,6 +17,7 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<CredentialRef> CredentialRefs => Set<CredentialRef>();
     public DbSet<ManagedKey> ManagedKeys => Set<ManagedKey>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+    public DbSet<DomainValidation> DomainValidations => Set<DomainValidation>();
     public DbSet<DeploymentJob> DeploymentJobs => Set<DeploymentJob>();
     public DbSet<DeploymentJobTarget> DeploymentJobTargets => Set<DeploymentJobTarget>();
     public DbSet<DeploymentStep> DeploymentSteps => Set<DeploymentStep>();
@@ -179,6 +180,14 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
             e.Property(x => x.DeliveredChannelsJson).HasColumnType("jsonb");
             // The dispatcher's hot query: pending, due, oldest first.
             e.HasIndex(x => new { x.Status, x.NextAttemptAt, x.OccurredAt });
+        });
+
+        b.Entity<DomainValidation>(e =>
+        {
+            e.Property(x => x.Domain).HasMaxLength(512);
+            e.Property(x => x.Method).HasMaxLength(32);
+            e.Property(x => x.ChallengeReference).HasMaxLength(1024);
+            e.HasIndex(x => x.CertificateRequestId);
         });
 
         b.Entity<ManagedKey>(e =>
