@@ -70,15 +70,26 @@ public class ProbeSchedulerService(
                 .GetRequiredService<RemoteSSL.Application.Abstractions.ITenantContext>().EnterCrossTenant();
 
             var now = DateTimeOffset.UtcNow;
+
+            // Never probed first, then longest-waiting: no monitor can be starved by a permanently
+            // full batch. That is deliberately two queries rather than one ordered by a COALESCE
+            // of LastProbeAt. A computed sort key matches no index, so the database would sort the
+            // entire due set on every tick and the tick's cost would grow with the backlog — the
+            // very thing NFR-004 bounds. Split this way, both halves are ordered index walks on
+            // (Enabled, LastProbeAt) that stop as soon as the batch is full; Postgres stores nulls
+            // last in a btree, so the never-probed half has to be its own seek.
             var due = await db.MonitorEndpoints
-                .Where(m => m.Enabled)
-                .Where(m => m.LastProbeAt == null
-                            || m.LastProbeAt < now.AddMinutes(-(m.ProbeIntervalMinutes ?? defaultIntervalMinutes)))
-                // Never probed first, then longest-waiting: no monitor can be starved by a
-                // permanently full batch.
-                .OrderBy(m => m.LastProbeAt ?? DateTimeOffset.MinValue)
+                .Where(m => m.Enabled && m.LastProbeAt == null)
                 .Take(batchSize)
                 .ToListAsync(ct);
+
+            if (due.Count < batchSize)
+                due.AddRange(await db.MonitorEndpoints
+                    .Where(m => m.Enabled && m.LastProbeAt != null
+                                && m.LastProbeAt < now.AddMinutes(-(m.ProbeIntervalMinutes ?? defaultIntervalMinutes)))
+                    .OrderBy(m => m.LastProbeAt)
+                    .Take(batchSize - due.Count)
+                    .ToListAsync(ct));
 
             // Every monitor with an internal vantage also gets a runner-side probe;
             // the external (control-plane) probe still runs unless explicitly disabled.

@@ -151,7 +151,10 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options, IT
             e.Property(x => x.Sni).HasMaxLength(512);
             e.HasIndex(x => new { x.Host, x.Port, x.Sni }).IsUnique();
             // NFR-004: the scheduler's due query is "enabled, oldest probe first"; at ten thousand
-            // endpoints that has to be an index seek rather than a scan.
+            // endpoints that has to be an ordered index walk that stops at the batch size rather
+            // than a scan-and-sort of the whole backlog. A default btree stores nulls last, which
+            // is why the scheduler asks for never-probed monitors as a separate seek rather than
+            // ordering with NULLS FIRST — see ProbeSchedulerService.
             e.HasIndex(x => new { x.Enabled, x.LastProbeAt });
             e.HasOne(x => x.LastObservedVersion).WithMany().HasForeignKey(x => x.LastObservedVersionId)
                 .OnDelete(DeleteBehavior.SetNull);

@@ -185,7 +185,7 @@ key taşıyan artifact'leri reddeder.
 | 21.2 | Runner failover: offline runner'ın job'unun uyumlu ikinci runner'a devri (+ stateful backup uyarısı) | §8.2, §34.2 | ✅ Job lease + heartbeat yenileme; `RunnerFailoverService` süresi dolmuş lease'leri devrediyor. **Hedefe dokunmuş iş devredilmiyor** — runner `jobs/{id}/started` dedikten sonra `NonReassignable`; bu durumda iş açık sebeple fail ediliyor (`runner.job-abandoned`, incident) |
 | 21.3 | Runner affinity grupları | §34.2 | ✅ `RunnerNode.AffinityGroup` + `RunnerJob.AffinityGroup`; claim ve failover aynı `RunnerFailover.CanRun` kuralını kullanıyor, grup dışına iş geçmiyor |
 | 21.4 | DB HA / PITR ve RPO-RTO planı; artifact object storage versioning | §34.1, §34.3 | ✅ `docs/HA-DR-RUNBOOK.md`: bileşen/durum haritası, leader election doğrulaması, RPO≤5dk/RTO≤30dk hedefleri, `pg_basebackup` + WAL arşivi + PITR adımları, geri dönüş sonrası audit zinciri kontrolü, S3 versioning/object-lock, felaket senaryoları tablosu, üç aylık tatbikat |
-| 21.5 | 10.000+ monitor endpoint ölçeğinde probe/deployment mimarisi doğrulaması | NFR-004 | ✅ mimari + ⛔ yük testi: tick başına sınırlı yığın (`Monitoring:MaxProbesPerTick`), en uzun bekleyen önce (açlık yok), `(Enabled, LastProbeAt)` indeksi, ölçek tablosu runbook §6'da. **Gerçek 10k endpoint'e karşı uçtan uca yük testi yapılmadı** — F22 performans testi maddesi bunun için duruyor |
+| 21.5 | 10.000+ monitor endpoint ölçeğinde probe/deployment mimarisi doğrulaması | NFR-004 | ✅ mimari + ölçek testi: tick başına sınırlı yığın (`Monitoring:MaxProbesPerTick`), en uzun bekleyen önce (açlık yok), `(Enabled, LastProbeAt)` indeksi, ölçek tablosu runbook §6'da. **F22.6'da gerçek 10.000 endpoint'e karşı ölçüldü** — bu ölçüm planlayıcıda gerçek bir hata ortaya çıkardı (bkz. F22 notları) |
 
 ### F21 notları
 - Tenant filtresi `ITenantScoped` arayüzünden türetiliyor: yeni bir entity arayüzü uyguladığı anda
@@ -199,16 +199,31 @@ key taşıyan artifact'leri reddeder.
   doğrulamayı bozardı. Tenant başına ayrı zincir ayrı bir tasarım kararıdır ve F18'in kapsamında
   değildi.
 
-## F22 — Test stratejisi
+## F22 — Test stratejisi ✅ TAMAMLANDI (22.2 kısmen — ortam kısıtı)
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 22.1 | Contract test: adapter interface ve CA connector interface | §36.1 | YOK |
-| 22.2 | Integration test lab: container'lı nginx/Apache/HAProxy/Java hedefleri (CI) | §36.1/36.2 | YOK |
-| 22.3 | Failure injection: SSH timeout, invalid chain, reload failure, disk full, permission denied | §36.1 | YOK |
-| 22.4 | Her adapter için zorunlu rollback testi | §36.1 | KISMİ (nginx E2E doğrulandı) |
-| 22.5 | Security test: secret leakage, command injection, authorization bypass | §36.1 | YOK |
-| 22.6 | Performance test: binlerce endpoint ve paralel deployment | §36.1 | YOK |
+| 22.1 | Contract test: adapter interface ve CA connector interface | §36.1 | ✅ `ContractTests.cs`: 7 CA connector aynı beklenti setinden geçiyor (tip beyanı, profil listesi hiç `null`/exception vermiyor, bozuk bağlantı sebep bildiriyor, domain validation opsiyonel); factory'nin ilan ettiği her tip gerçekten kurulabiliyor; interface üye sayısı ile implementasyon eşleşiyor. Adapter kataloğu (kanal, tip tekilliği, alan key/label, default'un seçenekler içinde olması, rollback yoksa gerekçe) ve secret/key provider'lar (yapılandırılmamış = `Enabled:false` + açıklamalı hata) aynı şekilde |
+| 22.2 | Integration test lab: container'lı nginx/Apache/HAProxy/Java hedefleri (CI) | §36.1/36.2 | ✅ SSH hedefi + boru hattı / ⛔ servis container'ları: `tests/lab/start-lab.sh` gerçek bir sshd container'ı ayağa kaldırıyor, `LabIntegrationTests.cs` (8 test) ona karşı gerçek SSH ile dosya yazıp komut çalıştırıyor. **nginx/Apache/HAProxy container'ları kurulamadı**: bu ortamın proxy'si alpine paket depolarına HTTP 403 dönüyor, imaj içine paket kurulamıyor. Servis reload adımı gerçek komutla temsil ediliyor, gerçek `nginx -t` ile değil |
+| 22.3 | Failure injection: SSH timeout, invalid chain, reload failure, disk full, permission denied | §36.1 | ✅ `LabIntegrationTests.cs`: erişilemeyen host PreCheck'te düşüyor (yarım uygulama yok), yazılamayan dizin geriye hiçbir şey bırakmadan reddediyor, config testi başarısız olunca rollback, reload başarısız olunca rollback |
+| 22.4 | Her adapter için zorunlu rollback testi | §36.1 | ✅ gerçek hedefte doğrulandı: `LinuxDeployer` (config testi ve reload hatası ayrı ayrı) ve `GenericSshDeployer` (önceki dosya geri geliyor + rollback komutu çalışıyor). Rollback sonrası config testinin **yeniden geçtiği** de doğrulanıyor (`VerifyRollback`); diğer adapterlar birim seviyesinde |
+| 22.5 | Security test: secret leakage, command injection, authorization bypass | §36.1 | ✅ `SecurityHardeningTests.cs`: audit satırlarında/başarısız deployment adımlarında/credential API projeksiyonunda secret görünmüyor, PFX parolası PowerShell komut satırına yazılmıyor; `Shell.Quote` 8 düşmanca değeri aynen taşıyor, PowerShell tırnak katlaması enjeksiyonu veri olarak bırakıyor; scope kuralları ortam/aksiyon/adapter arası sızmıyor, allowlist + versiyon pinleme reddediyor, **bir tenant diğerinin credential'ını id vererek de okuyamıyor** |
+| 22.6 | Performance test: binlerce endpoint ve paralel deployment | §36.1 | ✅ `PerformanceTests.cs` (`REMOTESSL_PERF_DB` verildiğinde çalışır): gerçek PostgreSQL'de 10.000 endpoint tohumlanıyor; due sorgusu 500'de sınırlı kalıyor ve **8 ms** sürüyor, `EXPLAIN` planında `Seq Scan` **ve** `Sort` yok (ikisi de index scan + LIMIT), 8 tick'te 4.000 farklı endpoint tekrarsız taranıyor (açlık yok), yeni eklenen monitor birikmiş yığının önüne geçiyor |
+
+### F22 notları
+- **Gerçek ürün hatası bulundu ve düzeltildi (planlayıcı, NFR-004).** Due sorgusu
+  `ORDER BY COALESCE("LastProbeAt", …)` ile sıralıyordu; hesaplanmış sıralama anahtarı hiçbir
+  indekse uymadığı için PostgreSQL **her tick'te tüm birikmiş yığını sıralıyordu** — yani tick'in
+  maliyeti yığınla birlikte büyüyordu, oysa NFR-004'ün amacı tam olarak bunu sınırlamak.
+  Sorgu ikiye ayrıldı: önce hiç taranmamışlar, sonra en uzun bekleyenler. Her iki yarı da
+  `(Enabled, LastProbeAt)` indeksinde sıralı yürüyüş ve batch dolunca duruyor.
+  Tek sorguda `NULLS FIRST` ile çözülemezdi: PostgreSQL btree'de null'ları sona koyar, Npgsql de
+  düz `ORDER BY` üretiyor — o hâliyle **yeni eklenen monitor tüm yığının arkasına düşerdi**.
+  Ayrılmış hâli hem planı hem anlamı koruyor ve ikisi de teste bağlandı.
+- Ölçek testleri `REMOTESSL_PERF_DB`, lab testleri `REMOTESSL_LAB_SSH` yokken **atlanıyor**;
+  normal derleme hermetik kalıyor (335 test, dış bağımlılık olmadan da geçiyor).
+- Toplu insert sonrası testte `ANALYZE` çalıştırılıyor: aksi hâlde planlayıcı boş tablo
+  istatistikleriyle karar verip indeksi kullanmıyor. Üretimde bunu autovacuum yapar.
 
 ## F23 — Declarative manifest
 

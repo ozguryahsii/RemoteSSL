@@ -922,9 +922,55 @@ Endpoint sayısına göre önerilen değerler `docs/HA-DR-RUNBOOK.md` §6'da.
 geri dönüş sonrası `GET /api/v1/audit/integrity` kontrolü, S3 versioning/object-lock ve üç aylık
 tatbikat listesi.
 
+## 26. Test paketini çalıştırmak: lab ve ölçek (F22)
+
+Test paketi varsayılan olarak **hermetiktir** — hiçbir dış bağımlılık istemez:
+
+```bash
+dotnet test RemoteSSL.sln
+# Passed: 335
+```
+
+Lab ve ölçek testleri ortam değişkeni verilmediğinde kendilerini atlar. Açmak için:
+
+**Gerçek SSH hedefine karşı entegrasyon + failure injection (§36.2):**
+
+```bash
+./tests/lab/start-lab.sh          # sshd container'ını başlatır ve export satırlarını yazdırır
+export REMOTESSL_LAB_SSH=127.0.0.1:2222
+export REMOTESSL_LAB_USER=remotessl
+export REMOTESSL_LAB_PASSWORD=labpassword
+
+dotnet test RemoteSSL.sln --filter "FullyQualifiedName~LinuxDeployerLabTests"
+./tests/lab/stop-lab.sh
+```
+
+Bu testler gerçek SSH açar, gerçek dosya yazar ve gerçek komut çalıştırır: sertifika kurulumu,
+private key izninin 600 olması, config testi/reload hatasında rollback, izin verilmeyen dizinde
+geriye hiçbir şey bırakmadan reddetme, erişilemeyen host'ta PreCheck'te durma.
+
+**10.000 endpoint ölçek testi (NFR-004):**
+
+```bash
+docker exec remotessl-postgres-1 psql -U remotessl -d postgres -c 'CREATE DATABASE remotessl_perf;'
+export REMOTESSL_PERF_DB="Host=localhost;Port=5432;Database=remotessl_perf;Username=remotessl;Password=remotessl_dev"
+
+dotnet test RemoteSSL.sln --filter "FullyQualifiedName~ScaleTests" --logger "console;verbosity=detailed"
+```
+
+Beklenen çıktı: `due batch of 500 selected from 10000 endpoints in 8 ms`, `EXPLAIN` planında
+`Index Scan` (ne `Seq Scan` ne `Sort`), `4000 distinct endpoints probed across 8 ticks`.
+
+> Test kendi veritabanını sıfırlayıp migrate ettiği için **uygulama veritabanını vermeyin**;
+> ayrı bir `remotessl_perf` kullanın.
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).
 - Runner transport'u API key + kısa ömürlü HMAC-imzalı job context kullanır (ADR-002 pull modeli); tam mTLS production'da LB/ingress katmanında sonlandırılmalıdır.
 - Job dağıtımı DB-claim ile (at-least-once, idempotent); domain olayları RabbitMQ'ya yayınlanır. Windows/Java/Oracle/network adapterları gerçek hedef gerektirir.
 - Scheduler'lar Postgres advisory lock ile leader-elected; çok node'lu API güvenlidir.
+- **Integration lab yalnızca SSH hedefi barındırır**: bu ortamın proxy'si alpine paket depolarına
+  HTTP 403 döndüğü için container içine nginx/Apache/HAProxy kurulamadı. Taşıma katmanı ve
+  deployment boru hattı gerçek, servis reload adımı gerçek `nginx -t` yerine gerçek bir komutla
+  temsil ediliyor.

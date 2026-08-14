@@ -149,17 +149,16 @@ public static class LinuxDeployer
                 steps.Add(new("Reload", true, reloadCmd));
             }
 
-            // LOCAL VERIFY: on-target fingerprint of installed cert
+            // LOCAL VERIFY: is the certificate we meant to install actually the one on disk?
             if (!string.IsNullOrEmpty(p.ExpectedSha256Thumbprint))
             {
-                var r = ssh.Exec($"openssl x509 -in {Shell.Quote(p.CertPath)} -noout -fingerprint -sha256");
-                var actual = r.Stdout.Split('=').LastOrDefault()?.Trim().Replace(":", "") ?? "";
-                if (!r.Ok || !actual.Equals(p.ExpectedSha256Thumbprint, StringComparison.OrdinalIgnoreCase))
+                var verified = VerifyOnTarget(ssh, p, bundleMode, out var detail);
+                if (!verified)
                 {
-                    steps.Add(new("LocalVerify", false, $"thumbprint mismatch: got {actual}"));
+                    steps.Add(new("LocalVerify", false, detail));
                     return Rollback(ssh, steps, managedFiles, ts, validateCmd, reloadCmd, backupTaken);
                 }
-                steps.Add(new("LocalVerify", true, $"sha256 {actual}"));
+                steps.Add(new("LocalVerify", true, detail));
             }
 
             steps.Add(new("Commit", true, $"backups retained with suffix .rssl-bak-{ts}"));
@@ -190,6 +189,59 @@ public static class LinuxDeployer
             p.ValidateCmd ?? defaults.Item1, p.ReloadCmd ?? defaults.Item2, backupTaken: true);
         return outcome with { Success = outcome.RolledBack };
     }
+
+    /// <summary>
+    /// Confirms the installed certificate is the one that was sent (§21.1 local verify).
+    ///
+    /// The direct check asks the target's own openssl for the fingerprint, which also proves the
+    /// file parses as a certificate. Plenty of appliances and minimal images ship no openssl,
+    /// though, and refusing to deploy to them would be a limitation of this code rather than a
+    /// property of the target — so the fallback compares the file's own bytes against the PEM that
+    /// was uploaded. That proves the right file is in place; whether the service is serving it is
+    /// what the remote TLS verify of §21.1 answers, and that runs regardless.
+    /// </summary>
+    private static bool VerifyOnTarget(SshConnection ssh, DeployPayload p, string bundleMode, out string detail)
+    {
+        var fingerprint = ssh.Exec(
+            $"openssl x509 -in {Shell.Quote(p.CertPath)} -noout -fingerprint -sha256 2>/dev/null");
+        var actual = fingerprint.Stdout.Split('=').LastOrDefault()?.Trim().Replace(":", "") ?? "";
+
+        if (fingerprint.Ok && actual.Length > 0)
+        {
+            if (actual.Equals(p.ExpectedSha256Thumbprint, StringComparison.OrdinalIgnoreCase))
+            {
+                detail = $"sha256 {actual}";
+                return true;
+            }
+            detail = $"thumbprint mismatch: got {actual}";
+            return false;
+        }
+
+        // No usable openssl on the target: compare the deployed bytes with what we sent.
+        var deployed = ssh.Exec($"cat {Shell.Quote(p.CertPath)}");
+        if (!deployed.Ok)
+        {
+            detail = "the certificate file could not be read back from the target";
+            return false;
+        }
+
+        // Comparing against what BuildFileSet produced keeps one definition of "the file we sent";
+        // re-deriving it here would be a second copy of the bundling rules, free to drift.
+        var expected = BuildFileSet(p, bundleMode).First(f => f.Path == p.CertPath).Content;
+
+        if (Normalize(deployed.Stdout) != Normalize(expected))
+        {
+            detail = "the file on the target does not match the certificate that was sent";
+            return false;
+        }
+
+        detail = "content matches the certificate that was sent (no openssl on the target)";
+        return true;
+    }
+
+    /// <summary>Ignores line-ending and trailing-whitespace differences the transfer may introduce.</summary>
+    private static string Normalize(string pem) =>
+        string.Join('\n', pem.Replace("\r\n", "\n").Split('\n').Select(l => l.TrimEnd())).Trim();
 
     private static DeployOutcome Rollback(SshConnection ssh, List<StepOutcome> steps,
         List<string> managedFiles, string ts, string? validateCmd, string? reloadCmd, bool backupTaken)
