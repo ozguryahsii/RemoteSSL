@@ -78,6 +78,14 @@ public class AutomationService(
             req.CertificateId = x.Cert.Id;
             audit.Append("service:automation", "renewal.trigger", "certificate", x.Cert.Id.ToString(),
                 "REQUEST_CREATED", new { x.Cert.CommonName, policy.TriggerDays });
+            notifier.Notify(Events.DomainEvents.RenewalDue, new
+            {
+                certificateId = x.Cert.Id,
+                x.Cert.CommonName,
+                daysLeft = ExpiryCalculator.DaysUntilExpiry(x.Latest!.NotAfter, now),
+                policy.TriggerDays,
+                autoDeploy = policy.AutoDeploy
+            });
             await db.SaveChangesAsync(ct);
         }
     }

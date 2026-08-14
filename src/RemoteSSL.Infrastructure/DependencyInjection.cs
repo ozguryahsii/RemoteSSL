@@ -59,8 +59,25 @@ public static class DependencyInjection
         services.AddScoped<Application.Requests.ICaConnectorResolver, Ca.DbCaConnectorResolver>();
         services.AddScoped<Application.Automation.AutomationService>();
         services.AddScoped<Ca.CaConnectorFactory>();
-        services.AddSingleton<Notifications.WebhookNotificationService>();
-        services.AddSingleton<Application.Abstractions.INotificationSink, Notifications.CompositeNotificationSink>();
+        // §28.2 transactional outbox: notifying writes a row in the caller's own transaction, and
+        // the dispatcher below delivers it afterwards to every channel that wants it.
+        services.AddScoped<Application.Abstractions.INotificationSink, Application.Events.OutboxNotificationSink>();
+        services.AddScoped<Application.Events.OutboxNotificationSink>();
+        services.AddScoped<Application.Events.OutboxDispatcher>();
+        services.AddSingleton<Application.Observability.NotificationHealth>();
+        services.AddHostedService<Scheduling.OutboxDispatcherService>();
+
+        // §33 delivery channels. Each reports itself disabled until configured, so an unconfigured
+        // integration is skipped rather than retried forever.
+        services.AddSingleton<Application.Abstractions.INotificationChannel, Notifications.WebhookChannel>();
+        services.AddSingleton<Application.Abstractions.INotificationChannel, Notifications.TeamsChannel>();
+        services.AddSingleton<Application.Abstractions.INotificationChannel, Notifications.EmailChannel>();
+        services.AddSingleton<Application.Abstractions.INotificationChannel, Notifications.RabbitMqChannel>();
+        services.AddSingleton<Application.Abstractions.INotificationChannel, Notifications.SyslogChannel>();
+        services.AddSingleton<Application.Abstractions.INotificationChannel, Notifications.SplunkHecChannel>();
+        services.AddSingleton<Application.Abstractions.INotificationChannel, Notifications.ServiceNowChannel>();
+        services.AddSingleton<Application.Abstractions.INotificationChannel, Notifications.PagerDutyChannel>();
+        services.AddSingleton<Application.Abstractions.INotificationChannel, Notifications.OpsgenieChannel>();
         services.AddSingleton<Security.VaultSecretClient>();
 
         // Secret providers (§7.2). All three register unconditionally; each reports itself as

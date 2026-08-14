@@ -97,16 +97,24 @@ key taşıyan artifact'leri reddeder.
 - Token ve cloud key'ler tanım gereği exportable oluşturulamaz; istenirse istek reddedilir,
   sessizce software key'e düşülmez.
 
-## F17 — Entegrasyonlar, event modeli ve bildirim
+## F17 — Entegrasyonlar, event modeli ve bildirim ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 17.1 | SIEM/Syslog/Splunk forwarder | §33, §25.3 | YOK |
-| 17.2 | ServiceNow change/ticket entegrasyonu | §33 | YOK |
-| 17.3 | PagerDuty/Opsgenie incident entegrasyonu | §33 | YOK |
-| 17.4 | Outbox pattern: DB commit ile event publish tutarlılığı | §28.2 | YOK |
-| 17.5 | Domain event setinin tamamlanması (`CertificateDiscovered`, `RenewalDue`, `DeploymentApproved`, `RollbackStarted`, `RunnerOffline` …) ve şema/sözleşme | §28.1 | KISMİ |
-| 17.6 | Bildirim başarısızlığının ayrı alarm üretmesi (lifecycle'ı bloklamadan) | §33 | KISMİ |
+| 17.1 | SIEM/Syslog/Splunk forwarder | §33, §25.3 | ✅ `SyslogChannel` (RFC 5424 + CEF, UDP/TCP) ve `SplunkHecChannel`; `Integrations:ForwardAuditToSiem` ile audit satırları `audit.*` olarak aynı transaction'da aynalanıyor |
+| 17.2 | ServiceNow change/ticket entegrasyonu | §33 | ✅ `ServiceNowChannel` — Table API, sadece `ChangeWorthy` olaylar, correlation id ve urgency ile |
+| 17.3 | PagerDuty/Opsgenie incident entegrasyonu | §33 | ✅ `PagerDutyChannel` (Events API v2) + `OpsgenieChannel`; sadece `Incidents` seti, dedup key/alias correlation id'den |
+| 17.4 | Outbox pattern: DB commit ile event publish tutarlılığı | §28.2 | ✅ `OutboxMessage` + `OutboxNotificationSink` (çağıranın transaction'ına yazar) + `OutboxDispatcher` (kanal başına teslim, exponential backoff, leader-elected `OutboxDispatcherService`) |
+| 17.5 | Domain event setinin tamamlanması ve şema/sözleşme | §28.1 | ✅ `DomainEvents` sözlüğü + `EventEnvelope` (id, event, schemaVersion, occurredAt, correlationId, payload); `CertificateDiscovered`, `RenewalDue`, `DeploymentRequested/Approved`, `RollbackStarted`, `RunnerOffline` artık yayımlanıyor |
+| 17.6 | Bildirim başarısızlığının ayrı alarm üretmesi (lifecycle'ı bloklamadan) | §33 | ✅ `NotificationHealth` + dashboard `NotificationDeliveryFailure` alarmı + `notification.delivery-failed` olayı; Settings ekranında kanal durumu ve teslim edilemeyen olaylar için **Requeue** |
+
+### F17 notları
+- Bildirim artık hiçbir yerde fire-and-forget değil: `Notify` bir outbox satırı yazar, olay ancak
+  onu doğuran değişiklikle birlikte commit olur. Rollback edilen bir iş kendini duyuramaz,
+  commit olan bir iş de bir webhook düştüğü için sessiz kalamaz.
+- Bir kanal teslim aldığında satıra işlenir; retry yalnızca başarısız kanalları tekrar dener,
+  aynı olay ikinci kez gönderilmez. 6 denemeden sonra olay `Failed` olur ve kendi alarmını üretir.
+- `audit.*` aynalama yalnız SIEM ve mesaj kuyruğuna gider; chat/mail kanalları onu almaz.
 
 ## F18 — Audit ve compliance sertleştirme
 

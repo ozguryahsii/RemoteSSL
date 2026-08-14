@@ -16,6 +16,7 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<DeploymentBinding> DeploymentBindings => Set<DeploymentBinding>();
     public DbSet<CredentialRef> CredentialRefs => Set<CredentialRef>();
     public DbSet<ManagedKey> ManagedKeys => Set<ManagedKey>();
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<DeploymentJob> DeploymentJobs => Set<DeploymentJob>();
     public DbSet<DeploymentJobTarget> DeploymentJobTargets => Set<DeploymentJobTarget>();
     public DbSet<DeploymentStep> DeploymentSteps => Set<DeploymentStep>();
@@ -144,6 +145,16 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
             e.Property(x => x.SecretIdentifier).HasMaxLength(1024);
             e.Property(x => x.AccessPolicyJson).HasColumnType("jsonb");
             e.Property(x => x.LastAccessedBy).HasMaxLength(256);
+        });
+
+        b.Entity<OutboxMessage>(e =>
+        {
+            e.Property(x => x.EventType).HasMaxLength(128);
+            e.Property(x => x.CorrelationId).HasMaxLength(128);
+            e.Property(x => x.PayloadJson).HasColumnType("jsonb");
+            e.Property(x => x.DeliveredChannelsJson).HasColumnType("jsonb");
+            // The dispatcher's hot query: pending, due, oldest first.
+            e.HasIndex(x => new { x.Status, x.NextAttemptAt, x.OccurredAt });
         });
 
         b.Entity<ManagedKey>(e =>

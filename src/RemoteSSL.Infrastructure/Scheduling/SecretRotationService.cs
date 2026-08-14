@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RemoteSSL.Application.Abstractions;
+using RemoteSSL.Application.Events;
 using RemoteSSL.Application.Security;
 
 namespace RemoteSSL.Infrastructure.Scheduling;
@@ -14,7 +15,6 @@ namespace RemoteSSL.Infrastructure.Scheduling;
 public class SecretRotationService(
     IServiceScopeFactory scopeFactory,
     PostgresLeaderLock leaderLock,
-    INotificationSink notifications,
     ILogger<SecretRotationService> logger) : BackgroundService
 {
     private const long LockKey = 0x5253524F; // "RSRO" — secret rotation leader lock
@@ -44,11 +44,13 @@ public class SecretRotationService(
     {
         using var scope = scopeFactory.CreateScope();
         var broker = scope.ServiceProvider.GetRequiredService<SecretBroker>();
+        var notifications = scope.ServiceProvider.GetRequiredService<INotificationSink>();
+        var db = scope.ServiceProvider.GetRequiredService<IRemoteSslDbContext>();
 
         var overdue = await broker.MarkOverdueRotationsAsync(DateTimeOffset.UtcNow, ct);
         foreach (var credential in overdue)
         {
-            notifications.Notify("credential.rotation_due", new
+            notifications.Notify(DomainEvents.CredentialRotationDue, new
             {
                 credential.Id,
                 credential.Name,
@@ -58,6 +60,8 @@ public class SecretRotationService(
                 credential.RotationDueAt
             });
         }
+        // The events are outbox rows; they only exist once this commits (§28.2).
+        if (overdue.Count > 0) await db.SaveChangesAsync(ct);
 
         if (overdue.Count > 0)
             logger.LogInformation("{Count} credential(s) are due for rotation", overdue.Count);

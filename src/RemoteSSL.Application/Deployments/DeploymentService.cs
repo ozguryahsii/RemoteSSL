@@ -142,6 +142,17 @@ public class DeploymentService(
             approvalRequired ? "PENDING_APPROVAL" : "CREATED",
             new { certificate = version.Certificate.CommonName, targets = bindings.Count, strategy },
             job.CorrelationId);
+        notifier.Notify(Events.DomainEvents.DeploymentRequested, new
+        {
+            jobId = job.Id,
+            certificate = version.Certificate.CommonName,
+            targets = bindings.Count,
+            strategy,
+            environment,
+            requestedBy,
+            approvalRequired,
+            correlationId = job.CorrelationId
+        });
         await db.SaveChangesAsync(ct);
         return job;
     }
@@ -177,6 +188,14 @@ public class DeploymentService(
             "deployment_job", jobId.ToString(),
             approve && decision == Policies.ApproverDecision.BreakGlass ? "APPROVED_BREAK_GLASS" : job.Status.ToString(),
             new { reason, breakGlass = decision == Policies.ApproverDecision.BreakGlass }, job.CorrelationId);
+        notifier.Notify(approve ? Events.DomainEvents.DeploymentApproved : Events.DomainEvents.RequestRejected, new
+        {
+            jobId,
+            approver,
+            reason,
+            breakGlass = decision == Policies.ApproverDecision.BreakGlass,
+            correlationId = job.CorrelationId
+        });
         await UpdateCertificateStatusAsync(job, ct);
         await db.SaveChangesAsync(ct);
     }
@@ -407,6 +426,15 @@ public class DeploymentService(
             rollbackJob.RolledBackFromJobId = job.Id;
             jobs.Add(rollbackJob.Id);
 
+            notifier.Notify(Events.DomainEvents.RollbackStarted, new
+            {
+                jobId = job.Id,
+                rollbackJobId = rollbackJob.Id,
+                toVersion = previous.Id,
+                targets = group.Count(),
+                requestedBy,
+                correlationId = job.CorrelationId
+            });
             audit.Append($"user:{requestedBy}", "deployment.rollback", "deployment_job", job.Id.ToString(),
                 "ROLLBACK_REQUESTED",
                 new { rollbackJobId = rollbackJob.Id, toVersion = previous.Id, targets = group.Count() },
@@ -507,7 +535,7 @@ public class DeploymentService(
                         job.Id.ToString(), "AWAITING_CONTINUE",
                         new { remaining = all.Count(t => t.Status == DeploymentJobStatus.Pending) },
                         job.CorrelationId);
-                    notifier.Notify("deployment.awaiting-continue", new
+                    notifier.Notify(Events.DomainEvents.DeploymentAwaitingContinue, new
                     {
                         jobId = job.Id,
                         remaining = all.Count(t => t.Status == DeploymentJobStatus.Pending),
@@ -549,7 +577,9 @@ public class DeploymentService(
                 audit.Append("service:orchestrator", "deployment.complete", "deployment_job",
                     job.Id.ToString(), job.Status.ToString(), null, job.CorrelationId);
                 notifier.Notify(
-                    job.Status == DeploymentJobStatus.Succeeded ? "deployment.succeeded" : "deployment.failed",
+                    job.Status == DeploymentJobStatus.Succeeded
+                        ? Events.DomainEvents.DeploymentCompleted
+                        : Events.DomainEvents.DeploymentFailed,
                     new { jobId = job.Id, status = job.Status.ToString(), correlationId = job.CorrelationId });
             }
         }

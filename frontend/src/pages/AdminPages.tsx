@@ -350,6 +350,73 @@ export function CaIntegrations() {
   )
 }
 
+
+/**
+ * Event delivery status (design doc §33). Shows which integration channels this deployment has
+ * configured and, more importantly, which events never reached them — a webhook that quietly
+ * stopped working is invisible everywhere else.
+ */
+function IntegrationsPanel() {
+  const [channels] = useData<{ name: string; enabled: boolean }[]>('/api/v1/events/channels', 120000)
+  const [health, reloadHealth] = useData<{
+    pending: number; failed: number; failuresByChannel: Record<string, number>
+    recent: { timestamp: string; channel: string; eventType: string; error: string }[]
+  }>('/api/v1/events/delivery-health', 30000)
+  const [failedEvents, reloadFailed] = useData<{
+    id: string; eventType: string; occurredAt: string; attempts: number; lastError: string | null
+  }[]>('/api/v1/events?status=Failed&take=25', 30000)
+
+  async function retry(id: string) {
+    const res = await apiPost(`/api/v1/events/${id}/retry`)
+    if (!res.ok) alert(`Retry failed (${res.status})`)
+    reloadFailed(); reloadHealth()
+  }
+
+  return (
+    <>
+      <h3>Event delivery</h3>
+      <p className="muted small">
+        Domain events are written with the change that caused them and delivered afterwards, so an
+        integration being down never fails a deployment — it only delays the event.
+      </p>
+      <p className="small">
+        {(channels ?? []).map((c) => (
+          <span key={c.name} className={`tag ${c.enabled ? 'ok' : ''}`} style={{ marginRight: 6 }}>
+            {c.name}{c.enabled ? '' : ' (off)'}
+          </span>
+        ))}
+      </p>
+      {health && (
+        <p className="small">
+          Pending: {health.pending} · Undelivered: {health.failed > 0
+            ? <span className="bad">{health.failed}</span>
+            : <span className="ok">0</span>}
+          {Object.keys(health.failuresByChannel).length > 0 && (
+            <> · Failing channels (24h): {Object.entries(health.failuresByChannel)
+              .map(([channel, count]) => `${channel} (${count})`).join(', ')}</>
+          )}
+        </p>
+      )}
+      {(failedEvents ?? []).length > 0 && (
+        <table className="data-table">
+          <thead><tr><th>Event</th><th>Occurred</th><th>Attempts</th><th>Last error</th><th></th></tr></thead>
+          <tbody>
+            {(failedEvents ?? []).map((e) => (
+              <tr key={e.id}>
+                <td className="small">{e.eventType}</td>
+                <td className="small muted">{new Date(e.occurredAt).toLocaleString()}</td>
+                <td className="small">{e.attempts}</td>
+                <td className="small bad">{e.lastError}</td>
+                <td className="actions"><button onClick={() => retry(e.id)}>Requeue</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
+  )
+}
+
 export function Settings() {
   const [users, reload] = useData<{
     id: string; username: string; rolesJson: string; scopesJson: string
@@ -426,6 +493,8 @@ export function Settings() {
         {getToken() ? <>Signed in. <button onClick={() => { setToken(null); window.location.href = '/login' }}>Sign out</button></>
           : 'Not signed in (server auth may be disabled — set Auth:Enabled=true in appsettings.json to enforce login).'}
       </p>
+
+      <IntegrationsPanel />
 
       <h3>Users</h3>
       <form className="inline-form" onSubmit={addUser} style={{ flexWrap: 'wrap' }}>

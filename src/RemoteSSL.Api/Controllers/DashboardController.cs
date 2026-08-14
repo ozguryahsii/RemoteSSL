@@ -4,6 +4,7 @@ using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Application.Monitoring;
 using RemoteSSL.Application.Observability;
 using RemoteSSL.Domain;
+using RemoteSSL.Domain.Entities;
 
 namespace RemoteSSL.Api.Controllers;
 
@@ -14,7 +15,9 @@ namespace RemoteSSL.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/dashboard")]
-public class DashboardController(IRemoteSslDbContext db, MetricsQuery metrics, AuditPipelineHealth auditHealth)
+public class DashboardController(
+    IRemoteSslDbContext db, MetricsQuery metrics, AuditPipelineHealth auditHealth,
+    NotificationHealth notificationHealth)
     : ControllerBase
 {
     [HttpGet]
@@ -236,6 +239,20 @@ public class DashboardController(IRemoteSslDbContext db, MetricsQuery metrics, A
         if (auditFailures.Count > 0) Alert("AuditPipelineFailure", "critical",
             $"{auditFailures.Count} audit write(s) failed in the last 24h — last error: {auditFailures[0].Error}");
 
+        // §33: a notification channel that stops delivering must raise its own alarm; it never
+        // blocks the lifecycle, so nothing else would reveal it.
+        var notificationFailures = notificationHealth.Recent(TimeSpan.FromHours(24));
+        var undelivered = await db.OutboxMessages.CountAsync(m => m.Status == OutboxStatus.Failed, ct);
+        if (notificationFailures.Count > 0 || undelivered > 0)
+        {
+            var channels = string.Join(", ", notificationHealth.CountsByChannel(TimeSpan.FromHours(24))
+                .Select(c => $"{c.Key} ({c.Value})"));
+            Alert("NotificationDeliveryFailure", undelivered > 0 ? "critical" : "warning",
+                undelivered > 0
+                    ? $"{undelivered} event(s) were never delivered after all retries. Failing channels: {channels}."
+                    : $"Notification delivery is retrying. Failing channels: {channels}.");
+        }
+
         var unreachable = monitors.Count(m => m.Enabled && m.LastProbeStatus != ProbeStatus.Success
                                               && m.LastProbeStatus != ProbeStatus.NeverProbed);
         if (unreachable > 0) Alert("ProbeFailure", "warning", $"{unreachable} monitor(s) failing their probe.");
@@ -270,7 +287,9 @@ public class DashboardController(IRemoteSslDbContext db, MetricsQuery metrics, A
                 CaRequestLatencyP50Ms = caLatency.P50Ms,
                 CaRequestLatencyP95Ms = caLatency.P95Ms,
                 CaRequestLatencySamples = caLatency.Count,
-                AuditPipelineFailures = auditFailures.Count
+                AuditPipelineFailures = auditFailures.Count,
+                NotificationFailures = notificationFailures.Count,
+                UndeliveredEvents = undelivered
             },
             ExpiryBuckets = expiryBuckets,
             ExpiryUnknown = expiryUnknown,

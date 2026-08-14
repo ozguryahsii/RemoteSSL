@@ -562,6 +562,89 @@ binding JSON'una eklenir:
 Anahtarın dışa aktarılabilir olması gerekiyorsa `"exportablePrivateKey": true` eklenir. Job
 adımlarında `PrivateKeyAcl` adımı yetkinin verildiğini gösterir.
 
+## 21. Event modeli, outbox ve entegrasyonlar (F17)
+
+**Outbox** (§28.2). Bildirim artık anlık gönderim değil: `Notify` çağrısı, onu doğuran değişikliğin
+transaction'ına bir satır yazar. Olay ancak commit ile var olur; teslim ayrı bir arka plan
+servisinde (leader-elected) yapılır.
+
+```bash
+curl -s "localhost:5200/api/v1/events?take=10"          # son olaylar
+curl -s "localhost:5200/api/v1/events?status=Failed"    # teslim edilemeyenler
+curl -s localhost:5200/api/v1/events/channels           # kanal listesi + yapılandırılmış mı
+curl -s localhost:5200/api/v1/events/delivery-health    # 24 saatlik hata özeti
+```
+
+Bir kanal teslim aldığında satıra işlenir; sonraki deneme yalnızca başarısız kanalları tekrar
+dener. Backoff 30s → 1m → 2m → 4m → 8m; 6 deneme sonunda olay `Failed` olur.
+**Settings → Event delivery** panelinde kanal durumu, teslim edilemeyen olaylar ve **Requeue**
+düğmesi vardır.
+
+**Domain event seti** (§28.1). Yayımlanan olaylar: `certificate.discovered`,
+`certificate.expiring`, `certificate.revoked`, `certificate.renewal-due`, `deployment.requested`,
+`deployment.approved`, `deployment.awaiting-continue`, `deployment.completed`,
+`deployment.failed`, `deployment.rollback-started`, `monitor.health-check-failed`,
+`vantage.mismatch`, `drift.detected`, `runner.offline`, `credential.rotation_due`,
+`notification.delivery-failed`. Zarf şekli her kanalda aynıdır:
+
+```json
+{ "id": "...", "event": "deployment.failed", "schemaVersion": 1,
+  "timestamp": "2026-05-04T10:30:00Z", "correlationId": "...", "data": { } }
+```
+
+RabbitMQ'da olay adı routing key'dir (`remotessl.events` topic exchange), yani tüketici
+`deployment.*` gibi bağlanabilir.
+
+**SIEM / Syslog** (§33, §25.3):
+
+```json
+{ "Integrations": { "Syslog": {
+    "Host": "siem.local", "Port": 514, "Protocol": "udp",
+    "Facility": 16, "Format": "rfc5424", "Hostname": "clm01" } } }
+```
+
+`Format: "cef"` ArcSight CEF üretir, `Protocol: "tcp"` RFC 6587 octet-counting kullanır.
+Audit kayıtlarının da SIEM'e gitmesi için `Integrations:ForwardAuditToSiem=true` — her audit
+satırı `audit.<action>` olayı olarak aynı transaction'da outbox'a yazılır. Chat/mail kanalları
+bu aynaları almaz, yalnız SIEM ve mesaj kuyruğu alır.
+
+Yerel deneme (UDP dinleyici):
+
+```bash
+python3 -c "
+import socket
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(('127.0.0.1',5514))
+while True: print(s.recvfrom(65535)[0].decode())"
+```
+
+Splunk HEC için: `Integrations:Splunk:{Url,Token,Index,SourceType}`.
+
+**ServiceNow** (§33). Yalnız değişiklik sayılan olaylar (`deployment.requested/approved/completed/
+failed`, `deployment.rollback-started`, `certificate.revoked`) kayıt açar:
+
+```json
+{ "Integrations": { "ServiceNow": {
+    "BaseUrl": "https://acme.service-now.com", "Username": "svc_remotessl",
+    "Password": "…", "Table": "change_request", "AssignmentGroup": "Platform" } } }
+```
+
+**PagerDuty / Opsgenie** (§33). Yalnız incident seviyesindeki olaylar sayfa açar
+(`deployment.failed`, `deployment.rollback-started`, `certificate.issuance-failed`,
+`certificate.expired`, `drift.detected`, `runner.offline`, `notification.delivery-failed`):
+
+```json
+{ "Integrations": {
+    "PagerDuty": { "RoutingKey": "…" },
+    "Opsgenie": { "ApiKey": "…", "Team": "platform" } } }
+```
+
+Dedup key / alias correlation id'den üretilir, böylece tekrar eden hatalar tek incident'ta toplanır.
+
+**Bildirim hatası alarmı** (§33). Bir kanal teslim edemezse lifecycle etkilenmez; bunun yerine
+dashboard'da `NotificationDeliveryFailure` alarmı çıkar (`UndeliveredEvents > 0` ise critical),
+`notification.delivery-failed` olayı üretilir ve audit'e yazılır. Bu olay kendi hatası için
+tekrar olay üretmez — döngü oluşmaz.
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

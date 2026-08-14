@@ -7,7 +7,7 @@ using RemoteSSL.Domain.Entities;
 namespace RemoteSSL.Application.Certificates;
 
 /// <summary>Shared inventory write-path: issued/uploaded certificates become versions of a logical certificate.</summary>
-public class InventoryService(IRemoteSslDbContext db)
+public class InventoryService(IRemoteSslDbContext db, INotificationSink? notifier = null)
 {
     public async Task<CertificateVersion> AddVersionAsync(
         string certPem, string? chainPem, string? encryptedKeyPem,
@@ -72,6 +72,20 @@ public class InventoryService(IRemoteSslDbContext db)
         foreach (var (type, value) in parsed.Sans)
             version.Sans.Add(new CertificateSan { Id = Guid.NewGuid(), SanType = type, Value = value });
         db.CertificateVersions.Add(version);
+
+        // §28.1 CertificateDiscovered: a thumbprint the inventory has never seen before, whatever
+        // brought it in — a probe, an upload or an issuance.
+        notifier?.Notify(Events.DomainEvents.CertificateDiscovered, new
+        {
+            certificateId = certificate.Id,
+            versionId = version.Id,
+            commonName = parsed.CommonName,
+            issuer = parsed.IssuerDn,
+            serialNumber = parsed.SerialNumber,
+            sha256Thumbprint = parsed.Sha256Thumbprint,
+            notAfter = parsed.NotAfter,
+            source = status.ToString()
+        });
         return version;
     }
 }
