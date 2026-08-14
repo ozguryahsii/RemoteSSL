@@ -21,13 +21,15 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
     public record CreateBindingRequest(Guid CertificateId, JsonElement? ServiceBinding, JsonElement? ActivationPolicy);
 
     [HttpGet]
-    public async Task<IEnumerable<object>> List(CancellationToken ct) =>
-        await db.Targets.AsNoTracking().Include(t => t.Stores).Select(t => new
-        {
-            t.Id, t.Name, TargetType = t.TargetType.ToString(), t.AdapterType, t.Environment, t.HaRole, t.TargetGroup,
-            t.CredentialRefId, t.RunnerId, t.ConnectionConfigJson,
-            Stores = t.Stores.Select(s => new { s.Id, s.StoreType, s.StorePath, s.Alias })
-        }).ToListAsync(ct);
+    public async Task<IEnumerable<object>> List([FromQuery] PageRequest page, CancellationToken ct) =>
+        await db.Targets.AsNoTracking().Include(t => t.Stores)
+            .OrderBy(t => t.Name)
+            .Select(t => new
+            {
+                t.Id, t.Name, TargetType = t.TargetType.ToString(), t.AdapterType, t.Environment, t.HaRole, t.TargetGroup,
+                t.CredentialRefId, t.RunnerId, t.ConnectionConfigJson,
+                Stores = t.Stores.Select(s => new { s.Id, s.StoreType, s.StorePath, s.Alias })
+            }).ToPageAsync(page, Response, ct);
 
     [HttpPost]
     public async Task<ActionResult<object>> Create(CreateTargetRequest req, CancellationToken ct)

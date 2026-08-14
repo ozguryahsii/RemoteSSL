@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiGet, apiPost } from '../api/client'
-import { useData } from './SimplePages'
+import { useData, MAX_PAGE, TruncationNotice } from './SimplePages'
 
 interface JobRow {
   id: string; status: string; strategy: string; requestedBy: string; approvedBy: string | null
@@ -172,7 +172,7 @@ function statusClass(s: string) {
 }
 
 export default function Deployments() {
-  const [jobs, reloadJobs] = useData<JobRow[]>('/api/v1/deployments', 10000)
+  const [jobs, reloadJobs, , jobTotal] = useData<JobRow[]>(`/api/v1/deployments?take=${MAX_PAGE}`, 10000)
   const [detail, setDetail] = useState<JobDetail | null>(null)
   const [events, setEvents] = useState<JobEvent[]>([])
   const [busy, setBusy] = useState(false)
@@ -238,6 +238,7 @@ export default function Deployments() {
   return (
     <div className="page">
       <h1>Deployments</h1>
+      <TruncationNotice shown={(jobs ?? []).length} total={jobTotal} />
       <p className="muted small">
         Create deployments from the Certificates screen or the API; jobs run transactionally with automatic
         rollback. Open a job to follow its steps, continue a paused canary wave, or roll it back manually.

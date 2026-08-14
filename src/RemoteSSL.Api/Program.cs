@@ -60,6 +60,9 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+// §27.2: honour an inbound Correlation-ID and echo it, so a caller's trace and RemoteSSL's
+// join up. First in the pipeline — everything after it inherits the id.
+app.UseCorrelationId();
 app.UseSecurityHeaders();
 app.UseCors();
 app.UseRateLimiter();

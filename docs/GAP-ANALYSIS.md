@@ -8,6 +8,39 @@ Durum kodları: **YOK** = hiç yapılmadı · **KISMİ** = temel var, doküman k
 
 ---
 
+## F24 — Doküman sadakat denetimi ✅ TAMAMLANDI
+
+Tüm fazlar bittikten sonra doküman satır satır kodla karşılaştırıldı (§3 FR-001…FR-020,
+§37 NFR-001…NFR-008 ve 46 bölümün tamamı). **Altı gerçek sapma** bulundu ve kapatıldı.
+Bunların hiçbiri önceki faz tablolarında görünmüyordu: her biri "yapıldı" işaretli bir maddenin
+dokümandan farklı yapılmış olmasıydı.
+
+| # | Sapma | Doküman | Ne yapıldı |
+|---|-------|---------|------------|
+| 24.1 | **Manifest şeması dokümanla uyuşmuyordu.** F23'te şemayı ben tasarlamıştım: `metadata` sertifikayı adlandırmıyordu, hedef seçicide `target`/`store`/`service`/`alias` yoktu, `verification` ise `expectedThumbprint`/`rollbackOnFailure` yerine tamamen farklı alanlar taşıyordu | §38 | Dokümanın gösterimi birebir destekleniyor: `metadata.certificateId`/`versionId`, `spec.targets[].target/adapter/store/service/alias`, `spec.verification.expectedThumbprint/rollbackOnFailure`. §38'deki örneğin kendisi test olarak sabitlendi (`DocumentExample`) — şema bir daha sessizce kayamaz |
+| 24.2 | **§28.1'in 14 domain event'inden 2'si yoktu**: `CertificateVersionObserved`, `DeploymentTargetFailed` | §28.1 | İkisi de eklendi ve gerçek yerlerinden yayımlanıyor. `DeploymentTargetFailed` özellikle önemliydi: wave/parallel dağıtımda bir sunucu düşse bile iş devam ettiği için, tüm iş bitene kadar hiçbir olay üretilmiyordu |
+| 24.3 | **Runner yetenek listesi yanlış şeydi.** Doküman `ssh, winrm, powershell, openssl, keytool, orapki` yani **araç** yeteneklerini istiyor; kodda adapter adları vardı ve liste **sabit kodluydu** | §8.2 | `RunnerCapabilities` araçları çalıştırarak tespit ediyor. Eski hâlinde JDK'sı olmayan bir runner `keytool` işini kabul edip hedefte, dağıtımın ortasında patlardı. Canlı doğrulama: bu konteynerde `openssl`+`keytool` bildirildi, `orapki` ve `powershell` bildirilmedi — ki gerçekten de kurulu değiller |
+| 24.4 | **§36.1'in sekiz test katmanından biri, uçtan uca testi, hiç yoktu** — F22 tablosunda madde olarak bile listelenmemişti | §36.1 | `EndToEndTests`: talep → gerçek CSR imzalayan mock CA'dan issuance → plan/deployment → probe ile aynı thumbprint'in servis edildiğinin doğrulanması, tek testte |
+| 24.5 | **`Correlation-ID` HTTP header'ı yoktu.** İç akışta correlation id vardı ama dışarıdan gelen kabul edilmiyor, yanıtta dönülmüyordu | §27.2 | `CorrelationIdMiddleware`: gelen id benimseniyor ve her yanıtta dönüyor; gelmezse üretilip yine dönüyor. Böylece çağıranın trace'i ile RemoteSSL'inki birleşiyor. Değer sanitize ediliyor (audit satırına ve header'a yazıldığı için) |
+| 24.6 | **Sayfalama standart değildi**; liste uçları sabit `Take(100)` ile kesiyordu | §27.2 | Ortak `PageRequest` + `X-Total-Count`. Gövde şekli değişmedi, mevcut çağıranlar bozulmadı. **Yan etkisi kapatıldı**: UI artık toplam sayıyı okuyup kesilme varsa "Showing N of M" uyarısı gösteriyor — 10.000 endpoint'te (NFR-004) operatörün göremediği monitor, kimsenin yenilemediği monitör demektir |
+
+### F24 notları
+- Doküman repoda değildi; bu denetim kullanıcı `.docx`'i paylaştıktan sonra yapıldı. Öncesindeki
+  tüm çalışma dokümandan daha önce çıkarılmış olan bu dosya üzerinden yürümüştü — sapmaların
+  kaynağı da bu.
+- `rollbackOnFailure: false` **kabul edilmiyor**, açık hatayla reddediliyor. Otomatik rollback
+  §21.1 boru hattının bir özelliği; işlemeyen bir bayrağı sessizce kabul etmek, olay anında
+  dosyayı okuyan kişiyi yanıltırdı.
+- `expectedThumbprint` artık bir güvenlik iddiası: dosya adlandırdığı sertifikadan sapmışsa
+  manifest durur, dosyanın lehine çözülmez.
+- Doğrulanan ve **sapma bulunmayan** alanlar: FR-001…FR-020 (FR-002'nin T-90/60/45/30/15/7/1
+  eşikleri dahil), NFR-001…NFR-008, §39 policy modelinin yedi alanı birebir, §26.2'nin dokuz
+  sekmesi birebir, §27.1'in on iki endpoint'i, §32.1'in on iki metriği, §32.3'ün sekiz alarmı,
+  §21.1 boru hattı ve §21.4'ün altı stratejisi, §5.2 şeması, §9.1 adapter sözleşmesi
+  (`cleanup` dahil).
+
+---
+
 ## F11 — Sertifika politikası, lifecycle ve onay derinliği ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |

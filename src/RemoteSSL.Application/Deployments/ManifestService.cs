@@ -49,10 +49,18 @@ public class ManifestService(
         if (errors.Count > 0) return Failed(errors);
 
         var spec = manifest.Spec!;
-        var wanted = spec.Certificate!;
 
-        var version = await ResolveVersionAsync(wanted, errors, ct);
+        var version = await ResolveVersionAsync(manifest, errors, ct);
         if (version is null) return Failed(errors);
+
+        // §38 verification.expectedThumbprint: the manifest states what it believes it is
+        // deploying. If the file has drifted from the certificate it names, that is a mistake
+        // worth stopping for, not something to resolve in the file's favour.
+        var expected = spec.Verification?.ExpectedThumbprint?.Replace(":", "").Replace(" ", "").Trim();
+        if (!string.IsNullOrWhiteSpace(expected)
+            && !expected.Equals(version.Sha256Thumbprint, StringComparison.OrdinalIgnoreCase))
+            errors.Add($"spec.verification.expectedThumbprint is {expected}, but the certificate "
+                       + $"this manifest resolves to is {version.Sha256Thumbprint}.");
 
         var matched = await ResolveTargetsAsync(spec, version.CertificateId, errors, warnings, ct);
 
@@ -122,9 +130,61 @@ public class ManifestService(
     private static ManifestResolution Failed(IReadOnlyList<string> errors) =>
         new(false, errors, [], null, null, null, "sequential", 0, false, []);
 
-    private async Task<CertificateVersion?> ResolveVersionAsync(
-        ManifestCertificate wanted, List<string> errors, CancellationToken ct)
+    /// <summary>
+    /// The §38 addressing form. versionId pins an exact version; certificateId alone deploys
+    /// whatever is active, so a manifest in git survives a renewal without being edited.
+    /// </summary>
+    private async Task<CertificateVersion?> ResolveByIdAsync(
+        ManifestMetadata metadata, List<string> errors, CancellationToken ct)
     {
+        if (!string.IsNullOrWhiteSpace(metadata.VersionId))
+        {
+            var versionId = Guid.Parse(metadata.VersionId);
+            var version = await db.CertificateVersions.Include(v => v.Certificate)
+                .FirstOrDefaultAsync(v => v.Id == versionId, ct);
+
+            if (version is null)
+            {
+                errors.Add($"No certificate version with id {versionId} exists.");
+                return null;
+            }
+
+            // Naming both must agree, or the file means two different things at once.
+            if (!string.IsNullOrWhiteSpace(metadata.CertificateId)
+                && version.CertificateId != Guid.Parse(metadata.CertificateId))
+            {
+                errors.Add($"metadata.versionId {versionId} belongs to certificate "
+                           + $"{version.CertificateId}, not to metadata.certificateId {metadata.CertificateId}.");
+                return null;
+            }
+
+            return version;
+        }
+
+        var certificateId = Guid.Parse(metadata.CertificateId!);
+        var active = await db.CertificateVersions.Include(v => v.Certificate)
+            .Where(v => v.CertificateId == certificateId && v.Status == CertificateVersionStatus.Active)
+            .OrderByDescending(v => v.NotAfter)
+            .FirstOrDefaultAsync(ct);
+
+        if (active is null)
+            errors.Add(await db.Certificates.AnyAsync(c => c.Id == certificateId, ct)
+                ? $"Certificate {certificateId} has no active version. Pin one with metadata.versionId."
+                : $"No certificate with id {certificateId} exists.");
+
+        return active;
+    }
+
+    private async Task<CertificateVersion?> ResolveVersionAsync(
+        DeploymentManifest manifest, List<string> errors, CancellationToken ct)
+    {
+        // §38 form: the certificate and (optionally) the exact version are named by id.
+        var metadata = manifest.Metadata;
+        if (!string.IsNullOrWhiteSpace(metadata?.VersionId) || !string.IsNullOrWhiteSpace(metadata?.CertificateId))
+            return await ResolveByIdAsync(metadata!, errors, ct);
+
+        var wanted = manifest.Spec!.Certificate!;
+
         if (!string.IsNullOrWhiteSpace(wanted.Thumbprint))
         {
             // Operators paste thumbprints from browsers and openssl, which format them differently.
@@ -191,7 +251,7 @@ public class ManifestService(
         for (var i = 0; i < spec.Targets.Count; i++)
         {
             var selector = spec.Targets[i];
-            var hits = candidates.Where(b => Matches(selector, b.CertificateStore.Target)).ToList();
+            var hits = candidates.Where(b => Matches(selector, b)).ToList();
 
             if (hits.Count == 0)
             {
@@ -215,21 +275,36 @@ public class ManifestService(
         // Overlapping selectors are legitimate (a group plus one extra host), but worth saying so
         // the operator knows the target is deployed once, not twice.
         var overlap = spec.Targets.Count > 1
-                      && matched.Count < spec.Targets.Sum(s => candidates.Count(b => Matches(s, b.CertificateStore.Target)));
+                      && matched.Count < spec.Targets.Sum(s => candidates.Count(b => Matches(s, b)));
         if (overlap)
             warnings.Add("Some selectors overlap; each target is deployed once.");
 
         return matched.Values.OrderBy(t => t.SelectorIndex).ThenBy(t => t.Target).ToList();
     }
 
-    private static bool Matches(ManifestTargetSelector selector, Target target)
+    private static bool Matches(ManifestTargetSelector selector, DeploymentBinding binding)
     {
+        var target = binding.CertificateStore.Target;
+        var store = binding.CertificateStore;
+
         // Fields within one selector are AND-ed; an unset field simply does not constrain.
-        if (!Eq(selector.Name, target.Name)) return false;
+        if (!Eq(selector.TargetName, target.Name)) return false;
         if (!Eq(selector.Environment, target.Environment)) return false;
         if (!Eq(selector.Adapter, target.AdapterType)) return false;
         if (!Eq(selector.Group, target.TargetGroup)) return false;
         if (!Eq(selector.HaRole, target.HaRole)) return false;
+
+        // §38 store/alias: a target can carry several stores (two keystores, My and Root), so
+        // these are what pick one. Without them a manifest naming the target alone would deploy
+        // to all of them.
+        if (!Eq(selector.Alias, store.Alias)) return false;
+        if (!string.IsNullOrWhiteSpace(selector.Store)
+            && !StoreMatches(selector.Store, store)) return false;
+
+        // §38 service: the service the binding activates, e.g. nginx.
+        if (!string.IsNullOrWhiteSpace(selector.Service)
+            && !ServiceMatches(selector.Service, binding.ServiceBindingJson)) return false;
+
         return true;
 
         static bool Eq(string? wanted, string? actual) =>
@@ -237,12 +312,42 @@ public class ManifestService(
             || string.Equals(wanted, actual, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Matches the store the way an operator writes it: the bare path as in §38
+    /// (<c>/etc/nginx/ssl</c>, <c>LocalMachine/My</c>) or the qualified <c>type:path</c> form the
+    /// UI shows. Windows store paths are written with either slash.
+    /// </summary>
+    private static bool StoreMatches(string wanted, CertificateStore store)
+    {
+        var candidates = new[] { store.StorePath, $"{store.StoreType}:{store.StorePath}" };
+        return candidates.Any(c => Normalize(c) == Normalize(wanted));
+
+        static string Normalize(string value) =>
+            value.Trim().TrimEnd('/', '\\').Replace('\\', '/').ToLowerInvariant();
+    }
+
+    private static bool ServiceMatches(string wanted, string serviceBindingJson)
+    {
+        try
+        {
+            if (JsonNode.Parse(string.IsNullOrWhiteSpace(serviceBindingJson) ? "{}" : serviceBindingJson)
+                is not JsonObject config) return false;
+
+            return config["service"]?.GetValue<string>() is { } service
+                   && string.Equals(service, wanted, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException) { return false; }
+    }
+
     private static string Describe(ManifestTargetSelector selector)
     {
         var parts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(selector.Name)) parts.Add($"name={selector.Name}");
+        if (!string.IsNullOrWhiteSpace(selector.TargetName)) parts.Add($"target={selector.TargetName}");
         if (!string.IsNullOrWhiteSpace(selector.Environment)) parts.Add($"environment={selector.Environment}");
         if (!string.IsNullOrWhiteSpace(selector.Adapter)) parts.Add($"adapter={selector.Adapter}");
+        if (!string.IsNullOrWhiteSpace(selector.Store)) parts.Add($"store={selector.Store}");
+        if (!string.IsNullOrWhiteSpace(selector.Alias)) parts.Add($"alias={selector.Alias}");
+        if (!string.IsNullOrWhiteSpace(selector.Service)) parts.Add($"service={selector.Service}");
         if (!string.IsNullOrWhiteSpace(selector.Group)) parts.Add($"group={selector.Group}");
         if (!string.IsNullOrWhiteSpace(selector.HaRole)) parts.Add($"haRole={selector.HaRole}");
         return string.Join(", ", parts);

@@ -111,6 +111,110 @@ public class ManifestParserTests
         Assert.Contains(result.Errors, e => e.Contains("blue-green"));
     }
 
+    /// <summary>
+    /// The manifest exactly as design doc §38 prints it. If this stops parsing, the product has
+    /// drifted from the document, which is the one thing the manifest format must not do.
+    /// </summary>
+    public const string DocumentExample = """
+        apiVersion: remotessl/v1
+        kind: CertificateDeployment
+        metadata:
+          certificateId: 11111111-1111-1111-1111-111111111111
+          versionId: 22222222-2222-2222-2222-222222222222
+        spec:
+          strategy:
+            type: wave
+            maxConcurrency: 2
+          verification:
+            expectedThumbprint: ABCDEF
+            rollbackOnFailure: true
+          targets:
+            - target: web01
+              adapter: nginx
+              store: /etc/nginx/ssl
+              service: nginx
+            - target: wexch01
+              adapter: windows-cert-store
+              store: LocalMachine/My
+            - target: wls01
+              adapter: java-truststore
+              store: /opt/app/truststore.jks
+              alias: globalsign-r46
+        """;
+
+    [Fact]
+    public void The_example_manifest_printed_in_the_design_document_parses_field_for_field()
+    {
+        var result = ManifestParser.Parse(DocumentExample);
+
+        Assert.True(result.Ok, string.Join("; ", result.Errors));
+        var manifest = result.Manifest!;
+        Assert.Equal("11111111-1111-1111-1111-111111111111", manifest.Metadata!.CertificateId);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", manifest.Metadata.VersionId);
+
+        var spec = manifest.Spec!;
+        Assert.Equal("wave", spec.Strategy!.Type);
+        Assert.Equal(2, spec.Strategy.MaxConcurrency);
+        Assert.Equal("ABCDEF", spec.Verification!.ExpectedThumbprint);
+        Assert.True(spec.Verification.RollbackOnFailure);
+
+        Assert.Equal(3, spec.Targets.Count);
+        Assert.Equal("web01", spec.Targets[0].Target);
+        Assert.Equal("nginx", spec.Targets[0].Adapter);
+        Assert.Equal("/etc/nginx/ssl", spec.Targets[0].Store);
+        Assert.Equal("nginx", spec.Targets[0].Service);
+        Assert.Equal("LocalMachine/My", spec.Targets[1].Store);
+        Assert.Equal("globalsign-r46", spec.Targets[2].Alias);
+    }
+
+    [Fact]
+    public void Turning_rollback_off_is_refused_rather_than_accepted_and_ignored()
+    {
+        // A file that says rollback is off, applied to a pipeline that always rolls back, would
+        // mislead whoever reads it during an incident.
+        var result = ManifestParser.Parse(DocumentExample.Replace(
+            "rollbackOnFailure: true", "rollbackOnFailure: false"));
+
+        Assert.False(result.Ok);
+        Assert.Contains(result.Errors, e => e.Contains("rollbackOnFailure"));
+    }
+
+    [Fact]
+    public void Naming_the_certificate_in_both_places_at_once_is_refused()
+    {
+        var result = ManifestParser.Parse("""
+            apiVersion: remotessl/v1
+            kind: CertificateDeployment
+            metadata:
+              certificateId: 11111111-1111-1111-1111-111111111111
+            spec:
+              certificate:
+                commonName: www.example.com
+              targets:
+                - target: web01
+            """);
+
+        Assert.False(result.Ok);
+        Assert.Contains(result.Errors, e => e.Contains("named twice"));
+    }
+
+    [Fact]
+    public void An_id_that_is_not_a_remotessl_id_is_reported_as_such()
+    {
+        var result = ManifestParser.Parse("""
+            apiVersion: remotessl/v1
+            kind: CertificateDeployment
+            metadata:
+              certificateId: cert-123
+            spec:
+              targets:
+                - target: web01
+            """);
+
+        Assert.False(result.Ok);
+        Assert.Contains(result.Errors, e => e.Contains("metadata.certificateId"));
+    }
+
     [Fact]
     public void A_certificate_named_two_ways_at_once_is_refused_rather_than_guessed()
     {
@@ -419,6 +523,120 @@ public class ManifestResolutionTests
         // The safest strategy is the one you get by not thinking about it.
         Assert.Equal("sequential", resolution.Strategy);
         Assert.False(resolution.ApprovalRequired);
+    }
+
+    [Fact]
+    public async Task A_certificate_addressed_by_id_resolves_to_its_active_version()
+    {
+        await using var db = await SeededAsync();
+        var certificate = await db.Certificates.FirstAsync();
+        var active = await db.CertificateVersions.FirstAsync();
+
+        var resolution = await Service(db).ResolveAsync(Manifest($"""
+            apiVersion: remotessl/v1
+            kind: CertificateDeployment
+            metadata:
+              certificateId: {certificate.Id}
+            spec:
+              targets:
+                - target: web-01
+            """), default);
+
+        Assert.True(resolution.Ok, string.Join("; ", resolution.Errors));
+        Assert.Equal(active.Id, resolution.CertificateVersionId);
+    }
+
+    [Fact]
+    public async Task A_version_id_that_belongs_to_another_certificate_is_refused()
+    {
+        await using var db = await SeededAsync();
+        var version = await db.CertificateVersions.FirstAsync();
+        var other = Guid.NewGuid();
+
+        var resolution = await Service(db).ResolveAsync(Manifest($"""
+            apiVersion: remotessl/v1
+            kind: CertificateDeployment
+            metadata:
+              certificateId: {other}
+              versionId: {version.Id}
+            spec:
+              targets:
+                - target: web-01
+            """), default);
+
+        Assert.False(resolution.Ok);
+        Assert.Contains(resolution.Errors, e => e.Contains("belongs to certificate"));
+    }
+
+    [Fact]
+    public async Task The_store_path_picks_one_of_several_stores_on_the_same_target()
+    {
+        await using var db = await SeededAsync();
+
+        // A second store on web-01: naming the target alone would now be ambiguous, which is
+        // exactly why §38 puts the store path in the selector.
+        var target = await db.Targets.FirstAsync(t => t.Name == "web-01");
+        var certificate = await db.Certificates.FirstAsync();
+        var second = new CertificateStore
+        {
+            Id = Guid.NewGuid(), TargetId = target.Id, Target = target,
+            StoreType = "pem-file", StorePath = "/etc/ssl/secondary.pem"
+        };
+        db.CertificateStores.Add(second);
+        db.DeploymentBindings.Add(new DeploymentBinding
+        {
+            Id = Guid.NewGuid(), CertificateId = certificate.Id, Certificate = certificate,
+            CertificateStoreId = second.Id, CertificateStore = second
+        });
+        await db.SaveChangesAsync();
+
+        var both = await Service(db).ResolveAsync(Manifest("""
+            apiVersion: remotessl/v1
+            kind: CertificateDeployment
+            spec:
+              certificate:
+                commonName: www.example.com
+              targets:
+                - target: web-01
+            """), default);
+        Assert.Equal(2, both.Targets.Count);
+
+        var narrowed = await Service(db).ResolveAsync(Manifest("""
+            apiVersion: remotessl/v1
+            kind: CertificateDeployment
+            spec:
+              certificate:
+                commonName: www.example.com
+              targets:
+                - target: web-01
+                  store: /etc/ssl/secondary.pem
+            """), default);
+
+        Assert.True(narrowed.Ok, string.Join("; ", narrowed.Errors));
+        Assert.Equal("pem-file:/etc/ssl/secondary.pem", Assert.Single(narrowed.Targets).Store);
+    }
+
+    [Fact]
+    public async Task An_expected_thumbprint_that_no_longer_matches_stops_the_manifest()
+    {
+        await using var db = await SeededAsync();
+
+        // The file states what it believes it is deploying; if it has drifted from the
+        // certificate it names, that is a mistake worth stopping for.
+        var resolution = await Service(db).ResolveAsync(Manifest("""
+            apiVersion: remotessl/v1
+            kind: CertificateDeployment
+            spec:
+              certificate:
+                commonName: www.example.com
+              verification:
+                expectedThumbprint: DEADBEEF
+              targets:
+                - target: web-01
+            """), default);
+
+        Assert.False(resolution.Ok);
+        Assert.Contains(resolution.Errors, e => e.Contains("expectedThumbprint"));
     }
 
     [Fact]

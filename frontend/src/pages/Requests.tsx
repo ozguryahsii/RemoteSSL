@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { apiDelete, apiGet, apiPost } from '../api/client'
-import { useData, post } from './SimplePages'
+import { useData, post, MAX_PAGE, TruncationNotice } from './SimplePages'
 
 interface RequestRow {
   id: string; commonName: string; state: string; keyAlgorithm: string; keySizeOrCurve: number
@@ -18,7 +18,7 @@ interface DomainValidationRow {
 }
 
 export default function Requests() {
-  const [requests, reload] = useData<RequestRow[]>('/api/v1/certificates/requests', 15000)
+  const [requests, reload, , requestTotal] = useData<RequestRow[]>(`/api/v1/certificates/requests?take=${MAX_PAGE}`, 15000)
   const [connectors] = useData<{ id: string; name: string; connectorType: string }[]>('/api/v1/ca-connectors')
   const [cn, setCn] = useState(''); const [sans, setSans] = useState('')
   const [alg, setAlg] = useState('RSA'); const [size, setSize] = useState('2048'); const [caId, setCaId] = useState('')
@@ -132,6 +132,7 @@ export default function Requests() {
   return (
     <div className="page">
       <h1>Certificate Requests</h1>
+      <TruncationNotice shown={(requests ?? []).length} total={requestTotal} />
       <form onSubmit={create}>
         <div className="inline-form">
           <input value={cn} onChange={(e) => setCn(e.target.value)} placeholder="common name *" required />

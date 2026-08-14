@@ -23,16 +23,16 @@ public class DeploymentsController(
     public record CancelRequest(string RequestedBy = "api", string? Reason = null);
 
     [HttpGet]
-    public async Task<IEnumerable<object>> List(CancellationToken ct) =>
+    public async Task<IEnumerable<object>> List([FromQuery] PageRequest page, CancellationToken ct) =>
         await db.DeploymentJobs.AsNoTracking()
-            .OrderByDescending(j => j.CreatedAt).Take(100)
+            .OrderByDescending(j => j.CreatedAt)
             .Select(j => new
             {
                 j.Id, Status = j.Status.ToString(), j.Strategy, j.MaxConcurrency, j.RequestedBy, j.ApprovedBy,
                 Certificate = j.CertificateVersion.Certificate.CommonName,
                 Thumbprint = j.CertificateVersion.Sha256Thumbprint,
                 TargetCount = j.Targets.Count, j.CreatedAt, j.StartedAt, j.CompletedAt, j.CorrelationId
-            }).ToListAsync(ct);
+            }).ToPageAsync(page, Response, ct);
 
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<object>> Get(Guid id, CancellationToken ct)

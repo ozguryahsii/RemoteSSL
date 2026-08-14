@@ -23,16 +23,16 @@ public class RequestsController(IRemoteSslDbContext db, CertificateRequestServic
     public record UploadIssuedRequest(string CertPem, string? ChainPem);
 
     [HttpGet]
-    public async Task<IEnumerable<object>> List(CancellationToken ct) =>
+    public async Task<IEnumerable<object>> List([FromQuery] PageRequest page, CancellationToken ct) =>
         await db.CertificateRequests.AsNoTracking()
-            .OrderByDescending(r => r.CreatedAt).Take(100)
+            .OrderByDescending(r => r.CreatedAt)
             .Select(r => new
             {
                 r.Id, r.CommonName, r.SansJson, r.KeyAlgorithm, r.KeySizeOrCurve, r.KeyOrigin,
                 State = r.State.ToString(), r.CaConnectorId, r.ProviderRequestId,
                 r.ErrorMessage, r.IssuedVersionId, r.RequestedBy, r.Environment, r.OwnerId,
                 r.CreatedAt, r.UpdatedAt
-            }).ToListAsync(ct);
+            }).ToPageAsync(page, Response, ct);
 
     [HttpPost]
     [ServiceFilter(typeof(Idempotency.IdempotencyFilter))]

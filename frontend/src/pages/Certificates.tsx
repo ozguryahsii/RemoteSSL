@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { API_BASE, apiGet, apiPost, apiPatch, apiDelete } from '../api/client'
+import { MAX_PAGE, TruncationNotice } from './SimplePages'
+import { API_BASE, apiGet, apiGetPage, apiPost, apiPatch, apiDelete } from '../api/client'
 
 interface CertificateListItem {
   id: string
@@ -281,9 +282,13 @@ export default function Certificates() {
   const [maxConcurrency, setMaxConcurrency] = useState('2')
   const [plan, setPlan] = useState<DeploymentPlan | null>(null)
   const [planning, setPlanning] = useState(false)
+  const [certTotal, setCertTotal] = useState<number | null>(null)
 
   function reload() {
-    apiGet<CertificateListItem[]>('/api/v1/certificates').then(setCerts).catch(() => {})
+    // Largest page plus the server-side total, so a truncated inventory is never shown as if it
+    // were the whole estate (§27.2).
+    apiGetPage<CertificateListItem[]>(`/api/v1/certificates?take=${MAX_PAGE}`)
+      .then((r) => { setCerts(r.data); setCertTotal(r.total) }).catch(() => {})
   }
   useEffect(reload, [])
 
@@ -371,6 +376,7 @@ export default function Certificates() {
   return (
     <div className="page">
       <h1>{t('nav.certificates')}</h1>
+      <TruncationNotice shown={certs.length} total={certTotal} />
       {/* Inventory columns per design doc §26.1 */}
       <table className="data-table">
         <thead>

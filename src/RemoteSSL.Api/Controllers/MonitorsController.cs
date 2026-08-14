@@ -58,7 +58,7 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         string Sha256Thumbprint, DateTimeOffset NotAfter, int DaysUntilExpiry, string Health);
 
     [HttpGet]
-    public async Task<IEnumerable<MonitorDto>> List(CancellationToken ct)
+    public async Task<IEnumerable<MonitorDto>> List([FromQuery] PageRequest page, CancellationToken ct)
     {
         var monitors = await db.MonitorEndpoints
             .Include(m => m.LastObservedVersion).ThenInclude(v => v!.Certificate)
@@ -66,7 +66,7 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
             .Include(m => m.CertificateLinks)
             .OrderBy(m => m.Host).ThenBy(m => m.Port)
             .AsNoTracking()
-            .ToListAsync(ct);
+            .ToPageAsync(page, Response, ct);
 
         var result = new List<MonitorDto>(monitors.Count);
         foreach (var m in monitors) result.Add(await EnrichAsync(m, ct));

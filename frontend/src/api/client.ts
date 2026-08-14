@@ -31,6 +31,19 @@ export async function apiGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/**
+ * Like apiGet, but also reports how many rows exist in total (X-Total-Count, §27.2).
+ * List endpoints return a page, so without the total a screen cannot tell a short list from a
+ * truncated one — and a monitor the operator cannot see is a monitor they will not renew.
+ */
+export async function apiGetPage<T>(path: string): Promise<{ data: T; total: number | null }> {
+  const res = check(await fetch(`${API_BASE}${path}`, { headers: headers() }))
+  if (!res.ok) throw new Error(`GET ${path} → ${res.status} ${await errorDetail(res)}`)
+  const header = res.headers.get('X-Total-Count')
+  const total = header === null ? null : Number.parseInt(header, 10)
+  return { data: (await res.json()) as T, total: Number.isNaN(total as number) ? null : total }
+}
+
 /** Pulls the server's reason out of a failed response so the UI can show it. */
 async function errorDetail(res: Response): Promise<string> {
   try {

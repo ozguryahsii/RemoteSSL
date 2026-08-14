@@ -1,12 +1,17 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
-import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client'
+import { apiGet, apiGetPage, apiPost, apiPatch, apiDelete } from '../api/client'
 
-export function useData<T>(path: string, refreshMs = 30000): [T | null, () => void, string | null] {
+export function useData<T>(
+  path: string, refreshMs = 30000,
+): [T | null, () => void, string | null, number | null] {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // How many rows exist server-side, when the endpoint is a paged list (§27.2). Screens use it
+  // to say so rather than quietly showing a page as if it were everything.
+  const [total, setTotal] = useState<number | null>(null)
   const reload = useCallback(() => {
-    apiGet<T>(path)
-      .then((d) => { setData(d); setError(null) })
+    apiGetPage<T>(path)
+      .then((r) => { setData(r.data); setTotal(r.total); setError(null) })
       // Surface the failure instead of leaving the screen on "Loading…" forever.
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }, [path])
@@ -15,7 +20,23 @@ export function useData<T>(path: string, refreshMs = 30000): [T | null, () => vo
     const id = setInterval(reload, refreshMs)
     return () => clearInterval(id)
   }, [reload, refreshMs])
-  return [data, reload, error]
+  return [data, reload, error, total]
+}
+
+/** The largest page the API will serve (PageRequest.MaxTake); screens ask for it up front. */
+export const MAX_PAGE = 500
+
+/**
+ * Shown when the server holds more rows than the screen received, so a truncated list is never
+ * mistaken for a complete one.
+ */
+export function TruncationNotice({ shown, total }: { shown: number; total: number | null }) {
+  if (total === null || total <= shown) return null
+  return (
+    <p className="warn small">
+      Showing {shown} of {total}. Narrow the list with a filter to see the rest.
+    </p>
+  )
 }
 
 export const post = apiPost

@@ -13,6 +13,15 @@ public static class DomainEvents
 
     // Discovery and inventory
     public const string CertificateDiscovered = "certificate.discovered";
+
+    /// <summary>
+    /// A probe saw a certificate version on an endpoint (§28.1 CertificateVersionObserved).
+    /// Distinct from <see cref="CertificateDiscovered"/>, which fires once for a certificate the
+    /// inventory had never seen: this one fires whenever the served version changes, which is how
+    /// a consumer notices a certificate that was replaced by something outside RemoteSSL.
+    /// </summary>
+    public const string CertificateVersionObserved = "certificate.version-observed";
+
     public const string CertificateExpiring = "certificate.expiring";
     public const string CertificateExpired = "certificate.expired";
     public const string CertificateRevoked = "certificate.revoked";
@@ -31,6 +40,15 @@ public static class DomainEvents
     public const string DeploymentStarted = "deployment.started";
     public const string DeploymentAwaitingContinue = "deployment.awaiting-continue";
     public const string DeploymentCompleted = "deployment.completed";
+
+    /// <summary>
+    /// One target of a job failed (§28.1 DeploymentTargetFailed). Separate from
+    /// <see cref="DeploymentFailed"/>, which is the job's verdict: in a wave or parallel
+    /// deployment the job carries on, so without this a single failed server would produce no
+    /// event at all until the whole job finished.
+    /// </summary>
+    public const string DeploymentTargetFailed = "deployment.target-failed";
+
     public const string DeploymentFailed = "deployment.failed";
     public const string RollbackStarted = "deployment.rollback-started";
     public const string RollbackCompleted = "deployment.rollback-completed";

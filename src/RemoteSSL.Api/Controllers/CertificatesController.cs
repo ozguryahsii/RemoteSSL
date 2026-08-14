@@ -85,7 +85,8 @@ public class CertificatesController(
     public record MonitorLinkDto(Guid MonitorId, string Host, int Port, string? Sni, DateTimeOffset LastSeenAt);
 
     [HttpGet]
-    public async Task<IEnumerable<CertificateListItem>> List([FromQuery] string? status, CancellationToken ct)
+    public async Task<IEnumerable<CertificateListItem>> List(
+        [FromQuery] string? status, [FromQuery] PageRequest page, CancellationToken ct)
     {
         var query = db.Certificates.AsNoTracking();
         if (Enum.TryParse<CertificateHealthStatus>(status, ignoreCase: true, out var health))
@@ -110,7 +111,7 @@ public class CertificatesController(
                     .FirstOrDefault()
             })
             .OrderBy(x => x.CommonName)
-            .ToListAsync(ct);
+            .ToPageAsync(page, Response, ct);
 
         return items.Select(x => new CertificateListItem(
             x.Id, x.CommonName, x.DisplayName,

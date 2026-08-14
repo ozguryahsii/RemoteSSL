@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { apiGet, apiDelete } from '../api/client'
-import { useData, post } from './SimplePages'
+import { useData, post, MAX_PAGE, TruncationNotice } from './SimplePages'
 
 interface TargetRow {
   id: string; name: string; targetType: string; adapterType: string
@@ -45,7 +45,7 @@ async function patchTarget(id: string, body: unknown): Promise<Response> {
 }
 
 export default function Targets() {
-  const [targets, reload] = useData<TargetRow[]>('/api/v1/targets')
+  const [targets, reload, , targetTotal] = useData<TargetRow[]>(`/api/v1/targets?take=${MAX_PAGE}`)
   const [creds] = useData<{ id: string; name: string }[]>('/api/v1/credentials')
   const [adapters] = useData<AdapterDescriptor[]>('/api/v1/adapters', 600000)
   const [name, setName] = useState(''); const [adapter, setAdapter] = useState('nginx')
@@ -203,6 +203,7 @@ export default function Targets() {
   return (
     <div className="page">
       <h1>Managed Targets</h1>
+      <TruncationNotice shown={(targets ?? []).length} total={targetTotal} />
       <form className="inline-form" onSubmit={add}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="target name" required />
         <select value={adapter} onChange={(e) => pickAdapter(e.target.value)}>

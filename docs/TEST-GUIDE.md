@@ -927,6 +927,35 @@ tatbikat listesi.
 Deployments ekranında **Apply a manifest** düğmesi paneli açar: manifest'i yapıştırın, **Dry run**
 ile ne olacağını görün, sonra **Apply** edin. Apply, dry-run çözümlenmeden aktif olmaz.
 
+Dokümanın §38'deki gösterimi (sertifika ve sürüm id ile, hedefler store/service/alias ile):
+
+```yaml
+apiVersion: remotessl/v1
+kind: CertificateDeployment
+metadata:
+  certificateId: 7f37fdda-910c-42d9-8934-853250912589
+  versionId: 7c3fbc17-61b5-4d0a-abc6-b91e692b31c0   # opsiyonel; yoksa aktif sürüm
+spec:
+  strategy:
+    type: wave                    # sequential | parallel | wave | canary | manual | ha-pair | all-at-once
+    maxConcurrency: 2
+  verification:
+    expectedThumbprint: 9A7F2E...  # dosya sapmışsa manifest durur
+    rollbackOnFailure: true        # false REDDEDİLİR: rollback boru hattının özelliği (§21.1)
+  targets:
+    - target: web01
+      adapter: nginx
+      store: /etc/nginx/ssl
+      service: nginx
+    - target: wls01
+      adapter: java-truststore
+      store: /opt/app/truststore.jks
+      alias: globalsign-r46
+```
+
+Alternatif gösterim — git'te duran ve her yenilemede elle düzenlenmesi gerekmeyen bir dosya için
+sertifika adıyla ve etiket benzeri seçicilerle:
+
 ```yaml
 apiVersion: remotessl/v1
 kind: CertificateDeployment
@@ -939,9 +968,9 @@ spec:
   targets:                        # seçiciler OR'lanır, bir seçicinin alanları AND'lenir
     - environment: production
       adapter: nginx
-    - name: lb-01
+    - target: lb-01
   strategy:
-    type: wave                    # sequential | parallel | wave | canary | manual | ha-pair | all-at-once
+    type: wave
     maxConcurrency: 2
   verification:
     remoteTlsVerify: true
@@ -950,6 +979,9 @@ spec:
   approval:
     required: true
 ```
+
+> Sertifika **ya** `metadata.certificateId` ile **ya da** `spec.certificate` ile adlandırılır;
+> ikisi birden verilirse manifest reddedilir.
 
 API ile:
 
@@ -975,7 +1007,43 @@ Doğrulanması beklenenler:
   `validateCmd`, `reloadCmd` gibi mevcut ayarlar korunur.
 - Bozuk YAML satır/sütun ile, şema hataları ise **tek seferde hepsi** raporlanır.
 
-## 27. Test paketini çalıştırmak: lab ve ölçek (F22)
+## 27. API ilkeleri: Correlation-ID ve sayfalama (§27.2)
+
+**Correlation-ID** — gönderdiğinizi korur, göndermezseniz üretip döner:
+
+```bash
+curl -sD - -o /dev/null -H 'Correlation-ID: my-ci-run-42' http://localhost:5200/api/v1/certificates | grep -i correlation
+# Correlation-ID: my-ci-run-42
+
+curl -sD - -o /dev/null http://localhost:5200/api/v1/certificates | grep -i correlation
+# Correlation-ID: a4c269e49c22462fa26680952450c6b7
+```
+
+Bu id audit satırlarına, deployment/runner job'larına ve OpenTelemetry span'lerine işlenir;
+`GET /api/v1/audit/trace/{correlationId}` ile tüm zincir tek ekranda görülür (§32.2).
+
+**Sayfalama** — tüm liste uçlarında `skip`/`take`, toplam `X-Total-Count` header'ında:
+
+```bash
+curl -sD - -o /dev/null "http://localhost:5200/api/v1/certificates?take=2" | grep -i x-total-count
+# X-Total-Count: 7
+curl -s "http://localhost:5200/api/v1/certificates?skip=2&take=2"
+```
+
+`take` varsayılanı 100, tavanı 500. UI en büyük sayfayı ister ve sunucudaki toplam gösterilenden
+fazlaysa **"Showing N of M"** uyarısı çıkarır — kesilmiş bir liste hiçbir zaman tam liste gibi
+görünmez.
+
+**Runner yetenekleri** (§8.2) — bildirilen liste tespit edilir, beyan edilmez:
+
+```bash
+curl -s http://localhost:5200/api/v1/runners | python3 -m json.tool | grep -A3 capabilities
+```
+
+`openssl`, `keytool`, `orapki`, `powershell` yalnızca runner makinesinde gerçekten varsa listelenir.
+JDK'sı olmayan bir runner `keytool` gerektiren bir işi kabul etmez.
+
+## 28. Test paketini çalıştırmak: lab ve ölçek (F22)
 
 Test paketi varsayılan olarak **hermetiktir** — hiçbir dış bağımlılık istemez:
 

@@ -26,25 +26,17 @@ public class Worker(
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private Guid _runnerId;
     private string _apiKey = string.Empty;
-    private static readonly string[] Capabilities =
-    [
-        "ssh", "sftp", "linux-deploy", "windows-deploy", "windows-ccs", "generic-ssh",
-        "java-keystore", "java-inventory", "oracle-wallet", "f5-bigip"
-    ];
+    /// <summary>
+    /// §8.2 capability list. Detected rather than declared — see <see cref="RunnerCapabilities"/>.
+    /// </summary>
+    private static IReadOnlyList<string> Capabilities => RunnerCapabilities.Detect();
 
     /// <summary>
     /// Adapter versions this runner ships, reported at registration and heartbeat so the
     /// control plane can pin versions before dispatching work (§30.2 supply chain).
     /// </summary>
-    private static readonly Dictionary<string, string> AdapterVersions = new()
-    {
-        ["nginx"] = "1.0.0", ["apache"] = "1.0.0", ["haproxy"] = "1.0.0", ["generic-file"] = "1.0.0",
-        ["generic-ssh"] = "1.0.0",
-        ["iis"] = "1.0.0", ["windows-cert-store"] = "1.0.0", ["windows-ccs"] = "1.0.0",
-        ["java-keystore"] = "1.0.0", ["java-truststore"] = "1.0.0", ["oracle-wallet"] = "1.0.0",
-        ["f5-bigip"] = "1.0.0", ["fortigate"] = "1.0.0", ["paloalto"] = "1.0.0",
-        ["citrix-adc"] = "1.0.0", ["cisco-ise"] = "1.0.0"
-    };
+    private static readonly Dictionary<string, string> AdapterVersions =
+        RunnerCapabilities.Adapters.ToDictionary(a => a, _ => "1.0.0");
 
     private System.Security.Cryptography.RSA? _identityKey;
     private System.Security.Cryptography.X509Certificates.X509Certificate2? _identityCertificate;

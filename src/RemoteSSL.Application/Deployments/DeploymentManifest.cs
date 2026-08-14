@@ -30,6 +30,18 @@ public sealed class DeploymentManifest
 
 public sealed class ManifestMetadata
 {
+    /// <summary>
+    /// The certificate to deploy, as the §38 example names it. Accepts a RemoteSSL id (GUID) so a
+    /// manifest generated from the API round-trips exactly.
+    /// </summary>
+    public string? CertificateId { get; set; }
+
+    /// <summary>
+    /// The specific version to deploy (§38). When omitted the active version is used, so a
+    /// manifest kept in git does not have to be edited on every renewal.
+    /// </summary>
+    public string? VersionId { get; set; }
+
     /// <summary>Free-text name for the deployment; carried into the job as the requester note.</summary>
     public string? Name { get; set; }
     public string? Description { get; set; }
@@ -72,13 +84,34 @@ public sealed class ManifestCertificate
 /// </summary>
 public sealed class ManifestTargetSelector
 {
-    /// <summary>Exact target name. Mutually exclusive with the label-style fields below.</summary>
+    /// <summary>Exact target name, spelled as the §38 example spells it.</summary>
+    public string? Target { get; set; }
+
+    /// <summary>Alias for <see cref="Target"/>, so both spellings read naturally in a file.</summary>
     public string? Name { get; set; }
+
     public string? Environment { get; set; }
     public string? Adapter { get; set; }
+
+    /// <summary>
+    /// Store path on the target (§38: <c>/etc/nginx/ssl</c>, <c>LocalMachine/My</c>,
+    /// <c>/opt/app/truststore.jks</c>). A target can carry several stores, so this is what picks
+    /// one of them — without it a target with two keystores would be ambiguous.
+    /// </summary>
+    public string? Store { get; set; }
+
+    /// <summary>Keystore alias (§38: <c>globalsign-r46</c>); narrows further within a store.</summary>
+    public string? Alias { get; set; }
+
+    /// <summary>Service the binding activates (§38: <c>nginx</c>).</summary>
+    public string? Service { get; set; }
+
     public string? Group { get; set; }
     /// <summary>"standby" | "active" — restricts to one side of an HA pair.</summary>
     public string? HaRole { get; set; }
+
+    /// <summary>The target name however it was spelled.</summary>
+    public string? TargetName => string.IsNullOrWhiteSpace(Target) ? Name : Target;
 }
 
 public sealed class ManifestStrategy
@@ -95,6 +128,19 @@ public sealed class ManifestStrategy
 /// </summary>
 public sealed class ManifestVerification
 {
+    /// <summary>
+    /// The thumbprint the manifest expects to deploy (§38). Asserted against the version that was
+    /// actually resolved: a file that has drifted from the certificate it names is refused rather
+    /// than quietly deploying something else.
+    /// </summary>
+    public string? ExpectedThumbprint { get; set; }
+
+    /// <summary>
+    /// §38. Automatic rollback is a property of the pipeline (§21.1), so only <c>true</c> is
+    /// accepted; <c>false</c> is refused explicitly rather than silently ignored.
+    /// </summary>
+    public bool? RollbackOnFailure { get; set; }
+
     /// <summary>Probe the endpoint after activation and require the new thumbprint. Default true.</summary>
     public bool? RemoteTlsVerify { get; set; }
     public string? Host { get; set; }
@@ -179,18 +225,41 @@ public static class ManifestParser
             return errors;
         }
 
+        // The certificate can be named two ways: metadata.certificateId/versionId as in the §38
+        // example, or spec.certificate by common name/thumbprint for a file that should keep
+        // working across renewals. Exactly one route, so a manifest can never name two.
         var certificate = spec.Certificate;
-        if (certificate is null)
+        var byMetadata = !string.IsNullOrWhiteSpace(manifest.Metadata?.CertificateId)
+                         || !string.IsNullOrWhiteSpace(manifest.Metadata?.VersionId);
+        var bySpec = certificate is not null
+                     && (!string.IsNullOrWhiteSpace(certificate.CommonName)
+                         || !string.IsNullOrWhiteSpace(certificate.Thumbprint));
+
+        if (!byMetadata && !bySpec)
+            errors.Add("The certificate is not named: give metadata.certificateId (with optional "
+                       + "versionId), or spec.certificate with commonName or thumbprint.");
+
+        if (byMetadata && bySpec)
+            errors.Add("The certificate is named twice, in metadata and in spec.certificate; "
+                       + "give exactly one.");
+
+        if (byMetadata)
         {
-            errors.Add("spec.certificate is required.");
+            foreach (var (field, value) in new[]
+                     {
+                         ("metadata.certificateId", manifest.Metadata!.CertificateId),
+                         ("metadata.versionId", manifest.Metadata!.VersionId)
+                     })
+            {
+                if (!string.IsNullOrWhiteSpace(value) && !Guid.TryParse(value, out _))
+                    errors.Add($"{field} must be a RemoteSSL id (found '{value}').");
+            }
         }
-        else
+
+        if (certificate is not null)
         {
-            var identifiers = new[] { certificate.CommonName, certificate.Thumbprint }
-                .Count(v => !string.IsNullOrWhiteSpace(v));
-            if (identifiers == 0)
-                errors.Add("spec.certificate needs either commonName or thumbprint.");
-            if (identifiers > 1)
+            if (!string.IsNullOrWhiteSpace(certificate.CommonName)
+                && !string.IsNullOrWhiteSpace(certificate.Thumbprint))
                 errors.Add("spec.certificate has both commonName and thumbprint; give exactly one.");
 
             if (certificate.Version is { } version && !string.IsNullOrWhiteSpace(version)
@@ -208,11 +277,16 @@ public static class ManifestParser
             var selector = spec.Targets[i];
             var hasCriteria = new[]
             {
-                selector.Name, selector.Environment, selector.Adapter, selector.Group, selector.HaRole
+                selector.TargetName, selector.Environment, selector.Adapter, selector.Store,
+                selector.Alias, selector.Service, selector.Group, selector.HaRole
             }.Any(v => !string.IsNullOrWhiteSpace(v));
 
             if (!hasCriteria)
                 errors.Add($"spec.targets[{i}] is empty; a selector with no criteria would match every target.");
+
+            if (!string.IsNullOrWhiteSpace(selector.Target) && !string.IsNullOrWhiteSpace(selector.Name)
+                && !string.Equals(selector.Target, selector.Name, StringComparison.OrdinalIgnoreCase))
+                errors.Add($"spec.targets[{i}] gives both target and name, and they disagree.");
 
             if (!string.IsNullOrWhiteSpace(selector.HaRole)
                 && selector.HaRole is not ("standby" or "active"))
@@ -229,6 +303,13 @@ public static class ManifestParser
 
         if (spec.Verification?.Port is { } port && port is < 1 or > 65535)
             errors.Add($"spec.verification.port must be between 1 and 65535 (found {port}).");
+
+        // Refusing this is safer than accepting a flag that does nothing: a file that says
+        // rollback is off, applied to a pipeline that always rolls back, would mislead whoever
+        // reads it during an incident.
+        if (spec.Verification?.RollbackOnFailure is false)
+            errors.Add("spec.verification.rollbackOnFailure cannot be false: automatic rollback is "
+                       + "part of the deployment pipeline and cannot be turned off per manifest.");
 
         return errors;
     }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client'
-import { useData, post } from './SimplePages'
+import { apiGet, apiGetPage, apiPost, apiPatch, apiDelete } from '../api/client'
+import { useData, post, MAX_PAGE, TruncationNotice } from './SimplePages'
 
 interface ObservedCert {
   certificateId: string
@@ -184,8 +184,14 @@ export default function Monitors() {
 
   const [runners] = useData<{ id: string; name: string }[]>('/api/v1/runners')
 
+  const [monitorTotal, setMonitorTotal] = useState<number | null>(null)
+
   const reload = useCallback(() => {
-    apiGet<Monitor[]>('/api/v1/monitors').then(setMonitors).catch((e) => setError(String(e)))
+    // Ask for the largest page the API serves and keep the server-side total: at ten thousand
+    // endpoints (NFR-004) a monitor the operator cannot see is a monitor nobody renews.
+    apiGetPage<Monitor[]>(`/api/v1/monitors?take=${MAX_PAGE}`)
+      .then((r) => { setMonitors(r.data); setMonitorTotal(r.total) })
+      .catch((e) => setError(String(e)))
   }, [])
 
   useEffect(() => {
@@ -255,6 +261,7 @@ export default function Monitors() {
   return (
     <div className="page">
       <h1>{t('nav.monitors')}</h1>
+      <TruncationNotice shown={monitors.length} total={monitorTotal} />
 
       <form className="inline-form" onSubmit={addMonitor}>
         <input value={host} onChange={(e) => setHost(e.target.value)}

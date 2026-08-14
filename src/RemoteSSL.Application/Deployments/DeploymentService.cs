@@ -537,6 +537,22 @@ public class DeploymentService(
             jt.CompletedAt = DateTimeOffset.UtcNow;
 
             var job = jt.DeploymentJob;
+
+            // §28.1 DeploymentTargetFailed: per-target, not per-job. A wave or parallel
+            // deployment carries on after one server fails, so without this the failure would
+            // be invisible to integrations until the whole job finished — possibly much later.
+            if (!success)
+                notifier.Notify(Events.DomainEvents.DeploymentTargetFailed, new
+                {
+                    jobId = job.Id,
+                    targetId = jt.Id,
+                    target = jt.DeploymentBinding.CertificateStore.Target.Name,
+                    adapter = jt.DeploymentBinding.CertificateStore.Target.AdapterType,
+                    environment = jt.DeploymentBinding.CertificateStore.Target.Environment,
+                    rolledBack,
+                    remoteVerified,
+                    correlationId = job.CorrelationId
+                });
             var all = job.Targets;
 
             // Wave orchestration (§21.4): dispatch the next batch unless we should stop.

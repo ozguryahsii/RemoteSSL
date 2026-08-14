@@ -158,6 +158,26 @@ public class MonitorProbeService(
         {
             var parsed = CertificateParser.Parse(result.LeafDer);
             var version = await CorrelateAsync(parsed, result.ChainDer, now, ct);
+
+            // §28.1 CertificateVersionObserved: emitted when the version this endpoint serves
+            // changes, not on every probe — otherwise a healthy estate would produce one event
+            // per monitor per tick and the signal would be worthless.
+            var previouslyObserved = vantage == ProbeVantage.External
+                ? monitor.LastObservedVersionId
+                : monitor.InternalObservedVersionId;
+            if (previouslyObserved != version.Id)
+                notifier?.Notify(Events.DomainEvents.CertificateVersionObserved, new
+                {
+                    monitorEndpointId = monitor.Id,
+                    endpoint = $"{monitor.Host}:{monitor.Port}",
+                    vantage = vantage.ToString().ToLowerInvariant(),
+                    certificateId = version.CertificateId,
+                    certificateVersionId = version.Id,
+                    thumbprint = version.Sha256Thumbprint,
+                    notAfter = version.NotAfter,
+                    previousVersionId = previouslyObserved
+                });
+
             if (vantage == ProbeVantage.External)
             {
                 monitor.LastObservedVersionId = version.Id;
