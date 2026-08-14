@@ -411,6 +411,41 @@ curl -s -X POST http://localhost:5200/api/v1/artifacts/chain/analyze -H 'Content
 
 Eksik intermediate varsa deployment için chain üretimi hata verir — bozuk chain sahaya çıkmaz.
 
+## 18. Discovery ve monitoring derinliği (F14) — yeni
+
+**Sertifika alanları** (§6.2): **Certificates → sertifika → Overview → Versions** altında artık
+Key Usage, Extended Key Usage, Basic Constraints (CA / end-entity, path length), OCSP, AIA
+caIssuers ve CRL dağıtım noktaları görünür. Denemek için bu alanları taşıyan bir sertifika üretip
+yükleyin:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout f.key -out f.crt -days 120 -nodes \
+  -subj "/CN=fields.company.com" \
+  -addext "keyUsage=digitalSignature,keyEncipherment" \
+  -addext "extendedKeyUsage=serverAuth,clientAuth" \
+  -addext "authorityInfoAccess=OCSP;URI:http://ocsp.example/,caIssuers;URI:http://ca.example/i.crt" \
+  -addext "crlDistributionPoints=URI:http://crl.example/list.crl"
+# Certificates ekranındaki upload ile veya POST /api/v1/artifacts/upload ile yükleyin
+```
+
+**Cipher bilgisi**: Monitors ekranında her vantage hücresinde TLS sürümünün yanında görüşülen
+cipher suite yazar (ör. `Tls13 · TLS_AES_256_GCM_SHA384`). İç vantage için runner raporlar.
+
+**Probe policy** (§5.2): **Monitors → Edit** satırında interval'in yanında **timeout (s)** ve
+**retries** alanları vardır. Retry yalnızca geçici hatalarda (timeout / bağlantı reddi) çalışır;
+DNS hatası veya handshake sonucu cevabın kendisidir, tekrar edilmez.
+
+**Uygulama health-check** (§2.1): aynı satırda **Health check URL** ve **expect** (beklenen HTTP
+kodu; boş bırakılırsa 2xx/3xx yeterli). Sonuç Monitors tablosunda **App health** sütununda
+görünür ve TLS gözlemini etkilemez — 500 dönen bir uygulama, sertifika gözlemini bozmaz.
+Başarısızlıkta `monitor.health-check-failed` bildirimi üretilir.
+
+```bash
+curl -s -X POST http://localhost:5200/api/v1/monitors -H 'Content-Type: application/json' \
+  -d '{"host":"app.company.com","port":443,"timeoutSeconds":5,"retryCount":1,
+       "healthCheckUrl":"https://app.company.com/health","healthCheckExpectedStatus":200}'
+```
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

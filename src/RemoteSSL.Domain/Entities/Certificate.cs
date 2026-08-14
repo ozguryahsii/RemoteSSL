@@ -44,6 +44,20 @@ public class CertificateVersion
     public string PublicKeyAlgorithm { get; set; } = string.Empty;
     public int KeySize { get; set; }
     public string SignatureAlgorithm { get; set; } = string.Empty;
+
+    // --- X.509 extension metadata captured at parse time (§6.2) ---
+    public bool IsCertificateAuthority { get; set; }
+    public int? PathLengthConstraint { get; set; }
+    /// <summary>JSON array of key usage names.</summary>
+    public string KeyUsagesJson { get; set; } = "[]";
+    /// <summary>JSON array of extended key usage names (server auth, client auth…).</summary>
+    public string ExtendedKeyUsagesJson { get; set; } = "[]";
+    /// <summary>JSON array of AIA caIssuers URLs.</summary>
+    public string CaIssuerUrlsJson { get; set; } = "[]";
+    /// <summary>JSON array of AIA OCSP responder URLs.</summary>
+    public string OcspUrlsJson { get; set; } = "[]";
+    /// <summary>JSON array of CRL distribution point URLs.</summary>
+    public string CrlDistributionPointsJson { get; set; } = "[]";
     public CertificateVersionStatus Status { get; set; }
 
     /// <summary>PEM of the leaf certificate (public material only — never key material).</summary>

@@ -16,7 +16,24 @@ public class TlsProber : ITlsProber
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
 
-    public async Task<TlsProbeResult> ProbeAsync(string host, int port, string? sni, CancellationToken ct)
+    public async Task<TlsProbeResult> ProbeAsync(string host, int port, string? sni, CancellationToken ct,
+        TimeSpan? timeout = null, int retries = 0)
+    {
+        // Retries only help transient faults; a DNS or handshake result is an answer, not a
+        // hiccup, so those are returned on the first attempt (§29.2).
+        TlsProbeResult result;
+        var attempt = 0;
+        while (true)
+        {
+            result = await ProbeOnceAsync(host, port, sni, timeout ?? ConnectTimeout, ct);
+            var transient = result.Status is ProbeStatus.Timeout or ProbeStatus.ConnectionFailed;
+            if (!transient || attempt++ >= retries || ct.IsCancellationRequested) return result;
+            await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), ct);
+        }
+    }
+
+    private static async Task<TlsProbeResult> ProbeOnceAsync(
+        string host, int port, string? sni, TimeSpan timeout, CancellationToken ct)
     {
         byte[]? leafDer = null;
         var chainDer = new List<byte[]>();
@@ -27,7 +44,7 @@ public class TlsProber : ITlsProber
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(ConnectTimeout);
+            timeoutCts.CancelAfter(timeout);
 
             using var tcp = new TcpClient();
             try
@@ -93,7 +110,8 @@ public class TlsProber : ITlsProber
             }
 
             return new TlsProbeResult(ProbeStatus.Success, null, leafDer, chainDer,
-                ssl.SslProtocol.ToString(), hostnameValid, chainValid, chainError);
+                ssl.SslProtocol.ToString(), hostnameValid, chainValid, chainError,
+                CipherSuiteName(ssl));
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -102,5 +120,21 @@ public class TlsProber : ITlsProber
 
         TlsProbeResult Fail(ProbeStatus status, string error) =>
             new(status, error, null, [], null, null, null, null);
+    }
+
+    /// <summary>
+    /// The negotiated cipher suite. NegotiatedCipherSuite is unsupported on some platforms
+    /// (it throws PlatformNotSupportedException), so its absence is not an error.
+    /// </summary>
+    private static string? CipherSuiteName(SslStream ssl)
+    {
+        try
+        {
+            return ssl.NegotiatedCipherSuite.ToString();
+        }
+        catch (PlatformNotSupportedException)
+        {
+            return null;
+        }
     }
 }

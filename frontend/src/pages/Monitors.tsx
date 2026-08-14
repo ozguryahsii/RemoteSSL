@@ -21,6 +21,7 @@ interface Vantage {
   chainValid: boolean | null
   chainError: string | null
   certificate: ObservedCert | null
+  cipherSuite: string | null
 }
 
 interface Expected {
@@ -61,6 +62,15 @@ interface Monitor {
   expected: Expected | null
   driftStatus: string
   bindings: BindingLink[]
+  timeoutSeconds: number | null
+  retryCount: number
+  protocol: string
+  healthCheckUrl: string | null
+  healthCheckExpectedStatus: number | null
+  healthCheckStatus: string
+  healthCheckDetail: string | null
+  healthCheckAt: string | null
+  healthCheckLatencyMs: number | null
 }
 
 function healthClass(health: string | undefined): string {
@@ -77,6 +87,15 @@ function verdictClass(v: string): string {
     case 'Mismatch': return 'bad'
     case 'NotConfigured': return 'muted'
     default: return 'warn'
+  }
+}
+
+function healthClassFor(status: string): string {
+  switch (status) {
+    case 'Healthy': return 'ok'
+    case 'Unhealthy': return 'bad'
+    case 'Unreachable': return 'bad'
+    default: return 'muted'
   }
 }
 
@@ -137,6 +156,9 @@ function VantageCell({ v, enabled, label }: { v: Vantage; enabled: boolean; labe
           {v.chainValid === false && <div className="warn">chain: {v.chainError}</div>}
         </>
       )}
+      {(v.tlsProtocol || v.cipherSuite) && (
+        <div className="muted">{[v.tlsProtocol, v.cipherSuite].filter(Boolean).join(' · ')}</div>
+      )}
       {v.probeAt && <div className="muted">{new Date(v.probeAt).toLocaleString()}</div>}
     </div>
   )
@@ -157,6 +179,8 @@ export default function Monitors() {
   const [eSni, setESni] = useState(''); const [eInterval, setEInterval] = useState('')
   const [eRunner, setERunner] = useState('')
   const [eExternal, setEExternal] = useState(true)
+  const [eTimeout, setETimeout] = useState(''); const [eRetries, setERetries] = useState('0')
+  const [eHealthUrl, setEHealthUrl] = useState(''); const [eHealthStatus, setEHealthStatus] = useState('')
 
   const [runners] = useData<{ id: string; name: string }[]>('/api/v1/runners')
 
@@ -204,6 +228,9 @@ export default function Monitors() {
     setEditing(m.id); setEHost(m.host); setEPort(String(m.port))
     setESni(m.sni ?? ''); setEInterval(m.probeIntervalMinutes ? String(m.probeIntervalMinutes) : '')
     setERunner(m.runnerId ?? ''); setEExternal(m.externalProbeEnabled)
+    setETimeout(m.timeoutSeconds ? String(m.timeoutSeconds) : ''); setERetries(String(m.retryCount))
+    setEHealthUrl(m.healthCheckUrl ?? '')
+    setEHealthStatus(m.healthCheckExpectedStatus ? String(m.healthCheckExpectedStatus) : '')
   }
 
   async function saveEdit(id: string) {
@@ -211,6 +238,10 @@ export default function Monitors() {
       host: eHost, port: Number(ePort), sni: eSni || null, clearSni: !eSni,
       probeIntervalMinutes: eInterval ? Number(eInterval) : null,
       runnerId: eRunner || null, clearRunner: !eRunner, externalProbeEnabled: eExternal,
+      timeoutSeconds: eTimeout ? Number(eTimeout) : null, clearTimeout: !eTimeout,
+      retryCount: Number(eRetries) || 0,
+      healthCheckUrl: eHealthUrl || null, clearHealthCheck: !eHealthUrl,
+      healthCheckExpectedStatus: eHealthStatus ? Number(eHealthStatus) : null,
     })
     if (!res.ok) { setError(`Update failed (${res.status})`); return }
     setEditing(null); reload()
@@ -258,6 +289,7 @@ export default function Monitors() {
             <th>Outside (control plane)</th>
             <th>Inside (runner)</th>
             <th>Comparison</th>
+            <th>App health</th>
             <th>Expected / target</th>
             <th></th>
           </tr>
@@ -275,11 +307,23 @@ export default function Monitors() {
                 </select>
               </td>
               <td colSpan={4} className="small muted">
-                Probe interval (min): <input value={eInterval} onChange={(e) => setEInterval(e.target.value)}
-                  placeholder="default" type="number" style={{ width: 90 }} />
-                <label style={{ marginLeft: 10 }}>
-                  <input type="checkbox" checked={eExternal} onChange={(e) => setEExternal(e.target.checked)} /> probe externally
-                </label>
+                <div>
+                  Interval (min): <input value={eInterval} onChange={(e) => setEInterval(e.target.value)}
+                    placeholder="default" type="number" style={{ width: 80 }} />
+                  {' '}timeout (s): <input value={eTimeout} onChange={(e) => setETimeout(e.target.value)}
+                    placeholder="default" type="number" min={1} max={120} style={{ width: 80 }} />
+                  {' '}retries: <input value={eRetries} onChange={(e) => setERetries(e.target.value)}
+                    type="number" min={0} max={5} style={{ width: 60 }} />
+                  <label style={{ marginLeft: 10 }}>
+                    <input type="checkbox" checked={eExternal} onChange={(e) => setEExternal(e.target.checked)} /> probe externally
+                  </label>
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  Health check URL: <input value={eHealthUrl} onChange={(e) => setEHealthUrl(e.target.value)}
+                    placeholder="https://app.example/health" style={{ width: 240 }} />
+                  {' '}expect: <input value={eHealthStatus} onChange={(e) => setEHealthStatus(e.target.value)}
+                    placeholder="any 2xx/3xx" type="number" style={{ width: 90 }} />
+                </div>
               </td>
               <td className="actions">
                 <button onClick={() => saveEdit(m.id)}>Save</button>
@@ -301,6 +345,15 @@ export default function Monitors() {
                 <span className={verdictClass(m.verdict)}>{m.verdict}</span>
                 <div className="muted small" style={{ maxWidth: 320 }}>{m.verdictDetail}</div>
               </td>
+              <td className="small">
+                {m.healthCheckUrl ? (
+                  <>
+                    <span className={healthClassFor(m.healthCheckStatus)}>{m.healthCheckStatus}</span>
+                    <div className="muted">{m.healthCheckDetail ?? m.healthCheckUrl}</div>
+                    {m.healthCheckLatencyMs !== null && <div className="muted">{m.healthCheckLatencyMs} ms</div>}
+                  </>
+                ) : <span className="muted">not configured</span>}
+              </td>
               <td><ExpectedCell m={m} /></td>
               <td className="actions">
                 <button onClick={() => probe(m.id)} disabled={busy === m.id}>
@@ -313,7 +366,7 @@ export default function Monitors() {
             </tr>
           ))}
           {monitors.length === 0 && (
-            <tr><td colSpan={6} className="muted">{t('monitors.empty')}</td></tr>
+            <tr><td colSpan={7} className="muted">{t('monitors.empty')}</td></tr>
           )}
         </tbody>
       </table>

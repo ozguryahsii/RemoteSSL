@@ -12,15 +12,23 @@ namespace RemoteSSL.Api.Controllers;
 public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService probeService) : ControllerBase
 {
     public record CreateMonitorRequest(string Host, int Port = 443, string? Sni = null, int? ProbeIntervalMinutes = null,
-        Guid? RunnerId = null, bool ExternalProbeEnabled = true);
+        Guid? RunnerId = null, bool ExternalProbeEnabled = true,
+        int? TimeoutSeconds = null, int RetryCount = 0,
+        string? HealthCheckUrl = null, int? HealthCheckExpectedStatus = null);
     public record UpdateMonitorRequest(bool? Enabled, int? ProbeIntervalMinutes, string? Host, int? Port, string? Sni,
-        bool ClearSni = false, Guid? RunnerId = null, bool ClearRunner = false, bool? ExternalProbeEnabled = null);
+        bool ClearSni = false, Guid? RunnerId = null, bool ClearRunner = false, bool? ExternalProbeEnabled = null,
+        int? TimeoutSeconds = null, bool ClearTimeout = false, int? RetryCount = null,
+        string? HealthCheckUrl = null, bool ClearHealthCheck = false, int? HealthCheckExpectedStatus = null);
 
     public record MonitorDto(
         Guid Id, string Host, int Port, string? Sni, bool Enabled, int? ProbeIntervalMinutes, Guid? RunnerId,
         bool ExternalProbeEnabled,
         VantageDto External, VantageDto Internal,
         string Verdict, string VerdictDetail,
+        // §5.2 probe policy and §2.1 application reachability
+        int? TimeoutSeconds, int RetryCount, string Protocol,
+        string? HealthCheckUrl, int? HealthCheckExpectedStatus, string HealthCheckStatus,
+        string? HealthCheckDetail, DateTimeOffset? HealthCheckAt, int? HealthCheckLatencyMs,
         // §26.3 endpoint screen: expected certificate, drift, managed target and binding
         ExpectedDto? Expected, string DriftStatus, IReadOnlyList<BindingLinkDto> Bindings,
         // Legacy flat fields (external vantage) kept for existing consumers.
@@ -42,7 +50,8 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
     /// <summary>One vantage's view of the endpoint (outside vs inside).</summary>
     public record VantageDto(
         string ProbeStatus, string? ProbeError, DateTimeOffset? ProbeAt, string? TlsProtocol,
-        bool? HostnameValid, bool? ChainValid, string? ChainError, ObservedCertDto? Certificate);
+        bool? HostnameValid, bool? ChainValid, string? ChainError, ObservedCertDto? Certificate,
+        string? CipherSuite);
 
     public record ObservedCertDto(
         Guid CertificateId, Guid VersionId, string CommonName, string IssuerDn,
@@ -144,6 +153,10 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
             ProbeIntervalMinutes = request.ProbeIntervalMinutes,
             RunnerId = request.RunnerId,
             ExternalProbeEnabled = request.ExternalProbeEnabled,
+            TimeoutSeconds = request.TimeoutSeconds,
+            RetryCount = Math.Clamp(request.RetryCount, 0, 5),
+            HealthCheckUrl = string.IsNullOrWhiteSpace(request.HealthCheckUrl) ? null : request.HealthCheckUrl.Trim(),
+            HealthCheckExpectedStatus = request.HealthCheckExpectedStatus,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         };
@@ -168,6 +181,22 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         if (request.ClearRunner) monitor.RunnerId = null;
         else if (request.RunnerId is not null) monitor.RunnerId = request.RunnerId;
         if (request.ExternalProbeEnabled.HasValue) monitor.ExternalProbeEnabled = request.ExternalProbeEnabled.Value;
+        if (request.ClearTimeout) monitor.TimeoutSeconds = null;
+        else if (request.TimeoutSeconds is { } t) monitor.TimeoutSeconds = Math.Clamp(t, 1, 120);
+        if (request.RetryCount is { } r) monitor.RetryCount = Math.Clamp(r, 0, 5);
+        if (request.ClearHealthCheck)
+        {
+            monitor.HealthCheckUrl = null;
+            monitor.HealthCheckExpectedStatus = null;
+            monitor.HealthCheckStatus = "NotConfigured";
+            monitor.HealthCheckDetail = null;
+            monitor.HealthCheckLatencyMs = null;
+        }
+        else if (!string.IsNullOrWhiteSpace(request.HealthCheckUrl))
+        {
+            monitor.HealthCheckUrl = request.HealthCheckUrl.Trim();
+            monitor.HealthCheckExpectedStatus = request.HealthCheckExpectedStatus;
+        }
         monitor.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         return ToDto(monitor);
@@ -230,10 +259,12 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
     {
         var external = new VantageDto(
             m.LastProbeStatus.ToString(), m.LastProbeError, m.LastProbeAt, m.LastTlsProtocol,
-            m.LastHostnameValid, m.LastChainValid, m.LastChainError, ToCertDto(m.LastObservedVersion));
+            m.LastHostnameValid, m.LastChainValid, m.LastChainError, ToCertDto(m.LastObservedVersion),
+            m.LastCipherSuite);
         var inside = new VantageDto(
             m.InternalProbeStatus.ToString(), m.InternalProbeError, m.InternalProbeAt, m.InternalTlsProtocol,
-            m.InternalHostnameValid, m.InternalChainValid, m.InternalChainError, ToCertDto(m.InternalObservedVersion));
+            m.InternalHostnameValid, m.InternalChainValid, m.InternalChainError, ToCertDto(m.InternalObservedVersion),
+            m.InternalCipherSuite);
 
         var (verdict, detail) = VantageComparison.Compare(
             internalConfigured: m.RunnerId is not null,
@@ -243,6 +274,9 @@ public class MonitorsController(IRemoteSslDbContext db, MonitorProbeService prob
         return new MonitorDto(
             m.Id, m.Host, m.Port, m.Sni, m.Enabled, m.ProbeIntervalMinutes, m.RunnerId, m.ExternalProbeEnabled,
             external, inside, verdict.ToString(), detail,
+            m.TimeoutSeconds, m.RetryCount, m.Protocol,
+            m.HealthCheckUrl, m.HealthCheckExpectedStatus, m.HealthCheckStatus,
+            m.HealthCheckDetail, m.HealthCheckAt, m.HealthCheckLatencyMs,
             null, "Unknown", [],
             m.LastProbeStatus.ToString(), m.LastProbeError, m.LastProbeAt,
             m.LastTlsProtocol, m.LastHostnameValid, m.LastChainValid, m.LastChainError,

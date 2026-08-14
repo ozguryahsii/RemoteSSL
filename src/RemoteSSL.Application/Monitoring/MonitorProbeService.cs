@@ -18,7 +18,8 @@ public class MonitorProbeService(
     ITlsProber prober,
     INotificationSink notifier,
     ILogger<MonitorProbeService> logger,
-    MetricsRecorder? metrics = null)
+    MetricsRecorder? metrics = null,
+    IHttpHealthChecker? healthChecker = null)
 {
     /// <summary>Probes from the control plane (external vantage) and folds the result in.</summary>
     public async Task<MonitorEndpoint> ProbeAsync(Guid monitorId, CancellationToken ct = default)
@@ -31,12 +32,50 @@ public class MonitorProbeService(
         using var trace = TraceContext.Begin("monitor.probe");
         trace.SetTag("remotessl.monitor_id", monitor.Id);
 
+        var timeout = monitor.TimeoutSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : (TimeSpan?)null;
+
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var result = await prober.ProbeAsync(monitor.Host, monitor.Port, monitor.Sni, ct);
+        var result = await prober.ProbeAsync(monitor.Host, monitor.Port, monitor.Sni, ct, timeout, monitor.RetryCount);
         sw.Stop();
         RecordProbeLatency(monitor, sw.Elapsed.TotalMilliseconds, result.Status == ProbeStatus.Success, trace.CorrelationId);
 
+        await RunHealthCheckAsync(monitor, timeout, ct);
         return await ApplyResultAsync(monitor, result, ProbeVantage.External, ct);
+    }
+
+    /// <summary>
+    /// Optional application reachability check (§2.1). Its outcome is recorded next to — never
+    /// merged into — the TLS observation: a 500 from the application does not make the
+    /// certificate observation wrong.
+    /// </summary>
+    private async Task RunHealthCheckAsync(MonitorEndpoint monitor, TimeSpan? timeout, CancellationToken ct)
+    {
+        if (healthChecker is null || string.IsNullOrWhiteSpace(monitor.HealthCheckUrl))
+        {
+            monitor.HealthCheckStatus = "NotConfigured";
+            monitor.HealthCheckDetail = null;
+            monitor.HealthCheckLatencyMs = null;
+            return;
+        }
+
+        var health = await healthChecker.CheckAsync(monitor.HealthCheckUrl, monitor.HealthCheckExpectedStatus,
+            timeout ?? TimeSpan.FromSeconds(10), ct);
+        monitor.HealthCheckStatus = health.Status;
+        monitor.HealthCheckDetail = health.Detail;
+        monitor.HealthCheckLatencyMs = health.LatencyMs;
+        monitor.HealthCheckAt = DateTimeOffset.UtcNow;
+
+        if (health.Status is "Unhealthy" or "Unreachable")
+        {
+            notifier.Notify("monitor.health-check-failed", new
+            {
+                monitorId = monitor.Id,
+                endpoint = $"{monitor.Host}:{monitor.Port}",
+                url = monitor.HealthCheckUrl,
+                status = health.Status,
+                detail = health.Detail
+            });
+        }
     }
 
     /// <summary>Queues a probe_latency sample (§32.1); persisted with the probe result itself.</summary>
@@ -100,6 +139,7 @@ public class MonitorProbeService(
             monitor.LastHostnameValid = result.HostnameValid;
             monitor.LastChainValid = result.ChainValid;
             monitor.LastChainError = result.ChainError;
+            monitor.LastCipherSuite = result.CipherSuite;
         }
         else
         {
@@ -110,6 +150,7 @@ public class MonitorProbeService(
             monitor.InternalHostnameValid = result.HostnameValid;
             monitor.InternalChainValid = result.ChainValid;
             monitor.InternalChainError = result.ChainError;
+            monitor.InternalCipherSuite = result.CipherSuite;
         }
         monitor.UpdatedAt = now;
 
@@ -128,7 +169,7 @@ public class MonitorProbeService(
                 monitor.InternalObservedVersion = version;
             }
 
-            await UpsertMonitorLinkAsync(monitor, version.CertificateId, now, ct);
+            await UpsertMonitorLinkAsync(monitor, version.CertificateId, now, vantage, ct);
             EmitExpiryEvents(monitor, parsed, previousDaysLeft, now);
 
             version.Certificate.HealthStatus = ExpiryCalculator.HealthFor(parsed.NotAfter, now);
@@ -251,8 +292,15 @@ public class MonitorProbeService(
         return version;
     }
 
-    private async Task UpsertMonitorLinkAsync(MonitorEndpoint monitor, Guid certificateId, DateTimeOffset now, CancellationToken ct)
+    /// <summary>
+    /// Records the monitor↔certificate correlation with how it was established and how much
+    /// to trust it (§5.2/§6.3). A direct handshake observation is the strongest evidence there
+    /// is, so it carries full confidence and replaces a weaker earlier source.
+    /// </summary>
+    private async Task UpsertMonitorLinkAsync(
+        MonitorEndpoint monitor, Guid certificateId, DateTimeOffset now, ProbeVantage vantage, CancellationToken ct)
     {
+        var source = vantage == ProbeVantage.External ? "probe" : "internal-probe";
         var link = await db.MonitorCertificateLinks
             .FirstOrDefaultAsync(l => l.MonitorEndpointId == monitor.Id && l.CertificateId == certificateId, ct);
         if (link is null)
@@ -261,7 +309,8 @@ public class MonitorProbeService(
             {
                 MonitorEndpointId = monitor.Id,
                 CertificateId = certificateId,
-                Source = "probe",
+                Source = source,
+                Confidence = 100,
                 FirstSeenAt = now,
                 LastSeenAt = now
             });
@@ -269,6 +318,8 @@ public class MonitorProbeService(
         else
         {
             link.LastSeenAt = now;
+            link.Source = source;
+            link.Confidence = 100;
         }
     }
 

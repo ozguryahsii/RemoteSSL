@@ -255,6 +255,22 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
         ReloadCmd = e.TryGetProperty("reloadCmd", out var rc) ? rc.GetString() : null
     };
 
+    /// <summary>
+    /// Negotiated cipher suite for the internal vantage (§6.2). Unsupported on some platforms,
+    /// where its absence is simply reported as null.
+    /// </summary>
+    private static string? CipherSuiteName(System.Net.Security.SslStream ssl)
+    {
+        try
+        {
+            return ssl.IsAuthenticated ? ssl.NegotiatedCipherSuite.ToString() : null;
+        }
+        catch (PlatformNotSupportedException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Adds the measured duration to a probe result document.</summary>
     private static string WithElapsedMs(string json, double elapsedMs)
     {
@@ -344,6 +360,7 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
                 leafDerBase64 = leafDer is null ? null : Convert.ToBase64String(leafDer),
                 chainDerBase64 = chainDer.Select(Convert.ToBase64String).ToArray(),
                 tlsProtocol = ssl.IsAuthenticated ? ssl.SslProtocol.ToString() : null,
+                cipherSuite = CipherSuiteName(ssl),
                 hostnameValid,
                 chainValid,
                 chainError

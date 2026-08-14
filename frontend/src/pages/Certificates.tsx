@@ -24,6 +24,9 @@ interface VersionDto {
   id: string; serialNumber: string; sha256Thumbprint: string; subjectDn: string; issuerDn: string
   notBefore: string; notAfter: string; daysUntilExpiry: number
   publicKeyAlgorithm: string; keySize: number; signatureAlgorithm: string; status: string; sans: string[]
+  isCertificateAuthority: boolean; pathLengthConstraint: number | null
+  keyUsages: string[]; extendedKeyUsages: string[]
+  caIssuerUrls: string[]; ocspUrls: string[]; crlDistributionPoints: string[]
 }
 
 interface CertificateDetail {
@@ -449,6 +452,17 @@ export default function Certificates() {
                   <div><strong>SHA-256:</strong> <code className="small">{v.sha256Thumbprint}</code></div>
                   <div><strong>Validity:</strong> {new Date(v.notBefore).toLocaleDateString()} → {new Date(v.notAfter).toLocaleDateString()} ({v.daysUntilExpiry} days)</div>
                   <div><strong>Key:</strong> {v.publicKeyAlgorithm} {v.keySize} / {v.signatureAlgorithm}</div>
+                  {v.keyUsages.length > 0 && <div><strong>Key usage:</strong> {v.keyUsages.join(', ')}</div>}
+                  {v.extendedKeyUsages.length > 0 && <div><strong>Extended key usage:</strong> {v.extendedKeyUsages.join(', ')}</div>}
+                  <div>
+                    <strong>Basic constraints:</strong>{' '}
+                    {v.isCertificateAuthority
+                      ? `CA${v.pathLengthConstraint !== null ? `, path length ${v.pathLengthConstraint}` : ''}`
+                      : 'end-entity'}
+                  </div>
+                  {v.ocspUrls.length > 0 && <div className="muted small"><strong>OCSP:</strong> {v.ocspUrls.join(', ')}</div>}
+                  {v.caIssuerUrls.length > 0 && <div className="muted small"><strong>CA issuers (AIA):</strong> {v.caIssuerUrls.join(', ')}</div>}
+                  {v.crlDistributionPoints.length > 0 && <div className="muted small"><strong>CRL:</strong> {v.crlDistributionPoints.join(', ')}</div>}
                   {v.sans.length > 0 && <div><strong>SAN:</strong> {v.sans.join(', ')}</div>}
                   {v.status !== 'Revoked' && (
                     <button className="danger" style={{ marginTop: 6 }} onClick={() => revoke(v.id)}>

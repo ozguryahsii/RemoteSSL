@@ -75,7 +75,12 @@ public class CertificatesController(
         Guid Id, string SerialNumber, string Sha256Thumbprint, string SubjectDn, string IssuerDn,
         DateTimeOffset NotBefore, DateTimeOffset NotAfter, int DaysUntilExpiry,
         string PublicKeyAlgorithm, int KeySize, string SignatureAlgorithm, string Status,
-        IReadOnlyList<string> Sans);
+        IReadOnlyList<string> Sans,
+        // §6.2 X.509 extension metadata
+        bool IsCertificateAuthority, int? PathLengthConstraint,
+        IReadOnlyList<string> KeyUsages, IReadOnlyList<string> ExtendedKeyUsages,
+        IReadOnlyList<string> CaIssuerUrls, IReadOnlyList<string> OcspUrls,
+        IReadOnlyList<string> CrlDistributionPoints);
 
     public record MonitorLinkDto(Guid MonitorId, string Host, int Port, string? Sni, DateTimeOffset LastSeenAt);
 
@@ -119,6 +124,13 @@ public class CertificatesController(
             x.Latest is null ? null : ExpiryCalculator.DaysUntilExpiry(x.Latest.NotAfter, now),
             x.DeploymentCount > 0, x.DeploymentCount, x.AutoRenew,
             x.Environment, x.OwnerId, x.MonitorCount, x.VersionCount));
+    }
+
+    /// <summary>Extension metadata is stored as JSON; a malformed value must not break the screen.</summary>
+    private static IReadOnlyList<string> ParseStringList(string json)
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? []; }
+        catch (System.Text.Json.JsonException) { return []; }
     }
 
     /// <summary>Pulls the CN out of an issuer DN for the compact "CA" column.</summary>
@@ -387,7 +399,11 @@ public class CertificatesController(
                     v.Id, v.SerialNumber, v.Sha256Thumbprint, v.SubjectDn, v.IssuerDn,
                     v.NotBefore, v.NotAfter, ExpiryCalculator.DaysUntilExpiry(v.NotAfter, now),
                     v.PublicKeyAlgorithm, v.KeySize, v.SignatureAlgorithm, v.Status.ToString(),
-                    v.Sans.Select(x => x.Value).ToList()))
+                    v.Sans.Select(x => x.Value).ToList(),
+                    v.IsCertificateAuthority, v.PathLengthConstraint,
+                    ParseStringList(v.KeyUsagesJson), ParseStringList(v.ExtendedKeyUsagesJson),
+                    ParseStringList(v.CaIssuerUrlsJson), ParseStringList(v.OcspUrlsJson),
+                    ParseStringList(v.CrlDistributionPointsJson)))
                 .ToList(),
             lifecycle, deployments, stores,
             cert.MonitorLinks

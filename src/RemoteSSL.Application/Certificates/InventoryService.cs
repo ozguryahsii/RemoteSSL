@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Domain;
@@ -55,6 +56,13 @@ public class InventoryService(IRemoteSslDbContext db)
             PublicKeyAlgorithm = parsed.PublicKeyAlgorithm,
             KeySize = parsed.KeySize,
             SignatureAlgorithm = parsed.SignatureAlgorithm,
+            IsCertificateAuthority = parsed.IsCertificateAuthority,
+            PathLengthConstraint = parsed.PathLengthConstraint,
+            KeyUsagesJson = JsonSerializer.Serialize(parsed.KeyUsages),
+            ExtendedKeyUsagesJson = JsonSerializer.Serialize(parsed.ExtendedKeyUsages),
+            CaIssuerUrlsJson = JsonSerializer.Serialize(parsed.CaIssuerUrls),
+            OcspUrlsJson = JsonSerializer.Serialize(parsed.OcspUrls),
+            CrlDistributionPointsJson = JsonSerializer.Serialize(parsed.CrlDistributionPoints),
             Status = status,
             PemCertificate = parsed.Pem,
             PemChain = chainPem,

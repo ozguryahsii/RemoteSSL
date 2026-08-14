@@ -23,6 +23,15 @@ public static class DependencyInjection
         services.AddScoped<IRemoteSslDbContext>(sp => sp.GetRequiredService<RemoteSslDbContext>());
 
         services.AddSingleton<ITlsProber, TlsProber>();
+        // The health check follows redirects but never enforces certificate validity — the TLS
+        // probe already reports that, and failing here would hide the application's own state.
+        services.AddHttpClient(Tls.HttpHealthChecker.ClientName)
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+                AllowAutoRedirect = false
+            });
+        services.AddSingleton<Application.Monitoring.IHttpHealthChecker, Tls.HttpHealthChecker>();
         services.AddScoped<MonitorProbeService>();
         services.AddHostedService<ProbeSchedulerService>();
         services.AddHostedService<AutomationSchedulerService>();

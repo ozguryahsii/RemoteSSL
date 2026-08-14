@@ -157,7 +157,8 @@ public class RunnersController(
                     r.TryGetProperty("chainDerBase64", out var chain) && chain.ValueKind == JsonValueKind.Array
                         ? chain.EnumerateArray().Select(x => Convert.FromBase64String(x.GetString()!)).ToList()
                         : [],
-                    GetStr("tlsProtocol"), GetBool("hostnameValid"), GetBool("chainValid"), GetStr("chainError"));
+                    GetStr("tlsProtocol"), GetBool("hostnameValid"), GetBool("chainValid"), GetStr("chainError"),
+                    GetStr("cipherSuite"));
                 var probeService = HttpContext.RequestServices
                     .GetRequiredService<Application.Monitoring.MonitorProbeService>();
                 // §32.1 probe_latency for the internal vantage, as timed by the runner.

@@ -16,6 +16,25 @@ public class MonitorEndpoint
     /// <summary>Probe interval in minutes; policy default applies when null.</summary>
     public int? ProbeIntervalMinutes { get; set; }
 
+    // --- Probe policy (design doc §5.2 monitor_endpoint.probe_policy) ---
+    /// <summary>Handshake protocol: "tls" (direct) — recorded so future STARTTLS flavours fit.</summary>
+    public string Protocol { get; set; } = "tls";
+    /// <summary>Connect + handshake timeout; the service default applies when null.</summary>
+    public int? TimeoutSeconds { get; set; }
+    /// <summary>Extra attempts before a probe is called failed; 0 = single attempt.</summary>
+    public int RetryCount { get; set; }
+
+    // --- Optional application reachability check (§2.1) ---
+    /// <summary>HTTP(S) URL probed after the TLS handshake; null = TLS only.</summary>
+    public string? HealthCheckUrl { get; set; }
+    /// <summary>Status code that counts as healthy; null = any 2xx/3xx.</summary>
+    public int? HealthCheckExpectedStatus { get; set; }
+    /// <summary>"NotConfigured" | "Healthy" | "Unhealthy" | "Unreachable".</summary>
+    public string HealthCheckStatus { get; set; } = "NotConfigured";
+    public string? HealthCheckDetail { get; set; }
+    public DateTimeOffset? HealthCheckAt { get; set; }
+    public int? HealthCheckLatencyMs { get; set; }
+
     /// <summary>
     /// Internal vantage: when set, this runner (living next to the application)
     /// probes the endpoint in addition to the control plane. Comparing both answers
@@ -37,6 +56,8 @@ public class MonitorEndpoint
     public bool? InternalChainValid { get; set; }
     public string? InternalChainError { get; set; }
     public string? InternalTlsProtocol { get; set; }
+    /// <summary>Negotiated cipher suite from the inside (§6.2 security posture).</summary>
+    public string? InternalCipherSuite { get; set; }
 
     public ProbeStatus LastProbeStatus { get; set; }
     public string? LastProbeError { get; set; }
@@ -48,6 +69,8 @@ public class MonitorEndpoint
     public bool? LastChainValid { get; set; }
     public string? LastChainError { get; set; }
     public string? LastTlsProtocol { get; set; }
+    /// <summary>Negotiated cipher suite, alongside the TLS version (§6.2 security posture).</summary>
+    public string? LastCipherSuite { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
@@ -66,8 +89,15 @@ public class MonitorCertificateLink
     public Guid CertificateId { get; set; }
     public Certificate Certificate { get; set; } = null!;
 
-    /// <summary>How the link was established (e.g. "probe", "manual").</summary>
+    /// <summary>How the link was established: "probe" | "internal-probe" | "manual" | "deployment".</summary>
     public string Source { get; set; } = "probe";
+
+    /// <summary>
+    /// How sure RemoteSSL is that this endpoint really serves this certificate (§5.2):
+    /// 100 for a direct observation, lower for inferred links. Kept as an integer percentage
+    /// so the UI can rank ambiguous correlations.
+    /// </summary>
+    public int Confidence { get; set; } = 100;
     public DateTimeOffset FirstSeenAt { get; set; }
     public DateTimeOffset LastSeenAt { get; set; }
 }

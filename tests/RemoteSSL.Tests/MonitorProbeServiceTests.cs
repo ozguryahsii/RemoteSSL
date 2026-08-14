@@ -19,7 +19,8 @@ public class MonitorProbeServiceTests
     {
         public TlsProbeResult Next { get; set; } = new(ProbeStatus.ConnectionFailed, "not configured", null, [], null, null, null, null);
 
-        public Task<TlsProbeResult> ProbeAsync(string host, int port, string? sni, CancellationToken ct)
+        public Task<TlsProbeResult> ProbeAsync(string host, int port, string? sni, CancellationToken ct,
+            TimeSpan? timeout = null, int retries = 0)
             => Task.FromResult(Next);
     }
 

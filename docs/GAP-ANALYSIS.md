@@ -52,15 +52,15 @@ Not: RemoteSSL'in sakladığı private key'i içeren bir dönüşüm çıktısı
 dönmez** (§7.3/§22.3) — yalnızca şifreli artifact olarak saklanabilir ve indirme ucu da
 key taşıyan artifact'leri reddeder.
 
-## F14 — Discovery ve monitoring derinliği
+## F14 — Discovery ve monitoring derinliği ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 14.1 | Probe'da eksik X.509 alanları: Basic Constraints, Key Usage, Extended Key Usage, AIA/CDP/OCSP URI metadata | §6.2 | YOK |
-| 14.2 | Gözlenen TLS sürümü **ve cipher** bilgisi (security posture) | §6.2 | KISMİ (protokol var, cipher yok) |
-| 14.3 | Opsiyonel HTTP/HTTPS health-check ile application reachability izleme | §2.1 | YOK |
-| 14.4 | Monitor bazlı probe policy alanları (protocol, timeout, retry) | §5.2 | KISMİ (interval var) |
-| 14.5 | Monitor-certificate ilişkisinde `confidence` / `source` alanları | §5.2 | YOK |
+| 14.1 | Eksik X.509 alanları | §6.2 | ✅ Basic Constraints (CA + path length), Key Usage, Extended Key Usage, AIA caIssuers/OCSP, CRL dağıtım noktaları — parse edilip sürümle saklanıyor ve sertifika detayında görünüyor |
+| 14.2 | TLS sürümü + cipher | §6.2 | ✅ negotiated cipher suite hem dış hem iç vantage'da kaydediliyor, Monitors ekranında protokolle birlikte gösteriliyor |
+| 14.3 | HTTP/HTTPS health-check | §2.1 | ✅ monitor başına URL + beklenen durum kodu; sonuç TLS gözlemine karışmıyor, başarısızlıkta bildirim üretiliyor |
+| 14.4 | Probe policy alanları | §5.2 | ✅ protocol, timeout, retry (transient hatalarda backoff'lu tekrar) — Monitors → Edit'ten düzenlenebilir |
+| 14.5 | Monitor-certificate `confidence` / `source` | §5.2 | ✅ doğrudan handshake gözlemi 100 güven + `probe` / `internal-probe` kaynağı olarak kaydediliyor |
 
 ## F15 — Kimlik, RBAC ve güvenlik mimarisi
 
