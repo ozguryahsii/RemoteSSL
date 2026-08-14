@@ -421,19 +421,69 @@ public class PoliciesController(IRemoteSslDbContext db, AuditWriter audit) : Con
 
 [ApiController]
 [Route("api/v1/audit")]
-public class AuditController(IRemoteSslDbContext db) : ControllerBase
+public class AuditController(
+    IRemoteSslDbContext db, RemoteSSL.Application.Auditing.AuditChain chain) : ControllerBase
 {
+    /// <summary>
+    /// Audit search (design doc §43): every field an investigator filters on — who, what, which
+    /// object, what outcome, and when. Results are newest first and paged with skip/take.
+    /// </summary>
     [HttpGet]
-    public async Task<IEnumerable<object>> List([FromQuery] string? action, [FromQuery] string? correlationId,
-        [FromQuery] int take = 100, CancellationToken ct = default)
+    public async Task<object> List(
+        [FromQuery] string? action, [FromQuery] string? actor, [FromQuery] string? objectType,
+        [FromQuery] string? objectId, [FromQuery] string? result, [FromQuery] string? correlationId,
+        [FromQuery] DateTimeOffset? from, [FromQuery] DateTimeOffset? to,
+        [FromQuery] int skip = 0, [FromQuery] int take = 100, CancellationToken ct = default)
     {
-        var q = db.AuditEvents.AsNoTracking().OrderByDescending(e => e.Timestamp).AsQueryable();
+        var q = db.AuditEvents.AsNoTracking().AsQueryable();
         if (!string.IsNullOrEmpty(action)) q = q.Where(e => e.Action.StartsWith(action));
+        if (!string.IsNullOrEmpty(actor)) q = q.Where(e => e.Actor.Contains(actor));
+        if (!string.IsNullOrEmpty(objectType)) q = q.Where(e => e.ObjectType == objectType);
+        if (!string.IsNullOrEmpty(objectId)) q = q.Where(e => e.ObjectId == objectId);
+        if (!string.IsNullOrEmpty(result)) q = q.Where(e => e.Result == result);
         if (!string.IsNullOrEmpty(correlationId)) q = q.Where(e => e.CorrelationId == correlationId);
-        return await q.Take(Math.Min(take, 500)).Select(e => new
+        if (from is not null) q = q.Where(e => e.Timestamp >= from);
+        if (to is not null) q = q.Where(e => e.Timestamp <= to);
+
+        var total = await q.CountAsync(ct);
+        var items = await q.OrderByDescending(e => e.Timestamp).ThenByDescending(e => e.Id)
+            .Skip(Math.Max(0, skip)).Take(Math.Clamp(take, 1, 500))
+            .Select(e => new
+            {
+                e.Id, e.Timestamp, e.Actor, e.Action, e.ObjectType, e.ObjectId, e.Result,
+                e.CorrelationId, e.DetailsJson, e.SessionId, e.SourceIp, e.UserAgent,
+                e.ApprovalReference, e.OldFingerprint, e.NewFingerprint,
+                e.Sequence, Sealed = e.Hash != null, Archived = e.ArchivedAt != null
+            })
+            .ToListAsync(ct);
+
+        return new { Total = total, Skip = skip, Items = items };
+    }
+
+    /// <summary>The distinct actions and object types present, so the search form can offer them.</summary>
+    [HttpGet("facets")]
+    public async Task<object> Facets(CancellationToken ct) => new
+    {
+        Actions = await db.AuditEvents.AsNoTracking().Select(e => e.Action).Distinct().OrderBy(a => a).ToListAsync(ct),
+        ObjectTypes = await db.AuditEvents.AsNoTracking().Select(e => e.ObjectType).Distinct().OrderBy(o => o).ToListAsync(ct),
+        Results = await db.AuditEvents.AsNoTracking().Select(e => e.Result).Distinct().OrderBy(r => r).ToListAsync(ct)
+    };
+
+    /// <summary>
+    /// Walks the hash chain and reports whether the log still adds up (§25.3, ADR-007). This is
+    /// the check an auditor runs; it reads every sealed row, so it is not a per-page call.
+    /// </summary>
+    [HttpGet("integrity")]
+    [Microsoft.AspNetCore.Authorization.Authorize(Policy = "Auditor")]
+    public async Task<object> Integrity(CancellationToken ct)
+    {
+        var status = await chain.VerifyAsync(ct);
+        var archived = await db.AuditEvents.CountAsync(e => e.ArchivedAt != null, ct);
+        return new
         {
-            e.Id, e.Timestamp, e.Actor, e.Action, e.ObjectType, e.ObjectId, e.Result, e.CorrelationId, e.DetailsJson
-        }).ToListAsync(ct);
+            status.Intact, status.Sealed, status.Unsealed, status.FirstBrokenSequence,
+            status.Detail, status.HeadHash, Archived = archived
+        };
     }
 
     /// <summary>

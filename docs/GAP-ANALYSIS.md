@@ -116,15 +116,23 @@ key taşıyan artifact'leri reddeder.
   aynı olay ikinci kez gönderilmez. 6 denemeden sonra olay `Failed` olur ve kendi alarmını üretir.
 - `audit.*` aynalama yalnız SIEM ve mesaj kuyruğuna gider; chat/mail kanalları onu almaz.
 
-## F18 — Audit ve compliance sertleştirme
+## F18 — Audit ve compliance sertleştirme ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 18.1 | Append-only garantisi: DB seviyesinde update/delete engeli (trigger/izin) veya hash-chain ile bütünlük | §5.3, §25.3, ADR-007 | YOK |
-| 18.2 | WORM/object-lock veya SIEM forward ile dış kopya | §25.3 | YOK |
-| 18.3 | Audit retention politikası (silme yalnızca retention ile) | §25.3 | YOK |
-| 18.4 | Eksik audit alanları: authentication session id, source IP/device metadata, approval reference, old/new fingerprint | §25.1 | KISMİ |
-| 18.5 | Audit arama/filtreleme ekranı (actor, action, tarih aralığı, obje, sonuç) | §43 | KISMİ (son 100 kayıt + trace) |
+| 18.1 | Append-only garantisi: DB seviyesinde update/delete engeli (trigger/izin) veya hash-chain ile bütünlük | §5.3, §25.3, ADR-007 | ✅ Her ikisi: Postgres trigger'ı içerik kolonlarının UPDATE'ini ve retention dışı DELETE'i reddediyor; `AuditChain` SHA-256 hash zinciri kuruyor ve `VerifyAsync` ilk kırılma noktasını raporluyor |
+| 18.2 | WORM/object-lock veya SIEM forward ile dış kopya | §25.3 | ✅ `AuditArchive` mühürlenmiş satırları JSON Lines olarak object store'a yazıyor; `Storage:S3:ObjectLockDays` ile compliance-mode object lock. SIEM forward (F17) ikinci dış kopya |
+| 18.3 | Audit retention politikası (silme yalnızca retention ile) | §25.3 | ✅ `Audit:RetentionDays`; yalnız arşivlenmiş ve bitişik prefix silinir (zincir kırılmaz), silme işlemi kendisi audit'lenir, DB trigger'ı başka yoldan silmeyi engeller |
+| 18.4 | Eksik audit alanları: authentication session id, source IP/device metadata, approval reference, old/new fingerprint | §25.1 | ✅ `SessionId`, `SourceIp`, `UserAgent` request middleware'inden; `ApprovalReference`, `OldFingerprint`, `NewFingerprint` yazar parametreleri. Hepsi hash'e dahil |
+| 18.5 | Audit arama/filtreleme ekranı (actor, action, tarih aralığı, obje, sonuç) | §43 | ✅ `/api/v1/audit` actor/action/objectType/objectId/result/from/to + skip/take; `/facets` form için; ekranda filtre çubuğu, sayfalama, satır detayı ve zincir durumu |
+
+### F18 notları
+- Mühürleme insert anında değil, leader-elected arka plan geçişinde yapılır: eşzamanlı yazarlar tek
+  bir zincir başına serileşmez, sıralama da veritabanının atadığı monotonik id'den gelir.
+- Zincir kırıldığında `audit.chain-broken` olayı üretilir, `AuditPipelineHealth`'e işlenir ve
+  dashboard alarmı çıkar — sessizce log'a yazılmaz.
+- Trigger, retention işine `SET LOCAL remotessl.audit_retention = 'on'` ile izin verir; başka
+  hiçbir yol audit satırı silemez. Canlı Postgres'te dört senaryo da doğrulandı.
 
 ## F19 — Platform adapter derinliği ve capability-driven UI
 

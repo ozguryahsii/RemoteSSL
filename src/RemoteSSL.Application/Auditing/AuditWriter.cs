@@ -6,7 +6,8 @@ using RemoteSSL.Domain.Entities;
 namespace RemoteSSL.Application.Auditing;
 
 /// <summary>Appends sanitized audit events; caller must never pass secrets in details.</summary>
-public class AuditWriter(IRemoteSslDbContext db, IConfiguration? configuration = null)
+public class AuditWriter(
+    IRemoteSslDbContext db, IConfiguration? configuration = null, AuditContext? context = null)
 {
     /// <summary>
     /// Mirrors every audit row into the outbox as an <c>audit.*</c> event when
@@ -17,7 +18,8 @@ public class AuditWriter(IRemoteSslDbContext db, IConfiguration? configuration =
         string.Equals(configuration?["Integrations:ForwardAuditToSiem"], "true", StringComparison.OrdinalIgnoreCase);
 
     public void Append(string actor, string action, string objectType, string? objectId,
-        string result, object? details = null, string? correlationId = null, Guid? targetId = null)
+        string result, object? details = null, string? correlationId = null, Guid? targetId = null,
+        string? approvalReference = null, string? oldFingerprint = null, string? newFingerprint = null)
     {
         var trace = correlationId ?? Guid.NewGuid().ToString("N");
         var detailsJson = details is null ? "{}" : JsonSerializer.Serialize(details);
@@ -32,7 +34,14 @@ public class AuditWriter(IRemoteSslDbContext db, IConfiguration? configuration =
             TargetId = targetId,
             Result = result,
             CorrelationId = trace,
-            DetailsJson = detailsJson
+            DetailsJson = detailsJson,
+            // §25.1 request context, when there is a request behind this at all.
+            SessionId = context?.SessionId,
+            SourceIp = context?.SourceIp,
+            UserAgent = context?.UserAgent,
+            ApprovalReference = approvalReference,
+            OldFingerprint = oldFingerprint,
+            NewFingerprint = newFingerprint
         });
 
         if (!ForwardToSiem) return;
@@ -46,6 +55,12 @@ public class AuditWriter(IRemoteSslDbContext db, IConfiguration? configuration =
             {
                 actor, action, objectType, objectId, result,
                 targetId,
+                sessionId = context?.SessionId,
+                sourceIp = context?.SourceIp,
+                userAgent = context?.UserAgent,
+                approvalReference,
+                oldFingerprint,
+                newFingerprint,
                 details = JsonDocument.Parse(detailsJson).RootElement
             }),
             CorrelationId = trace,

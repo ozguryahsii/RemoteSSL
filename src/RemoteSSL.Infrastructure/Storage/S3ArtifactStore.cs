@@ -17,6 +17,7 @@ public class S3ArtifactStore : IArtifactObjectStore, IDisposable
 {
     private readonly IAmazonS3? _client;
     private readonly string? _bucket;
+    private readonly int _objectLockDays;
     private readonly ILogger<S3ArtifactStore> _logger;
 
     public string Provider => "s3";
@@ -28,6 +29,10 @@ public class S3ArtifactStore : IArtifactObjectStore, IDisposable
     {
         _logger = logger;
         _bucket = configuration["Storage:S3:BucketName"];
+        // WORM (§25.3): with object lock configured, every object is written with a compliance
+        // retain-until date, so nobody — including this application — can overwrite or delete it
+        // before that date. The bucket itself must have object lock enabled.
+        _objectLockDays = configuration.GetValue("Storage:S3:ObjectLockDays", 0);
         if (string.IsNullOrWhiteSpace(_bucket)) return;
 
         var config = new AmazonS3Config
@@ -53,14 +58,20 @@ public class S3ArtifactStore : IArtifactObjectStore, IDisposable
     {
         Require();
         using var stream = new MemoryStream(ciphertext);
-        await _client!.PutObjectAsync(new PutObjectRequest
+        var request = new PutObjectRequest
         {
             BucketName = _bucket,
             Key = key,
             InputStream = stream,
             ContentType = "application/octet-stream",
             ServerSideEncryptionMethod = ServerSideEncryptionMethod.AES256
-        }, ct);
+        };
+        if (_objectLockDays > 0)
+        {
+            request.ObjectLockMode = ObjectLockMode.Compliance;
+            request.ObjectLockRetainUntilDate = DateTime.UtcNow.AddDays(_objectLockDays);
+        }
+        await _client!.PutObjectAsync(request, ct);
     }
 
     public async Task<byte[]> GetAsync(string key, CancellationToken ct)

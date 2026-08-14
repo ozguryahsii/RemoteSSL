@@ -645,6 +645,70 @@ dashboard'da `NotificationDeliveryFailure` alarmı çıkar (`UndeliveredEvents >
 `notification.delivery-failed` olayı üretilir ve audit'e yazılır. Bu olay kendi hatası için
 tekrar olay üretmez — döngü oluşmaz.
 
+## 22. Audit bütünlüğü, WORM ve arama (F18)
+
+**Hash zinciri** (§25.3, ADR-007). Her audit satırı, kendi içeriği + bir önceki satırın hash'i
+üzerinden SHA-256 ile mühürlenir. Mühürleme insert anında değil, arka plan geçişinde yapılır
+(varsayılan 30 saniye, `Audit:SealIntervalSeconds`).
+
+```bash
+curl -s localhost:5200/api/v1/audit/integrity
+# {"intact":true,"sealed":156,"unsealed":0,"headHash":"A8C6…","archived":0}
+```
+
+**Audit** ekranının üstünde aynı bilgi görünür: `Chain: intact · 156 sealed`. Zincir kırılırsa
+kırılmanın ilk noktası (sequence + sebep) yazılır, `audit.chain-broken` olayı üretilir ve
+dashboard'da alarm çıkar.
+
+**DB seviyesinde append-only.** Migration bir Postgres trigger'ı kurar. Denemek için:
+
+```bash
+docker exec remotessl-postgres-1 psql -U remotessl -d remotessl \
+  -c 'UPDATE "AuditEvents" SET "Result"=$$X$$ WHERE "Sequence"=5;'
+# ERROR:  AuditEvents is append-only; audited content cannot be modified
+
+docker exec remotessl-postgres-1 psql -U remotessl -d remotessl \
+  -c 'DELETE FROM "AuditEvents" WHERE "Sequence"=5;'
+# ERROR:  AuditEvents is append-only; rows are removed only by the retention job
+```
+
+Mühürlenmiş bir satırın `Hash`'i de değiştirilemez. Retention işi ise kendi transaction'ında
+`SET LOCAL remotessl.audit_retention = 'on'` diyerek silme iznini alır — başka hiçbir yol silemez.
+
+**Dış kopya / WORM** (§25.3). Object store yapılandırılmışsa mühürlenmiş satırlar JSON Lines
+olarak dışarı yazılır (`audit/YYYY/MM/DD/<from>-<to>.jsonl`) ve satırlar `ArchivedAt` ile
+işaretlenir. Bucket'ta object lock için:
+
+```json
+{ "Storage": { "S3": { "BucketName": "remotessl", "ObjectLockDays": 2555 } } }
+```
+
+Bucket'ın kendisinde object lock açık olmalıdır. Object store yoksa SIEM forward (bkz. §21)
+tek dış kopyadır.
+
+**Retention** (§25.3):
+
+```json
+{ "Audit": { "RetentionDays": 2555, "SealIntervalSeconds": 30, "VerifyIntervalHours": 6 } }
+```
+
+`RetentionDays` verilmezse hiçbir şey silinmez. Silme yalnız **arşivlenmiş** ve **bitişik en eski
+prefix** için yapılır — ortadan satır silmek zinciri kıracağı için reddedilir. Silme işlemi
+`audit.purge` olarak audit'lenir.
+
+**Yeni audit alanları** (§25.1). Her satır artık `SessionId`, `SourceIp`, `UserAgent` taşır
+(request middleware'inden), ayrıca gerektiğinde `ApprovalReference`, `OldFingerprint`,
+`NewFingerprint`. Hepsi hash'e dahildir; yani bunları sonradan değiştirmek de zinciri kırar.
+
+**Arama ekranı** (§43). **Audit** ekranında actor, action, object type, object id, result ve
+tarih aralığı filtreleri, sayfalama ve satıra tıklayınca tam bağlam (session, IP, user agent,
+approval, fingerprint öncesi/sonrası, zincir durumu) vardır.
+
+```bash
+curl -s "localhost:5200/api/v1/audit?actor=ozgur&action=certificate.revoke&from=2026-01-01T00:00:00Z"
+curl -s localhost:5200/api/v1/audit/facets   # formdaki açılır listeler
+```
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

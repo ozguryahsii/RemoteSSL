@@ -147,6 +147,30 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
             e.Property(x => x.LastAccessedBy).HasMaxLength(256);
         });
 
+        b.Entity<AuditEvent>(e =>
+        {
+            e.Property(x => x.Actor).HasMaxLength(256);
+            e.Property(x => x.Action).HasMaxLength(128);
+            e.Property(x => x.ObjectType).HasMaxLength(64);
+            e.Property(x => x.ObjectId).HasMaxLength(256);
+            e.Property(x => x.Result).HasMaxLength(64);
+            e.Property(x => x.CorrelationId).HasMaxLength(128);
+            e.Property(x => x.SessionId).HasMaxLength(128);
+            e.Property(x => x.SourceIp).HasMaxLength(64);
+            e.Property(x => x.UserAgent).HasMaxLength(512);
+            e.Property(x => x.ApprovalReference).HasMaxLength(128);
+            e.Property(x => x.OldFingerprint).HasMaxLength(64);
+            e.Property(x => x.NewFingerprint).HasMaxLength(64);
+            e.Property(x => x.PreviousHash).HasMaxLength(64);
+            e.Property(x => x.Hash).HasMaxLength(64);
+            // The search screen filters on these (§43); the sealing pass scans by hash + id.
+            e.HasIndex(x => x.Timestamp);
+            e.HasIndex(x => x.Actor);
+            e.HasIndex(x => x.Action);
+            e.HasIndex(x => x.CorrelationId);
+            e.HasIndex(x => x.Sequence);
+        });
+
         b.Entity<OutboxMessage>(e =>
         {
             e.Property(x => x.EventType).HasMaxLength(128);

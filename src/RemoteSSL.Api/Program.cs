@@ -64,6 +64,8 @@ app.UseSecurityHeaders();
 app.UseCors();
 app.UseRateLimiter();
 if (authEnabled) app.UseAuthentication();
+// After authentication so the session claim is present, before the endpoints that audit (§25.1).
+app.UseAuditContext();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health").AllowAnonymous();

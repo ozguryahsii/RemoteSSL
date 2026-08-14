@@ -42,6 +42,13 @@ public static class DependencyInjection
         services.AddHttpClient();
         services.AddScoped<ISecretProtector, Security.DataProtectionSecretProtector>();
         services.AddScoped<Application.Auditing.AuditWriter>();
+        // §25.1: request context for audit rows, filled per request by the API middleware.
+        services.AddScoped<Application.Auditing.AuditContext>();
+        // §25.3 integrity: hash chain, external WORM copy and retention, all leader-elected.
+        services.AddScoped<Application.Auditing.AuditChain>();
+        services.AddScoped<Application.Auditing.AuditArchive>();
+        services.AddScoped<Application.Auditing.AuditRetention>();
+        services.AddHostedService<Scheduling.AuditIntegrityService>();
         services.AddScoped<Application.Policies.GovernanceService>();
         services.AddScoped<Security.RunnerIdentityService>();
         services.AddScoped<Application.Observability.MetricsRecorder>();

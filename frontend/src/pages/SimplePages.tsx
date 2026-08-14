@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client'
 
 export function useData<T>(path: string, refreshMs = 30000): [T | null, () => void, string | null] {
@@ -356,37 +356,154 @@ function TracePanel({ correlationId, onClose }: { correlationId: string; onClose
   )
 }
 
+type AuditRow = {
+  id: number; timestamp: string; actor: string; action: string
+  objectType: string; objectId: string | null; result: string; correlationId: string
+  detailsJson: string; sessionId: string | null; sourceIp: string | null; userAgent: string | null
+  approvalReference: string | null; oldFingerprint: string | null; newFingerprint: string | null
+  sequence: number; sealed: boolean; archived: boolean
+}
+
+const AUDIT_PAGE_SIZE = 50
+
+/**
+ * Audit search (design doc §43) plus the integrity status of the hash chain (§25.3). Every filter
+ * an investigator needs is a query parameter, so a search is a question that can be repeated and
+ * shared rather than a scroll through the last hundred rows.
+ */
 export function Audit() {
-  const [events] = useData<{
-    id: number; timestamp: string; actor: string; action: string
-    objectType: string; result: string; correlationId: string; detailsJson: string
-  }[]>('/api/v1/audit?take=100', 15000)
+  const empty = { actor: '', action: '', objectType: '', objectId: '', result: '', from: '', to: '' }
+  const [filters, setFilters] = useState(empty)
+  const [applied, setApplied] = useState(empty)
+  const [skip, setSkip] = useState(0)
   const [trace, setTrace] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<number | null>(null)
+
+  const query = new URLSearchParams(
+    Object.entries({ ...applied, skip: String(skip), take: String(AUDIT_PAGE_SIZE) })
+      .filter(([, v]) => v !== '') as [string, string][])
+  const [page, , error] = useData<{ total: number; skip: number; items: AuditRow[] }>(
+    `/api/v1/audit?${query.toString()}`, 15000)
+  const [facets] = useData<{ actions: string[]; objectTypes: string[]; results: string[] }>(
+    '/api/v1/audit/facets', 300000)
+  const [integrity] = useData<{
+    intact: boolean; sealed: number; unsealed: number; archived: number
+    firstBrokenSequence: number | null; detail: string | null
+  }>('/api/v1/audit/integrity', 120000)
+
+  function search(e: React.FormEvent) {
+    e.preventDefault()
+    setSkip(0); setApplied(filters)
+  }
+
+  const items = page?.items ?? []
+  const total = page?.total ?? 0
 
   return (
     <div className="page">
       <h1>Audit</h1>
       <p className="muted small">
-        Click a trace id to follow one operation end to end: certificate request → CA → deployment job → runner → target.
+        Click a trace id to follow one operation end to end: certificate request → CA → deployment
+        job → runner → target. Click a row to see its full context.
       </p>
+
+      {integrity && (
+        <p className="small">
+          Chain: {integrity.intact
+            ? <span className="ok">intact</span>
+            : <span className="bad">BROKEN at sequence {integrity.firstBrokenSequence} — {integrity.detail}</span>}
+          {' · '}{integrity.sealed} sealed{integrity.unsealed > 0 ? `, ${integrity.unsealed} awaiting seal` : ''}
+          {integrity.archived > 0 ? ` · ${integrity.archived} in the external copy` : ''}
+        </p>
+      )}
+      {error && <p className="bad small">{error}</p>}
+
+      <form className="inline-form" onSubmit={search} style={{ flexWrap: 'wrap' }}>
+        <input value={filters.actor} onChange={(e) => setFilters({ ...filters, actor: e.target.value })} placeholder="actor" />
+        <select value={filters.action} onChange={(e) => setFilters({ ...filters, action: e.target.value })}>
+          <option value="">any action</option>
+          {(facets?.actions ?? []).map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <select value={filters.objectType} onChange={(e) => setFilters({ ...filters, objectType: e.target.value })}>
+          <option value="">any object type</option>
+          {(facets?.objectTypes ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <input value={filters.objectId} onChange={(e) => setFilters({ ...filters, objectId: e.target.value })} placeholder="object id" />
+        <select value={filters.result} onChange={(e) => setFilters({ ...filters, result: e.target.value })}>
+          <option value="">any result</option>
+          {(facets?.results ?? []).map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <input type="datetime-local" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} title="from" />
+        <input type="datetime-local" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} title="to" />
+        <button type="submit">Search</button>
+        <button type="button" onClick={() => { setFilters(empty); setApplied(empty); setSkip(0) }}>Reset</button>
+      </form>
+
+      <p className="small muted">
+        {total} matching event{total === 1 ? '' : 's'}
+        {total > AUDIT_PAGE_SIZE && <> · showing {skip + 1}–{Math.min(skip + AUDIT_PAGE_SIZE, total)}</>}
+      </p>
+
       <table className="data-table">
-        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Object</th><th>Result</th><th>Trace</th><th>Details</th></tr></thead>
+        <thead><tr>
+          <th>Time</th><th>Actor</th><th>Action</th><th>Object</th><th>Result</th>
+          <th>Source</th><th>Trace</th><th>Details</th>
+        </tr></thead>
         <tbody>
-          {(events ?? []).map((e) => (
-            <tr key={e.id}>
-              <td className="small muted">{new Date(e.timestamp).toLocaleString()}</td>
-              <td className="small">{e.actor}</td><td>{e.action}</td><td className="small">{e.objectType}</td>
-              <td><span className={/FAIL|DRIFT/.test(e.result) ? 'bad' : 'ok'}>{e.result}</span></td>
-              <td className="small">
-                {e.correlationId
-                  ? <button className="link-button" onClick={() => setTrace(e.correlationId)}>{e.correlationId.slice(0, 8)}…</button>
-                  : '—'}
-              </td>
-              <td className="small muted" style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.detailsJson}</td>
-            </tr>
+          {items.map((e) => (
+            <Fragment key={e.id}>
+              <tr onClick={() => setExpanded(expanded === e.id ? null : e.id)} style={{ cursor: 'pointer' }}>
+                <td className="small muted">{new Date(e.timestamp).toLocaleString()}</td>
+                <td className="small">{e.actor}</td><td>{e.action}</td>
+                <td className="small">{e.objectType}</td>
+                <td><span className={/FAIL|DRIFT|DENIED/.test(e.result) ? 'bad' : 'ok'}>{e.result}</span></td>
+                <td className="small muted">{e.sourceIp ?? '—'}</td>
+                <td className="small">
+                  {e.correlationId
+                    ? <button className="link-button" onClick={(ev) => { ev.stopPropagation(); setTrace(e.correlationId) }}>
+                        {e.correlationId.slice(0, 8)}…
+                      </button>
+                    : '—'}
+                </td>
+                <td className="small muted" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {e.detailsJson}
+                </td>
+              </tr>
+              {expanded === e.id && (
+                <tr>
+                  <td colSpan={8}>
+                    <dl className="kv">
+                      <dt>Object id</dt><dd>{e.objectId ?? '—'}</dd>
+                      <dt>Session</dt><dd>{e.sessionId ?? '—'}</dd>
+                      <dt>Source IP</dt><dd>{e.sourceIp ?? '—'}</dd>
+                      <dt>User agent</dt><dd>{e.userAgent ?? '—'}</dd>
+                      <dt>Approval</dt><dd>{e.approvalReference ?? '—'}</dd>
+                      <dt>Fingerprint before</dt><dd>{e.oldFingerprint ?? '—'}</dd>
+                      <dt>Fingerprint after</dt><dd>{e.newFingerprint ?? '—'}</dd>
+                      <dt>Chain</dt>
+                      <dd>
+                        {e.sealed ? `sealed at sequence ${e.sequence}` : 'awaiting seal'}
+                        {e.archived ? ' · in the external copy' : ''}
+                      </dd>
+                      <dt>Details</dt><dd><pre className="pem-block">{e.detailsJson}</pre></dd>
+                    </dl>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           ))}
+          {items.length === 0 && <tr><td colSpan={8} className="muted">No events match this search.</td></tr>}
         </tbody>
       </table>
+
+      {total > AUDIT_PAGE_SIZE && (
+        <p className="small">
+          <button disabled={skip === 0} onClick={() => setSkip(Math.max(0, skip - AUDIT_PAGE_SIZE))}>Previous</button>
+          {' '}
+          <button disabled={skip + AUDIT_PAGE_SIZE >= total} onClick={() => setSkip(skip + AUDIT_PAGE_SIZE)}>Next</button>
+        </p>
+      )}
+
       {trace && <TracePanel correlationId={trace} onClose={() => setTrace(null)} />}
     </div>
   )
