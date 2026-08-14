@@ -27,7 +27,8 @@ public class RunnersController(
     Infrastructure.Security.RunnerIdentityService identities) : ControllerBase
 {
     public record RegisterRequest(string BootstrapToken, string Name, string? Segment, string[] Capabilities,
-        string? Version, string? CsrPem = null, Dictionary<string, string>? AdapterVersions = null);
+        string? Version, string? CsrPem = null, Dictionary<string, string>? AdapterVersions = null,
+        string? AffinityGroup = null);
     public record RegisterResponse(Guid RunnerId, string ApiKey,
         string? CertificatePem = null, string? CaCertificatePem = null);
     public record HeartbeatRequest(string[] Capabilities, string? Version,
@@ -50,6 +51,7 @@ public class RunnersController(
             db.Runners.Add(runner);
         }
         runner.Segment = req.Segment;
+        runner.AffinityGroup = req.AffinityGroup ?? req.Segment;
         runner.Status = RunnerStatus.Online;
         runner.CapabilitiesJson = JsonSerializer.Serialize(req.Capabilities);
         runner.Version = req.Version;
@@ -82,7 +84,7 @@ public class RunnersController(
     public async Task<IEnumerable<object>> List(CancellationToken ct) =>
         await db.Runners.AsNoTracking().Select(r => new
         {
-            r.Id, r.Name, r.Segment, Status = r.Status.ToString(),
+            r.Id, r.Name, r.Segment, r.AffinityGroup, Status = r.Status.ToString(),
             Capabilities = r.CapabilitiesJson, r.Version, r.LastHeartbeatAt, r.RegisteredAt,
             r.AdapterVersionsJson, HasIdentityCertificate = r.IdentityCertThumbprint != null,
             r.IdentityRevokedAt, r.IdentityRevokedReason
@@ -139,6 +141,15 @@ public class RunnersController(
         runner.CapabilitiesJson = JsonSerializer.Serialize(req.Capabilities);
         runner.Version = req.Version;
         if (req.AdapterVersions is not null) runner.AdapterVersionsJson = JsonSerializer.Serialize(req.AdapterVersions);
+
+        // A heartbeat renews the lease on whatever this runner is holding (§34.2). A long
+        // deployment is not abandoned work, and it should not be reclaimed as if it were.
+        var lease = DateTimeOffset.UtcNow.AddSeconds(config.GetValue("Runner:JobLeaseSeconds", 300));
+        var held = await db.RunnerJobs
+            .Where(j => j.RunnerId == id && (j.Status == "Claimed" || j.Status == "Running"))
+            .ToListAsync(ct);
+        foreach (var job in held) job.LeaseExpiresAt = lease;
+
         await db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -150,15 +161,27 @@ public class RunnersController(
         var runner = await AuthenticateAsync(id, ct);
         if (runner is null) return Unauthorized();
 
-        var job = await db.RunnerJobs
+        // §34.2: a runner may only take work its affinity group can reach. Candidates are filtered
+        // in the query where possible and confirmed by the shared rule, so the claim path and the
+        // failover path cannot disagree about who may run what.
+        var candidates = await db.RunnerJobs
             .Where(j => j.Status == "Queued" && (j.RunnerId == null || j.RunnerId == id))
+            .Where(j => j.AffinityGroup == null || j.AffinityGroup == runner.AffinityGroup)
             .OrderBy(j => j.CreatedAt)
-            .FirstOrDefaultAsync(ct);
+            .Take(10)
+            .ToListAsync(ct);
+
+        var job = candidates.FirstOrDefault(j => Application.Deployments.RunnerFailover.CanRun(runner, j));
         if (job is null) return NoContent();
 
         job.Status = "Claimed";
         job.RunnerId = id;
         job.ClaimedAt = DateTimeOffset.UtcNow;
+        job.Attempts++;
+        // The lease is what makes an unfinished job recoverable: a runner that dies stops renewing
+        // it and the failover pass picks the work up (§34.2).
+        job.LeaseExpiresAt = DateTimeOffset.UtcNow.AddSeconds(
+            config.GetValue("Runner:JobLeaseSeconds", 300));
         await db.SaveChangesAsync(ct);
 
         // Short-lived signed execution context (design doc §8.2)
@@ -168,6 +191,27 @@ public class RunnersController(
         return new { job.Id, job.JobType, job.PayloadJson, job.CorrelationId, Signature = signature };
     }
 
+    /// <summary>
+    /// The runner says it is about to touch the target (§34.2). From this moment the job cannot be
+    /// handed to another runner: the target may already hold a backup and a partly applied change,
+    /// and repeating the job elsewhere could apply it twice. Read-only jobs never call this.
+    /// </summary>
+    [HttpPost("{id:guid}/jobs/{jobId:guid}/started")]
+    public async Task<IActionResult> StartJob(Guid id, Guid jobId, CancellationToken ct)
+    {
+        var runner = await AuthenticateAsync(id, ct);
+        if (runner is null) return Unauthorized();
+        var job = await db.RunnerJobs.FirstOrDefaultAsync(j => j.Id == jobId && j.RunnerId == id, ct);
+        if (job is null) return NotFound();
+
+        job.Status = "Running";
+        job.NonReassignable = true;
+        job.LeaseExpiresAt = DateTimeOffset.UtcNow.AddSeconds(
+            config.GetValue("Runner:JobLeaseSeconds", 300));
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     [HttpPost("{id:guid}/jobs/{jobId:guid}/complete")]
     public async Task<IActionResult> CompleteJob(Guid id, Guid jobId, CompleteRequest req, CancellationToken ct)
     {
@@ -175,6 +219,8 @@ public class RunnersController(
         if (runner is null) return Unauthorized();
         var job = await db.RunnerJobs.FirstOrDefaultAsync(j => j.Id == jobId && j.RunnerId == id, ct);
         if (job is null) return NotFound();
+        // The work is over one way or the other; nothing left to reclaim (§34.2).
+        job.LeaseExpiresAt = null;
 
         job.ResultJson = req.ResultJson;
         if (job.JobType == "generate-csr" && req.Success && req.ResultJson is not null)

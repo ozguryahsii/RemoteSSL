@@ -6,8 +6,15 @@ namespace RemoteSSL.Domain.Entities;
 /// it also carries the encrypted key itself; for token-backed keys it carries only a reference,
 /// because the private half cannot be read out of the token at all.
 /// </summary>
-public class ManagedKey
+public class ManagedKey : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Label { get; set; } = string.Empty;
     public KeyProviderKind Provider { get; set; }

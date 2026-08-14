@@ -18,8 +18,14 @@ public enum DomainValidationState
 /// deadline. Holding them as rows is what lets the UI show an operator exactly what to do and lets
 /// the platform re-check without asking the CA to start over.
 /// </summary>
-public class DomainValidation
+public class DomainValidation : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public Guid CertificateRequestId { get; set; }
     public Guid CaConnectorId { get; set; }

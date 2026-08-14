@@ -42,7 +42,9 @@ public class SecretRotationService(
 
     private async Task ScanAsync(CancellationToken ct)
     {
-        using var scope = scopeFactory.CreateScope();
+        var (scope, tenancy) = BackgroundScope.CreateCrossTenant(scopeFactory);
+        using var backgroundScope = scope;
+        using var backgroundTenancy = tenancy;
         var broker = scope.ServiceProvider.GetRequiredService<SecretBroker>();
         var notifications = scope.ServiceProvider.GetRequiredService<INotificationSink>();
         var db = scope.ServiceProvider.GetRequiredService<IRemoteSslDbContext>();

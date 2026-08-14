@@ -46,7 +46,9 @@ public class ArtifactRetentionService(
 
     private async Task PruneAsync(int publicRetentionDays, CancellationToken ct)
     {
-        using var scope = scopeFactory.CreateScope();
+        var (scope, tenancy) = BackgroundScope.CreateCrossTenant(scopeFactory);
+        using var backgroundScope = scope;
+        using var backgroundTenancy = tenancy;
         var db = scope.ServiceProvider.GetRequiredService<RemoteSslDbContext>();
         var artifacts = scope.ServiceProvider.GetRequiredService<ArtifactService>();
         var now = DateTimeOffset.UtcNow;

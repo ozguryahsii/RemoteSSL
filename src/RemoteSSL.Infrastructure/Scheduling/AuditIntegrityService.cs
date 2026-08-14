@@ -52,7 +52,9 @@ public class AuditIntegrityService(
 
     private async Task PassAsync(CancellationToken ct)
     {
-        using var scope = scopeFactory.CreateScope();
+        var (scope, tenancy) = BackgroundScope.CreateCrossTenant(scopeFactory);
+        using var backgroundScope = scope;
+        using var backgroundTenancy = tenancy;
         var chain = scope.ServiceProvider.GetRequiredService<AuditChain>();
         var archive = scope.ServiceProvider.GetRequiredService<AuditArchive>();
 

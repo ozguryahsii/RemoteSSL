@@ -5,8 +5,15 @@ namespace RemoteSSL.Domain.Entities;
 /// endpoint never requires credentials; adding credentials to the underlying system
 /// happens on a separate <see cref="Target"/> entity, not here.
 /// </summary>
-public class MonitorEndpoint
+public class MonitorEndpoint : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Host { get; set; } = string.Empty;
     public int Port { get; set; } = 443;
@@ -82,8 +89,14 @@ public class MonitorEndpoint
 /// Many-to-many correlation between monitors and logical certificates. The same
 /// certificate observed on several endpoints yields one Certificate and N links.
 /// </summary>
-public class MonitorCertificateLink
+public class MonitorCertificateLink : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid MonitorEndpointId { get; set; }
     public MonitorEndpoint MonitorEndpoint { get; set; } = null!;
     public Guid CertificateId { get; set; }

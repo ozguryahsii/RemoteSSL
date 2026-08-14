@@ -66,6 +66,8 @@ app.UseRateLimiter();
 if (authEnabled) app.UseAuthentication();
 // After authentication so the session claim is present, before the endpoints that audit (§25.1).
 app.UseAuditContext();
+// §35: resolve the caller's tenant before any tenant-scoped query runs.
+app.UseTenantContext();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health").AllowAnonymous();

@@ -53,15 +53,31 @@ public class ProbeSchedulerService(
 
     private async Task RunDueProbesAsync(int defaultIntervalMinutes, int maxParallel, CancellationToken ct)
     {
+        // NFR-004: at ten thousand endpoints the naive shape — load every due monitor, then probe
+        // them all — holds the whole set in memory and lets one tick run for as long as the slowest
+        // probe times out. Two things prevent that. The due set is computed in the database and
+        // capped per tick, so memory is bounded by the batch and not by the inventory; and what
+        // does not fit this tick is simply first in line for the next one, because the ordering is
+        // oldest-probe-first.
+        var batchSize = configuration.GetValue("Monitoring:MaxProbesPerTick", 500);
+
         List<Guid> dueIds;
         await using (var scope = scopeFactory.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<RemoteSslDbContext>();
+            // Probing serves every tenant; the filter must not hide another tenant's monitors.
+            using var tenancy = scope.ServiceProvider
+                .GetRequiredService<RemoteSSL.Application.Abstractions.ITenantContext>().EnterCrossTenant();
+
             var now = DateTimeOffset.UtcNow;
             var due = await db.MonitorEndpoints
                 .Where(m => m.Enabled)
                 .Where(m => m.LastProbeAt == null
                             || m.LastProbeAt < now.AddMinutes(-(m.ProbeIntervalMinutes ?? defaultIntervalMinutes)))
+                // Never probed first, then longest-waiting: no monitor can be starved by a
+                // permanently full batch.
+                .OrderBy(m => m.LastProbeAt ?? DateTimeOffset.MinValue)
+                .Take(batchSize)
                 .ToListAsync(ct);
 
             // Every monitor with an internal vantage also gets a runner-side probe;
@@ -71,6 +87,11 @@ public class ProbeSchedulerService(
             await db.SaveChangesAsync(ct);
 
             dueIds = due.Where(m => m.ExternalProbeEnabled).Select(m => m.Id).ToList();
+
+            if (due.Count == batchSize)
+                logger.LogInformation(
+                    "Probe batch is full at {Batch}; the remaining due monitors go to the next tick",
+                    batchSize);
         }
 
         if (dueIds.Count == 0) return;
@@ -80,7 +101,9 @@ public class ProbeSchedulerService(
             new ParallelOptions { MaxDegreeOfParallelism = maxParallel, CancellationToken = ct },
             async (monitorId, token) =>
             {
-                await using var scope = scopeFactory.CreateAsyncScope();
+                var (scope, tenancy) = BackgroundScope.CreateCrossTenant(scopeFactory);
+                using var probeScope = scope;
+                using var probeTenancy = tenancy;
                 var service = scope.ServiceProvider.GetRequiredService<MonitorProbeService>();
                 try
                 {

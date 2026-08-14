@@ -8,8 +8,14 @@ namespace RemoteSSL.Domain.Entities;
 /// hash are kept here (§31.2). Sensitivity drives retention and access rules — a public leaf
 /// and a PFX carrying a private key are not the same class of object (§15.4).
 /// </summary>
-public class Artifact
+public class Artifact : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
 
     /// <summary>"csr" | "leaf" | "chain" | "fullchain" | "pfx" | "jks" | "key" | "backup".</summary>

@@ -21,6 +21,9 @@ public static class DependencyInjection
             options.UseNpgsql(configuration.GetConnectionString("Database"))
                    .AddInterceptors(sp.GetRequiredService<AuditPipelineInterceptor>()));
         services.AddScoped<IRemoteSslDbContext>(sp => sp.GetRequiredService<RemoteSslDbContext>());
+        // §35: scoped, so the tenant a query is filtered to belongs to one unit of work and can
+        // never be changed underneath a concurrent request.
+        services.AddScoped<ITenantContext, Persistence.TenantContext>();
 
         services.AddSingleton<ITlsProber, TlsProber>();
         // The health check follows redirects but never enforces certificate validity — the TLS
@@ -56,6 +59,9 @@ public static class DependencyInjection
         services.AddScoped<Application.Certificates.InventoryService>();
         services.AddScoped<Application.Deployments.DeploymentService>();
         services.AddScoped<Application.Deployments.DeploymentPlanner>();
+        // §34.2 runner failover: reclaims work stranded on a runner that stopped answering.
+        services.AddScoped<Application.Deployments.RunnerFailover>();
+        services.AddHostedService<Scheduling.RunnerFailoverService>();
         services.AddScoped<Application.Artifacts.ArtifactService>();
         // The S3 store only registers itself when a bucket is configured; without one the
         // artifact service keeps ciphertext in the database (§31.1).

@@ -5,8 +5,15 @@ namespace RemoteSSL.Domain.Entities;
 /// transactional pipeline (pre-check → backup → install → validate → activate →
 /// verify → commit, with rollback on failure).
 /// </summary>
-public class DeploymentJob
+public class DeploymentJob : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public Guid CertificateVersionId { get; set; }
     public CertificateVersion CertificateVersion { get; set; } = null!;
@@ -37,8 +44,14 @@ public class DeploymentJob
     public ICollection<DeploymentJobTarget> Targets { get; set; } = new List<DeploymentJobTarget>();
 }
 
-public class DeploymentJobTarget
+public class DeploymentJobTarget : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public Guid DeploymentJobId { get; set; }
     public DeploymentJob DeploymentJob { get; set; } = null!;
@@ -58,8 +71,14 @@ public class DeploymentJobTarget
 /// An atomic, idempotent step of a deployment. SafeLog contains sanitized metadata
 /// only — never secrets, key material or raw command output with sensitive content.
 /// </summary>
-public class DeploymentStep
+public class DeploymentStep : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public Guid DeploymentJobTargetId { get; set; }
     public DeploymentJobTarget DeploymentJobTarget { get; set; } = null!;

@@ -44,7 +44,9 @@ public class MetricsRetentionService(
 
     private async Task PruneAsync(int retentionDays, CancellationToken ct)
     {
-        using var scope = scopeFactory.CreateScope();
+        var (scope, tenancy) = BackgroundScope.CreateCrossTenant(scopeFactory);
+        using var backgroundScope = scope;
+        using var backgroundTenancy = tenancy;
         var db = scope.ServiceProvider.GetRequiredService<RemoteSslDbContext>();
         var cutoff = DateTimeOffset.UtcNow.AddDays(-retentionDays);
         var removed = await db.MetricSamples.Where(s => s.Timestamp < cutoff).ExecuteDeleteAsync(ct);

@@ -4,8 +4,20 @@ using RemoteSSL.Domain.Entities;
 
 namespace RemoteSSL.Infrastructure.Persistence;
 
-public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : DbContext(options), IRemoteSslDbContext
+public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options, ITenantContext? tenants = null)
+    : DbContext(options), IRemoteSslDbContext
 {
+    /// <summary>
+    /// The tenant every query is filtered to (design doc §35, ADR-008). Null means cross-tenant
+    /// work — a scheduler sweeping every tenant's monitors — and the filter then passes everything.
+    /// The property is read by the compiled filter expression on each query, so entering a
+    /// different tenant mid-scope takes effect immediately.
+    /// </summary>
+    public Guid? CurrentTenantId => tenants?.TenantId;
+
+    /// <summary>DbSet for tenants themselves; not tenant-scoped, since it is the scope.</summary>
+    public DbSet<Tenant> Tenants => Set<Tenant>();
+
     public DbSet<Certificate> Certificates => Set<Certificate>();
     public DbSet<CertificateVersion> CertificateVersions => Set<CertificateVersion>();
     public DbSet<CertificateSan> CertificateSans => Set<CertificateSan>();
@@ -38,6 +50,38 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        b.Entity<Tenant>(e =>
+        {
+            e.Property(x => x.Name).HasMaxLength(256);
+            e.Property(x => x.Slug).HasMaxLength(64);
+            e.HasIndex(x => x.Slug).IsUnique();
+        });
+
+        // §35 isolation. Applying the filter from the interface rather than per entity means a new
+        // tenant-scoped entity is covered the moment it implements ITenantScoped — there is no
+        // list to forget to update.
+        foreach (var entity in b.Model.GetEntityTypes()
+                     .Where(t => typeof(ITenantScoped).IsAssignableFrom(t.ClrType)))
+        {
+            var parameter = System.Linq.Expressions.Expression.Parameter(entity.ClrType, "e");
+            var tenantProperty = System.Linq.Expressions.Expression.Property(parameter, nameof(ITenantScoped.TenantId));
+            var current = System.Linq.Expressions.Expression.Property(
+                System.Linq.Expressions.Expression.Constant(this), nameof(CurrentTenantId));
+            var hasValue = System.Linq.Expressions.Expression.Property(current, "HasValue");
+            // GetValueOrDefault rather than Value: the OrElse below short-circuits, but the query
+            // provider is free to evaluate both sides, and Value would throw in cross-tenant mode.
+            var value = System.Linq.Expressions.Expression.Call(current,
+                typeof(Guid?).GetMethod(nameof(Nullable<Guid>.GetValueOrDefault), Type.EmptyTypes)!);
+
+            // "cross-tenant, or this row's tenant" — one expression, evaluated per query.
+            var body = System.Linq.Expressions.Expression.OrElse(
+                System.Linq.Expressions.Expression.Not(hasValue),
+                System.Linq.Expressions.Expression.Equal(tenantProperty, value));
+
+            b.Entity(entity.ClrType).HasQueryFilter(
+                System.Linq.Expressions.Expression.Lambda(body, parameter));
+        }
+
         b.Entity<Artifact>(e =>
         {
             e.Property(x => x.Kind).HasMaxLength(32);
@@ -106,6 +150,9 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
             e.Property(x => x.Host).HasMaxLength(512);
             e.Property(x => x.Sni).HasMaxLength(512);
             e.HasIndex(x => new { x.Host, x.Port, x.Sni }).IsUnique();
+            // NFR-004: the scheduler's due query is "enabled, oldest probe first"; at ten thousand
+            // endpoints that has to be an index seek rather than a scan.
+            e.HasIndex(x => new { x.Enabled, x.LastProbeAt });
             e.HasOne(x => x.LastObservedVersion).WithMany().HasForeignKey(x => x.LastObservedVersionId)
                 .OnDelete(DeleteBehavior.SetNull);
         });
@@ -257,5 +304,34 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
             e.HasIndex(x => x.Timestamp);
             e.HasIndex(x => x.CorrelationId);
         });
+    }
+
+    /// <summary>
+    /// Stamps new tenant-scoped rows with the tenant in force (§35). Without this a row created
+    /// inside a request would default to the seed tenant and become invisible to its own creator.
+    /// </summary>
+    private void StampTenant()
+    {
+        // Cross-tenant work still has to put a row somewhere; the default tenant is where a
+        // single-tenant install lives, and it is what the upgrade backfilled every old row to.
+        var tenantId = tenants?.TenantId ?? Tenant.DefaultTenantId;
+
+        foreach (var entry in ChangeTracker.Entries<ITenantScoped>()
+                     .Where(e => e.State == EntityState.Added && e.Entity.TenantId == Guid.Empty))
+        {
+            entry.Entity.TenantId = tenantId;
+        }
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        StampTenant();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken ct = default)
+    {
+        StampTenant();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, ct);
     }
 }

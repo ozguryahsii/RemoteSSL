@@ -862,6 +862,66 @@ Yanlış imza → 401 ve audit'e `ca.webhook.rejected / DENIED`. **Callback göv
 bilgisi alınmaz**: sadece hangi isteğin etkilendiği okunur, durum daima CA'dan sorulur. Callback
 hiç gelmezse zamanlanmış polling zaten toplar.
 
+## 25. Multi-tenant, runner failover ve ölçek (F21)
+
+**Tenant izolasyonu** (§35, ADR-008). Yükseltme sonrası mevcut her satır **Default** tenant'a
+taşınır; tek tenant'lı kurulum hiçbir şey yapmadan çalışmaya devam eder.
+
+```bash
+curl -s localhost:5200/api/v1/tenants          # tenant listesi + kayıt sayıları
+curl -s localhost:5200/api/v1/tenants/current  # bu kullanıcının tenant'ı
+curl -s -X POST localhost:5200/api/v1/tenants -H 'Content-Type: application/json' \
+  -d '{"name":"Acme Corp","slug":"acme"}'
+```
+
+Tenant **yalnızca kimlikten** çözülür: token'daki `tenant` claim'i, yoksa kullanıcı kaydındaki
+tenant. Header veya query parametresiyle tenant değiştirilemez. İçi dolu bir tenant silinemez
+(409), default tenant hiç silinemez.
+
+Doğrulama: iki tenant'ta birer sertifika oluşturup her kullanıcıyla listeleyin — her biri yalnız
+kendi satırını görür. Doğrudan id ile de diğerine erişilemez (404).
+
+Arka plan işleri (probe, outbox, audit mühürleme, rotation, failover) **cross-tenant** çalışır;
+aksi halde bir tenant'ın monitor'larını görüp diğerininkini atlarlardı.
+
+**Runner failover** (§34.2). Runner yapılandırması:
+
+```json
+{ "Runner": { "AffinityGroup": "dc1", "Segment": "dc1" } }
+```
+
+Control plane tarafı:
+
+```json
+{ "Runner": { "JobLeaseSeconds": 300, "FailoverIntervalSeconds": 30, "MaxJobAttempts": 3 } }
+```
+
+Nasıl çalışır: runner işi aldığında lease konur, heartbeat lease'i yeniler. Runner susarsa lease
+dolar ve iş **aynı affinity group'taki** başka bir runner'a geçer (`runner.job-reassigned`).
+
+Denemek için: bir deployment başlatın ve runner'ı `PreCheck` ile `Install` arasında durdurun —
+runner `jobs/{id}/started` dediği için iş `NonReassignable` olur ve devredilmez; bunun yerine
+açık sebeple **Failed** olur ve `runner.job-abandoned` (incident seviyesi) olayı üretilir. Bu
+kasıtlıdır: hedefte yedek ve yarım uygulanmış bir değişiklik olabileceği için işi başka bir
+runner'da tekrarlamak değişikliği iki kez uygulayabilir.
+
+Read-only işler (probe, discover, test-connection, generate-csr, java-inventory) `started`
+demediği için her zaman devredilebilir.
+
+**Ölçek** (NFR-004):
+
+```json
+{ "Monitoring": { "MaxProbesPerTick": 500, "MaxParallelProbes": 8, "SchedulerTickSeconds": 60 } }
+```
+
+Zamanlayıcı tick başına sınırlı bir yığın alır ve **en uzun bekleyenden** başlar; yığına sığmayan
+bir sonraki tick'in başına geçer, hiçbir monitor aç kalmaz. Yığın dolduğunda log'a bir satır düşer.
+Endpoint sayısına göre önerilen değerler `docs/HA-DR-RUNBOOK.md` §6'da.
+
+**HA / felaket kurtarma**: `docs/HA-DR-RUNBOOK.md` — leader election doğrulaması, PITR adımları,
+geri dönüş sonrası `GET /api/v1/audit/integrity` kontrolü, S3 versioning/object-lock ve üç aylık
+tatbikat listesi.
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

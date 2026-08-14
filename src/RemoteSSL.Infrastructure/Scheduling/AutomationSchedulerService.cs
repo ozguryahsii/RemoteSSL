@@ -29,7 +29,9 @@ public class AutomationSchedulerService(
             {
                 await leaderLock.RunAsLeaderAsync(LockKey, async () =>
                 {
-                    await using var scope = scopeFactory.CreateAsyncScope();
+                    var (scope, tenancy) = BackgroundScope.CreateCrossTenant(scopeFactory);
+                    using var backgroundScope = scope;
+                    using var backgroundTenancy = tenancy;
                     await scope.ServiceProvider.GetRequiredService<AutomationService>().TickAsync(stoppingToken);
 
                     // Runner health (design doc §29.1). Each runner that falls silent gets its own

@@ -5,8 +5,15 @@ namespace RemoteSSL.Domain.Entities;
 /// inventory: monitor endpoints and deployment bindings hang off it, and every
 /// issuance/renewal produces a new immutable <see cref="CertificateVersion"/>.
 /// </summary>
-public class Certificate
+public class Certificate : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string DisplayName { get; set; } = string.Empty;
     public string CommonName { get; set; } = string.Empty;
@@ -28,8 +35,14 @@ public class Certificate
 /// certificate seen on a monitored endpoint). Never mutated after creation; renewal
 /// creates a new version linked to the same logical certificate.
 /// </summary>
-public class CertificateVersion
+public class CertificateVersion : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public Guid CertificateId { get; set; }
     public Certificate Certificate { get; set; } = null!;
@@ -73,8 +86,14 @@ public class CertificateVersion
     public ICollection<CertificateSan> Sans { get; set; } = new List<CertificateSan>();
 }
 
-public class CertificateSan
+public class CertificateSan : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public Guid CertificateVersionId { get; set; }
     public CertificateVersion CertificateVersion { get; set; } = null!;

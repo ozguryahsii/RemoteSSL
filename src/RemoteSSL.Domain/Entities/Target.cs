@@ -5,8 +5,15 @@ namespace RemoteSSL.Domain.Entities;
 /// Unlike a MonitorEndpoint, a Target carries a connection method, an adapter type and
 /// a credential reference, and therefore supports install/activate/rollback actions.
 /// </summary>
-public class Target
+public class Target : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public TargetType TargetType { get; set; }
@@ -43,8 +50,14 @@ public class Target
 /// A certificate store on a target: Windows LocalMachine\My, a JKS path + alias,
 /// an Oracle wallet directory, a plain file-system path for nginx, etc.
 /// </summary>
-public class CertificateStore
+public class CertificateStore : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public Guid TargetId { get; set; }
     public Target Target { get; set; } = null!;
@@ -64,8 +77,14 @@ public class CertificateStore
 /// The deployment relationship between a logical certificate and a store/service —
 /// "this certificate lives in this store and activates via this service binding".
 /// </summary>
-public class DeploymentBinding
+public class DeploymentBinding : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public Guid CertificateId { get; set; }
     public Certificate Certificate { get; set; } = null!;
@@ -83,8 +102,15 @@ public class DeploymentBinding
 /// A reference to a secret — never the secret itself. Points to a provider and a
 /// secret identifier; plaintext secret material must never be stored here.
 /// </summary>
-public class CredentialRef
+public class CredentialRef : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public CredentialType CredentialType { get; set; }

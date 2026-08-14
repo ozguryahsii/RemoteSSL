@@ -6,8 +6,15 @@ namespace RemoteSSL.Domain.Entities;
 /// jobs against targets it can reach; the control plane never connects to targets
 /// directly.
 /// </summary>
-public class RunnerNode
+public class RunnerNode : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Segment { get; set; }
@@ -32,6 +39,12 @@ public class RunnerNode
     /// pinning (§30.2 supply chain) compares this against the allowlist before dispatching.
     /// </summary>
     public string AdapterVersionsJson { get; set; } = "{}";
+
+    /// <summary>
+    /// Affinity group (design doc §34.2). Runners in the same group can reach the same targets, so
+    /// a job orphaned by one of them may be handed to another in the group — and to no one else.
+    /// </summary>
+    public string? AffinityGroup { get; set; }
 
     public DateTimeOffset? LastHeartbeatAt { get; set; }
     public DateTimeOffset RegisteredAt { get; set; }

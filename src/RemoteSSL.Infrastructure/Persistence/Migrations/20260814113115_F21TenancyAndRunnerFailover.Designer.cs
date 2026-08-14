@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using RemoteSSL.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using RemoteSSL.Infrastructure.Persistence;
 namespace RemoteSSL.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(RemoteSslDbContext))]
-    partial class RemoteSslDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260814113115_F21TenancyAndRunnerFailover")]
+    partial class F21TenancyAndRunnerFailover
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1305,8 +1308,6 @@ namespace RemoteSSL.Infrastructure.Persistence.Migrations
                     b.HasIndex("InternalObservedVersionId");
 
                     b.HasIndex("LastObservedVersionId");
-
-                    b.HasIndex("Enabled", "LastProbeAt");
 
                     b.HasIndex("Host", "Port", "Sni")
                         .IsUnique();

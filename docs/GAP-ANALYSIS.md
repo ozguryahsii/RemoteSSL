@@ -177,15 +177,27 @@ key taşıyan artifact'leri reddeder.
   JWK thumbprint, dns-01 kayıt değeri, CSR isim çıkarımı, PEM bundle ayrımı) birim testleriyle
   doğrulandı; webhook kimlik doğrulaması canlı API'de doğrulandı.
 
-## F21 — Multi-tenant, HA/DR ve ölçek
+## F21 — Multi-tenant, HA/DR ve ölçek ✅ TAMAMLANDI (21.5 kısmen — yük testi F22'de)
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 21.1 | Tenant/organization sınırı: tüm ana entity'lerde tenant id + query-level isolation | §35, ADR-008 | YOK |
-| 21.2 | Runner failover: offline runner'ın job'unun uyumlu ikinci runner'a devri (+ stateful backup uyarısı) | §8.2, §34.2 | KISMİ (pinned runner) |
-| 21.3 | Runner affinity grupları | §34.2 | YOK |
-| 21.4 | DB HA / PITR ve RPO-RTO planı; artifact object storage versioning | §34.1, §34.3 | YOK (dokümantasyon + runbook) |
-| 21.5 | 10.000+ monitor endpoint ölçeğinde probe/deployment mimarisi doğrulaması | NFR-004 | YOK |
+| 21.1 | Tenant/organization sınırı: tüm ana entity'lerde tenant id + query-level isolation | §35, ADR-008 | ✅ `ITenantScoped` + EF global query filter (24 tablo, çocuk tablolar dahil); `ITenantContext` (request'te tenant, arka planda cross-tenant); kayıt anında otomatik damgalama; `/api/v1/tenants` CRUD; migration mevcut tüm satırları default tenant'a taşıyor |
+| 21.2 | Runner failover: offline runner'ın job'unun uyumlu ikinci runner'a devri (+ stateful backup uyarısı) | §8.2, §34.2 | ✅ Job lease + heartbeat yenileme; `RunnerFailoverService` süresi dolmuş lease'leri devrediyor. **Hedefe dokunmuş iş devredilmiyor** — runner `jobs/{id}/started` dedikten sonra `NonReassignable`; bu durumda iş açık sebeple fail ediliyor (`runner.job-abandoned`, incident) |
+| 21.3 | Runner affinity grupları | §34.2 | ✅ `RunnerNode.AffinityGroup` + `RunnerJob.AffinityGroup`; claim ve failover aynı `RunnerFailover.CanRun` kuralını kullanıyor, grup dışına iş geçmiyor |
+| 21.4 | DB HA / PITR ve RPO-RTO planı; artifact object storage versioning | §34.1, §34.3 | ✅ `docs/HA-DR-RUNBOOK.md`: bileşen/durum haritası, leader election doğrulaması, RPO≤5dk/RTO≤30dk hedefleri, `pg_basebackup` + WAL arşivi + PITR adımları, geri dönüş sonrası audit zinciri kontrolü, S3 versioning/object-lock, felaket senaryoları tablosu, üç aylık tatbikat |
+| 21.5 | 10.000+ monitor endpoint ölçeğinde probe/deployment mimarisi doğrulaması | NFR-004 | ✅ mimari + ⛔ yük testi: tick başına sınırlı yığın (`Monitoring:MaxProbesPerTick`), en uzun bekleyen önce (açlık yok), `(Enabled, LastProbeAt)` indeksi, ölçek tablosu runbook §6'da. **Gerçek 10k endpoint'e karşı uçtan uca yük testi yapılmadı** — F22 performans testi maddesi bunun için duruyor |
+
+### F21 notları
+- Tenant filtresi `ITenantScoped` arayüzünden türetiliyor: yeni bir entity arayüzü uyguladığı anda
+  kapsama giriyor, güncellenmesi unutulacak bir liste yok. Çocuk tablolar (CertificateVersion,
+  CertificateStore, RunnerJob…) da damgalanıyor — aksi halde sorguyu çocuktan başlatmak sınırı
+  aşardı.
+- Tenant **yalnızca kimlikten** çözülür (token claim'i veya kullanıcı kaydı); header/query
+  parametresi kabul edilmez, aksi halde bir tenant diğerinin verisini isteyerek okuyabilirdi.
+- **AuditEvent bilinçli olarak tenant-scoped değil**: hash zinciri tek bir append-only dizidir
+  (§25.3); satıra tenant alanı eklemek zaten mühürlenmiş satırların kanonik formunu değiştirip
+  doğrulamayı bozardı. Tenant başına ayrı zincir ayrı bir tasarım kararıdır ve F18'in kapsamında
+  değildi.
 
 ## F22 — Test stratejisi
 

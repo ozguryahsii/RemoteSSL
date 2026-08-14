@@ -1,8 +1,14 @@
 namespace RemoteSSL.Domain.Entities;
 
 /// <summary>Generic unit of work executed by a runner (connection test, deployment step batch…).</summary>
-public class RunnerJob
+public class RunnerJob : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     /// <summary>Pinned runner, or null = any runner may claim.</summary>
     public Guid? RunnerId { get; set; }
@@ -13,14 +19,46 @@ public class RunnerJob
     public string? ResultJson { get; set; }
     public string CorrelationId { get; set; } = string.Empty;
     public Guid? DeploymentJobTargetId { get; set; }
+    /// <summary>
+    /// Affinity group the job must stay inside (design doc §34.2). Copied from the target's runner
+    /// at queue time, so a reassignment cannot move work to a runner that cannot reach the target.
+    /// </summary>
+    public string? AffinityGroup { get; set; }
+
+    /// <summary>
+    /// When the claiming runner's hold expires. A runner that goes silent past this point has its
+    /// job reclaimed; a healthy runner does not need to renew it, because completion clears it.
+    /// </summary>
+    public DateTimeOffset? LeaseExpiresAt { get; set; }
+
+    /// <summary>How many runners have claimed this job; a reclaim increments it.</summary>
+    public int Attempts { get; set; }
+
+    /// <summary>The runner that held the job before it was reclaimed, for the audit trail.</summary>
+    public Guid? ReassignedFromRunnerId { get; set; }
+
+    /// <summary>
+    /// Set when the job must not be handed to another runner (§34.2). A deployment that already
+    /// reported progress is in this position: its target now holds a backup and a half-applied
+    /// change, and starting again elsewhere could apply it twice.
+    /// </summary>
+    public bool NonReassignable { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? ClaimedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
 }
 
 /// <summary>CA connector instance configuration; secrets inside ConfigJson are stored encrypted.</summary>
-public class CaConnectorConfig
+public class CaConnectorConfig : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     /// <summary>"manual" | "globalsign-hvca" | future types.</summary>
@@ -30,8 +68,15 @@ public class CaConnectorConfig
     public DateTimeOffset CreatedAt { get; set; }
 }
 
-public class CertificateRequestEntity
+public class CertificateRequestEntity : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public Guid? CertificateId { get; set; }
     public string CommonName { get; set; } = string.Empty;
@@ -64,8 +109,15 @@ public class CertificateRequestEntity
     public DateTimeOffset UpdatedAt { get; set; }
 }
 
-public class RenewalPolicy
+public class RenewalPolicy : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public bool Enabled { get; set; } = true;
@@ -84,8 +136,14 @@ public class RenewalPolicy
 /// Maker-checker record (§23.1). Covers both deployment jobs and certificate requests —
 /// §19.1 puts a PENDING_APPROVAL step in the request state machine too.
 /// </summary>
-public class ApprovalRequest
+public class ApprovalRequest : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35). Carried on the child as well as the parent: a query that
+    /// starts at the child would otherwise cross the tenant boundary the parent's filter draws.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     /// <summary>"deployment_job" | "certificate_request".</summary>
     public string ObjectType { get; set; } = "deployment_job";
@@ -108,8 +166,15 @@ public class ApprovalRequest
 /// application (e.g. F5 VIP -> nginx -> IIS backend). Path analysis probes every
 /// hop and pinpoints the layer serving a stale or mismatching certificate.
 /// </summary>
-public class ServicePath
+public class ServicePath : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     /// <summary>Ordered JSON array of monitor endpoint ids (outermost hop first).</summary>
@@ -118,8 +183,15 @@ public class ServicePath
     public DateTimeOffset UpdatedAt { get; set; }
 }
 
-public class UserAccount
+public class UserAccount : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Username { get; set; } = string.Empty;
     public string PasswordHash { get; set; } = string.Empty;

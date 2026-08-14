@@ -33,7 +33,9 @@ public class OutboxDispatcherService(
             {
                 await leaderLock.RunAsLeaderAsync(LockKey, async () =>
                 {
-                    using var scope = scopeFactory.CreateScope();
+                    var (scope, tenancy) = BackgroundScope.CreateCrossTenant(scopeFactory);
+        using var backgroundScope = scope;
+        using var backgroundTenancy = tenancy;
                     var dispatcher = scope.ServiceProvider.GetRequiredService<OutboxDispatcher>();
                     await dispatcher.DispatchBatchAsync(DateTimeOffset.UtcNow, batchSize, stoppingToken);
 

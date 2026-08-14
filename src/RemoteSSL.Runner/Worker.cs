@@ -141,7 +141,9 @@ public class Worker(
                 capabilities = Capabilities,
                 version = "1.0.0",
                 csrPem,
-                adapterVersions = AdapterVersions
+                adapterVersions = AdapterVersions,
+                // §34.2: which runners may take over this one's work if it goes silent.
+                affinityGroup = config["Runner:AffinityGroup"] ?? config["Runner:Segment"]
             }, Json, ct);
             if (!res.IsSuccessStatusCode)
             {
@@ -258,6 +260,10 @@ public class Worker(
             }
             else if (job.JobType == "deploy")
             {
+                // §34.2: from here the target may be changed, so the control plane must stop
+                // treating this job as something another runner could safely take over.
+                await PostAsync(http, $"api/v1/runners/{_runnerId}/jobs/{job.Id}/started", null, ct);
+
                 DeployOutcome outcome = kind switch
                 {
                     "linux" => LinuxDeployer.Deploy(doc.RootElement.Deserialize<DeployPayload>(Json)!, creds),

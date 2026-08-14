@@ -5,8 +5,15 @@ namespace RemoteSSL.Domain.Entities;
 /// §17.2 and the environment governance matrix of §23.2. One policy is marked default and
 /// applies to everything that has no policy of its own.
 /// </summary>
-public class CertificatePolicy
+public class CertificatePolicy : ITenantScoped
 {
+    /// <summary>
+    /// Owning tenant (design doc §35); every query is filtered to it. Left empty on construction
+    /// and stamped at save time from the tenant in force, so a row cannot be created under the
+    /// wrong tenant by forgetting to set it.
+    /// </summary>
+    public Guid TenantId { get; set; }
+
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     /// <summary>Applied when a certificate/request has no explicit policy.</summary>

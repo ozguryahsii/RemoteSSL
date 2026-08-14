@@ -45,6 +45,10 @@ public static class DomainEvents
     public const string RunnerOffline = "runner.offline";
     public const string RunnerOnline = "runner.online";
     public const string CredentialRotationDue = "credential.rotation_due";
+    /// <summary>A stranded job was handed to another runner in the same affinity group (§34.2).</summary>
+    public const string RunnerJobReassigned = "runner.job-reassigned";
+    /// <summary>A stranded job could not be moved and needs a human to look at the target (§34.2).</summary>
+    public const string RunnerJobAbandoned = "runner.job-abandoned";
     public const string NotificationDeliveryFailed = "notification.delivery-failed";
     /// <summary>The audit hash chain no longer verifies — the compliance record is in doubt (§25.3).</summary>
     public const string AuditChainBroken = "audit.chain-broken";
@@ -56,7 +60,8 @@ public static class DomainEvents
     public static readonly IReadOnlySet<string> Incidents = new HashSet<string>
     {
         DeploymentFailed, RollbackStarted, IssuanceFailed, CertificateExpired,
-        DriftDetected, RunnerOffline, NotificationDeliveryFailed, AuditChainBroken
+        DriftDetected, RunnerOffline, NotificationDeliveryFailed, AuditChainBroken,
+        RunnerJobAbandoned
     };
 
     /// <summary>Events that warrant a change/ticket record in the ITSM system (§33).</summary>
@@ -80,9 +85,9 @@ public static class DomainEvents
     public static int SeverityOf(string eventType) => eventType switch
     {
         DeploymentFailed or IssuanceFailed or CertificateExpired or RunnerOffline
-            or AuditChainBroken => 3, // error
+            or AuditChainBroken or RunnerJobAbandoned => 3, // error
         RollbackStarted or DriftDetected or VantageMismatch or MonitorHealthCheckFailed
-            or CertificateExpiring or RenewalDue or CredentialRotationDue
+            or CertificateExpiring or RenewalDue or CredentialRotationDue or RunnerJobReassigned
             or NotificationDeliveryFailed or RequestRejected => 4,                      // warning
         _ => 6                                                                          // informational
     };
