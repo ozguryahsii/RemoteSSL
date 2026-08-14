@@ -446,6 +446,62 @@ curl -s -X POST http://localhost:5200/api/v1/monitors -H 'Content-Type: applicat
        "healthCheckUrl":"https://app.company.com/health","healthCheckExpectedStatus":200}'
 ```
 
+## 19. Kimlik, yetki ve güvenlik (F15) — yeni
+
+**OIDC SSO** (§4.3): `appsettings.json`'da
+
+```json
+{ "Auth": {
+    "Enabled": true,
+    "JwtSecret": "…",
+    "Oidc": {
+      "Authority": "https://login.microsoftonline.com/<tenant>/v2.0",
+      "Audience": "api://remotessl",
+      "RoleClaim": "roles",
+      "RequireMfa": true
+    } } }
+```
+
+Kullanıcıyı IdP'ye bağlamak: **Settings → Users → SSO** düğmesiyle hesabın `sub` değerini girin.
+Roller ve scope'lar yerel hesaptan okunur — kimlik doğrulama federe, yetkilendirme RemoteSSL'de.
+`RequireMfa` açıkken IdP'nin token'ında MFA iddiası (amr/acr) yoksa istek reddedilir.
+
+**Scope (ABAC) kuralları** (§24.2): **Settings → Users → Scopes**.
+
+```json
+[{"action":"certificate.deploy","environment":"PROD","targetGroup":"WEB","adapters":["nginx"]}]
+```
+
+Boş liste = "roller karar verir". Kural varken kapsam dışı bir deployment 403 döner ve audit'e
+`authorization.denied` düşer. Target grubu **Managed Targets → Edit → Group** alanından verilir.
+
+**Runner mTLS kimliği** (§8.2): runner ilk kayıtta kendi anahtarını üretip CSR gönderir, control
+plane iç CA ile clientAuth sertifikası imzalar. **Runners** ekranında **Identity** sütunu
+`client certificate` gösterir. Zorunlu kılmak için `Runner:RequireMutualTls=true` (HTTPS gerekir).
+Kimliği iptal etmek: `POST /api/v1/runners/{id}/revoke-identity` — API key geçerli olsa bile
+runner artık iş alamaz. CA sertifikası: `GET /api/v1/runners/ca-certificate`.
+
+**Adapter allowlist / sürüm sabitleme** (§30.2):
+
+```json
+{ "Security": { "Adapters": {
+    "Allowed": ["nginx", "iis"],
+    "PinnedVersions": { "nginx": "1.0.0" } } } }
+```
+
+Listede olmayan adapter'a deployment açılamaz (422, sebebiyle birlikte); sabitlenen sürüm
+runner'ın bildirdiğiyle uyuşmazsa iş kuyruğa girmez.
+
+**Rate limit ve güvenlik başlıkları** (§30.2): varsayılan çağıran başına dakikada 300 istek
+(runner trafiği için 1200; `/health` ve `/metrics` muaf). Aşımda 429 + `Retry-After`.
+
+```json
+{ "Security": { "RateLimit": { "PermitsPerMinute": 300, "RunnerPermitsPerMinute": 1200 } } }
+```
+
+**Güvenlik CI hattı** (§30.3): `.github/workflows/security.yml` — NuGet/npm zafiyet taraması,
+gitleaks, CodeQL, CycloneDX SBOM ve Trivy. Her push/PR'da ve haftalık çalışır.
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

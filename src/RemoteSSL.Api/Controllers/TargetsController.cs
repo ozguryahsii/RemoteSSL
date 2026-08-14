@@ -15,7 +15,8 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
 {
     public record CreateTargetRequest(
         string Name, string TargetType, string AdapterType, string? Environment, string? OsType,
-        JsonElement? ConnectionConfig, Guid? CredentialRefId, Guid? RunnerId, string? HaRole = null);
+        JsonElement? ConnectionConfig, Guid? CredentialRefId, Guid? RunnerId, string? HaRole = null,
+        string? TargetGroup = null);
     public record CreateStoreRequest(string StoreType, string StorePath, string? Alias, JsonElement? Config);
     public record CreateBindingRequest(Guid CertificateId, JsonElement? ServiceBinding, JsonElement? ActivationPolicy);
 
@@ -23,7 +24,7 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
     public async Task<IEnumerable<object>> List(CancellationToken ct) =>
         await db.Targets.AsNoTracking().Include(t => t.Stores).Select(t => new
         {
-            t.Id, t.Name, TargetType = t.TargetType.ToString(), t.AdapterType, t.Environment, t.HaRole,
+            t.Id, t.Name, TargetType = t.TargetType.ToString(), t.AdapterType, t.Environment, t.HaRole, t.TargetGroup,
             t.CredentialRefId, t.RunnerId, t.ConnectionConfigJson,
             Stores = t.Stores.Select(s => new { s.Id, s.StoreType, s.StorePath, s.Alias })
         }).ToListAsync(ct);
@@ -45,6 +46,7 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
             CredentialRefId = req.CredentialRefId,
             RunnerId = req.RunnerId,
             HaRole = Normalize(req.HaRole),
+            TargetGroup = string.IsNullOrWhiteSpace(req.TargetGroup) ? null : req.TargetGroup.Trim(),
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         };
@@ -57,7 +59,8 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
     public record UpdateTargetRequest(
         string? Name, string? AdapterType, string? Environment,
         JsonElement? ConnectionConfig, Guid? CredentialRefId, bool ClearCredential = false,
-        string? HaRole = null, bool ClearHaRole = false);
+        string? HaRole = null, bool ClearHaRole = false,
+        string? TargetGroup = null, bool ClearTargetGroup = false);
 
     [HttpPatch("{id:guid}")]
     public async Task<ActionResult<object>> Update(Guid id, UpdateTargetRequest req, CancellationToken ct)
@@ -77,6 +80,8 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
         else if (req.CredentialRefId is not null) t.CredentialRefId = req.CredentialRefId;
         if (req.ClearHaRole) t.HaRole = null;
         else if (req.HaRole is not null) t.HaRole = Normalize(req.HaRole);
+        if (req.ClearTargetGroup) t.TargetGroup = null;
+        else if (!string.IsNullOrWhiteSpace(req.TargetGroup)) t.TargetGroup = req.TargetGroup.Trim();
         t.UpdatedAt = DateTimeOffset.UtcNow;
         audit.Append("user:api", "target.update", "target", id.ToString(), "OK", new { t.Name, t.AdapterType });
         await db.SaveChangesAsync(ct);

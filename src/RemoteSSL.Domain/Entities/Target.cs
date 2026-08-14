@@ -24,6 +24,9 @@ public class Target
 
     public Guid? RunnerId { get; set; }
 
+    /// <summary>Group used by scope rules and bulk operations (§24.2 scope.targetGroup).</summary>
+    public string? TargetGroup { get; set; }
+
     /// <summary>
     /// Role inside an HA pair: "standby" | "active" (null = not part of a pair). The
     /// standby-first strategy of §21.4/§14.3 deploys standby members before active ones.

@@ -26,6 +26,22 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
     private string _apiKey = string.Empty;
     private static readonly string[] Capabilities = ["ssh", "sftp", "linux-deploy", "windows-deploy", "java-keystore", "oracle-wallet", "f5-bigip"];
 
+    /// <summary>
+    /// Adapter versions this runner ships, reported at registration and heartbeat so the
+    /// control plane can pin versions before dispatching work (§30.2 supply chain).
+    /// </summary>
+    private static readonly Dictionary<string, string> AdapterVersions = new()
+    {
+        ["nginx"] = "1.0.0", ["apache"] = "1.0.0", ["haproxy"] = "1.0.0", ["generic-file"] = "1.0.0",
+        ["iis"] = "1.0.0", ["windows-cert-store"] = "1.0.0",
+        ["java-keystore"] = "1.0.0", ["java-truststore"] = "1.0.0", ["oracle-wallet"] = "1.0.0",
+        ["f5-bigip"] = "1.0.0", ["fortigate"] = "1.0.0", ["paloalto"] = "1.0.0",
+        ["citrix-adc"] = "1.0.0", ["cisco-ise"] = "1.0.0"
+    };
+
+    private System.Security.Cryptography.RSA? _identityKey;
+    private System.Security.Cryptography.X509Certificates.X509Certificate2? _identityCertificate;
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         var baseUrl = config["ControlPlane:Url"] ?? "http://localhost:5200";
@@ -34,6 +50,14 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
 
         while (!ct.IsCancellationRequested && !await RegisterAsync(http, ct))
             await Task.Delay(TimeSpan.FromSeconds(10), ct);
+
+        // Once an identity certificate has been issued, every later call presents it, so the
+        // control plane can require mutual TLS instead of trusting the API key alone (§8.2).
+        if (_identityCertificate is not null)
+        {
+            http = CreateMutualTlsClient(baseUrl);
+            logger.LogInformation("Using the runner identity certificate for control-plane calls");
+        }
 
         var pollInterval = TimeSpan.FromSeconds(config.GetValue("Runner:PollSeconds", 5));
         var lastHeartbeat = DateTimeOffset.MinValue;
@@ -45,7 +69,7 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
                 if (DateTimeOffset.UtcNow - lastHeartbeat > TimeSpan.FromSeconds(30))
                 {
                     await PostAsync(http, $"api/v1/runners/{_runnerId}/heartbeat",
-                        new { capabilities = Capabilities, version = "1.0.0" }, ct);
+                        new { capabilities = Capabilities, version = "1.0.0", adapterVersions = AdapterVersions }, ct);
                     lastHeartbeat = DateTimeOffset.UtcNow;
                 }
 
@@ -73,17 +97,44 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
 
     private sealed record ClaimedJob(Guid Id, string JobType, string PayloadJson, string CorrelationId, string? Signature);
 
+    /// <summary>
+    /// A client that presents the runner's identity certificate. Built by hand rather than via
+    /// the factory because the certificate only exists after registration completes.
+    /// </summary>
+    private HttpClient CreateMutualTlsClient(string baseUrl)
+    {
+        var handler = new HttpClientHandler();
+        handler.ClientCertificates.Add(_identityCertificate!);
+        handler.ClientCertificateOptions = ClientCertificateOption.Manual;
+        return new HttpClient(handler) { BaseAddress = new Uri(baseUrl) };
+    }
+
     private async Task<bool> RegisterAsync(HttpClient http, CancellationToken ct)
     {
         try
         {
+            // §8.2: the runner generates its own key pair and sends only the CSR, so the
+            // private half of its identity never leaves this machine.
+            var name = config["Runner:Name"] ?? Environment.MachineName;
+            string? csrPem = null;
+            if (config.GetValue("Runner:RequestIdentityCertificate", true))
+            {
+                _identityKey = System.Security.Cryptography.RSA.Create(2048);
+                var request = new System.Security.Cryptography.X509Certificates.CertificateRequest(
+                    $"CN={name}", _identityKey, System.Security.Cryptography.HashAlgorithmName.SHA256,
+                    System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+                csrPem = request.CreateSigningRequestPem();
+            }
+
             var res = await http.PostAsJsonAsync("api/v1/runners/register", new
             {
                 bootstrapToken = config["Runner:BootstrapToken"] ?? "",
-                name = config["Runner:Name"] ?? Environment.MachineName,
+                name,
                 segment = config["Runner:Segment"],
                 capabilities = Capabilities,
-                version = "1.0.0"
+                version = "1.0.0",
+                csrPem,
+                adapterVersions = AdapterVersions
             }, Json, ct);
             if (!res.IsSuccessStatusCode)
             {
@@ -93,6 +144,19 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
             var body = await res.Content.ReadFromJsonAsync<JsonElement>(Json, ct);
             _runnerId = body.GetProperty("runnerId").GetGuid();
             _apiKey = body.GetProperty("apiKey").GetString()!;
+
+            if (_identityKey is not null
+                && body.TryGetProperty("certificatePem", out var certPem)
+                && certPem.ValueKind == JsonValueKind.String)
+            {
+                // The key and certificate must be married before it can be presented as a
+                // client credential; CreateFromPem gives the public half only.
+                _identityCertificate = System.Security.Cryptography.X509Certificates.X509Certificate2
+                    .CreateFromPem(certPem.GetString()!, _identityKey.ExportRSAPrivateKeyPem());
+                logger.LogInformation("Received runner identity certificate (thumbprint {Thumbprint})",
+                    _identityCertificate.Thumbprint);
+            }
+
             logger.LogInformation("Registered as runner {Id}", _runnerId);
             return true;
         }

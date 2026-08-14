@@ -34,6 +34,7 @@ public interface IRemoteSslDbContext
     DbSet<CertificatePolicy> CertificatePolicies { get; }
     DbSet<IdempotencyRecord> IdempotencyRecords { get; }
     DbSet<Artifact> Artifacts { get; }
+    DbSet<RunnerCertificateAuthority> RunnerAuthorities { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

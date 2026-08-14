@@ -24,23 +24,31 @@ export function Runners() {
   const [runners] = useData<{
     id: string; name: string; segment: string | null; status: string
     capabilities: string; version: string | null; lastHeartbeatAt: string | null
+    hasIdentityCertificate: boolean; identityRevokedAt: string | null; identityRevokedReason: string | null
   }[]>('/api/v1/runners', 10000)
   return (
     <div className="page">
       <h1>Runners</h1>
       <table className="data-table">
-        <thead><tr><th>Name</th><th>Segment</th><th>Status</th><th>Capabilities</th><th>Version</th><th>Last heartbeat</th></tr></thead>
+        <thead><tr><th>Name</th><th>Segment</th><th>Status</th><th>Identity</th><th>Capabilities</th><th>Version</th><th>Last heartbeat</th></tr></thead>
         <tbody>
           {(runners ?? []).map((r) => (
             <tr key={r.id}>
               <td>{r.name}</td><td>{r.segment ?? '—'}</td>
               <td><span className={r.status === 'Online' ? 'ok' : 'bad'}>{r.status}</span></td>
+              <td className="small">
+                {r.identityRevokedAt
+                  ? <span className="bad">revoked{r.identityRevokedReason ? ` — ${r.identityRevokedReason}` : ''}</span>
+                  : r.hasIdentityCertificate
+                    ? <span className="ok">client certificate</span>
+                    : <span className="muted">API key only</span>}
+              </td>
               <td className="small muted">{JSON.parse(r.capabilities || '[]').join(', ')}</td>
               <td>{r.version ?? '—'}</td>
               <td className="small muted">{r.lastHeartbeatAt ? new Date(r.lastHeartbeatAt).toLocaleString() : '—'}</td>
             </tr>
           ))}
-          {(runners ?? []).length === 0 && <tr><td colSpan={6} className="muted">No runners registered. Start a runner with the bootstrap token.</td></tr>}
+          {(runners ?? []).length === 0 && <tr><td colSpan={7} className="muted">No runners registered. Start a runner with the bootstrap token.</td></tr>}
         </tbody>
       </table>
     </div>

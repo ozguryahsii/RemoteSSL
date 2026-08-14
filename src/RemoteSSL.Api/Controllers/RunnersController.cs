@@ -22,11 +22,15 @@ namespace RemoteSSL.Api.Controllers;
 [Microsoft.AspNetCore.Authorization.AllowAnonymous] // runner API-key auth, not user JWT
 public class RunnersController(
     IRemoteSslDbContext db, IConfiguration config, ISecretProtector protector,
-    DeploymentService deployments, AuditWriter audit) : ControllerBase
+    DeploymentService deployments, AuditWriter audit,
+    Infrastructure.Security.RunnerIdentityService identities) : ControllerBase
 {
-    public record RegisterRequest(string BootstrapToken, string Name, string? Segment, string[] Capabilities, string? Version);
-    public record RegisterResponse(Guid RunnerId, string ApiKey);
-    public record HeartbeatRequest(string[] Capabilities, string? Version);
+    public record RegisterRequest(string BootstrapToken, string Name, string? Segment, string[] Capabilities,
+        string? Version, string? CsrPem = null, Dictionary<string, string>? AdapterVersions = null);
+    public record RegisterResponse(Guid RunnerId, string ApiKey,
+        string? CertificatePem = null, string? CaCertificatePem = null);
+    public record HeartbeatRequest(string[] Capabilities, string? Version,
+        Dictionary<string, string>? AdapterVersions = null);
     public record CompleteRequest(bool Success, bool RolledBack, List<StepDto> Steps, string? ResultJson);
     public record StepDto(string Step, bool Success, string SafeLog);
 
@@ -50,10 +54,27 @@ public class RunnersController(
         runner.Version = req.Version;
         runner.ApiKeyHash = Hash(apiKey);
         runner.LastHeartbeatAt = DateTimeOffset.UtcNow;
+        runner.AdapterVersionsJson = JsonSerializer.Serialize(req.AdapterVersions ?? []);
+        // Re-registering clears an earlier revocation only because the bootstrap token was
+        // presented again, which is the operator deliberately re-enrolling the runner.
+        runner.IdentityRevokedAt = null;
+        runner.IdentityRevokedReason = null;
+
+        // §8.2: the runner generates its own key and sends a CSR; we hand back a client
+        // certificate so later calls can be authenticated by identity, not just a shared key.
+        string? certificatePem = null, caPem = null;
+        if (!string.IsNullOrWhiteSpace(req.CsrPem))
+        {
+            var identity = await identities.IssueAsync(req.Name, req.CsrPem, ct);
+            runner.IdentityCertThumbprint = identity.Thumbprint;
+            certificatePem = identity.CertificatePem;
+            caPem = identity.CaCertificatePem;
+        }
+
         audit.Append($"runner:{req.Name}", "runner.register", "runner", runner.Id.ToString(), "OK",
-            new { req.Segment, req.Capabilities });
+            new { req.Segment, req.Capabilities, identityIssued = certificatePem is not null });
         await db.SaveChangesAsync(ct);
-        return new RegisterResponse(runner.Id, apiKey);
+        return new RegisterResponse(runner.Id, apiKey, certificatePem, caPem);
     }
 
     [HttpGet]
@@ -61,8 +82,37 @@ public class RunnersController(
         await db.Runners.AsNoTracking().Select(r => new
         {
             r.Id, r.Name, r.Segment, Status = r.Status.ToString(),
-            Capabilities = r.CapabilitiesJson, r.Version, r.LastHeartbeatAt, r.RegisteredAt
+            Capabilities = r.CapabilitiesJson, r.Version, r.LastHeartbeatAt, r.RegisteredAt,
+            r.AdapterVersionsJson, HasIdentityCertificate = r.IdentityCertThumbprint != null,
+            r.IdentityRevokedAt, r.IdentityRevokedReason
         }).ToListAsync(ct);
+
+    /// <summary>
+    /// Revokes a runner's identity certificate (§8.2/§30.2). The runner keeps its API key but
+    /// can no longer authenticate where mutual TLS is required, and re-enrolment needs the
+    /// bootstrap token again.
+    /// </summary>
+    [HttpPost("{id:guid}/revoke-identity")]
+    [Microsoft.AspNetCore.Authorization.Authorize(Policy = "Admin")]
+    public async Task<IActionResult> RevokeIdentity(Guid id, [FromBody] RevokeIdentityRequest req, CancellationToken ct)
+    {
+        var runner = await db.Runners.FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (runner is null) return NotFound();
+        runner.IdentityRevokedAt = DateTimeOffset.UtcNow;
+        runner.IdentityRevokedReason = req.Reason;
+        runner.Status = RunnerStatus.Disabled;
+        audit.Append("user:api", "runner.identity.revoke", "runner", id.ToString(), "REVOKED",
+            new { runner.Name, req.Reason });
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    public record RevokeIdentityRequest(string? Reason = null);
+
+    /// <summary>The runner CA certificate, so a runner can pin the control plane's issuer.</summary>
+    [HttpGet("ca-certificate")]
+    public async Task<ActionResult<object>> CaCertificate(CancellationToken ct) =>
+        new { CertificatePem = await identities.GetAuthorityPemAsync(ct) };
 
     [HttpDelete("{id:guid}")]
     [Microsoft.AspNetCore.Authorization.Authorize(Policy = "Admin")]
@@ -87,6 +137,7 @@ public class RunnersController(
         runner.LastHeartbeatAt = DateTimeOffset.UtcNow;
         runner.CapabilitiesJson = JsonSerializer.Serialize(req.Capabilities);
         runner.Version = req.Version;
+        if (req.AdapterVersions is not null) runner.AdapterVersionsJson = JsonSerializer.Serialize(req.AdapterVersions);
         await db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -219,11 +270,27 @@ public class RunnersController(
         return new { cred.CredentialType, cred.Username, Secret = secretJson };
     }
 
+    /// <summary>
+    /// API key plus, when mutual TLS is required, the client certificate the runner was issued
+    /// at bootstrap. A revoked identity is refused even with a valid key (§8.2, §30.2).
+    /// </summary>
     private async Task<RunnerNode?> AuthenticateAsync(Guid id, CancellationToken ct)
     {
         if (!Request.Headers.TryGetValue("X-Runner-Key", out var key)) return null;
         var runner = await db.Runners.FirstOrDefaultAsync(r => r.Id == id, ct);
-        return runner is not null && runner.ApiKeyHash == Hash(key.ToString()) ? runner : null;
+        if (runner is null || runner.ApiKeyHash != Hash(key.ToString())) return null;
+        if (runner.IdentityRevokedAt is not null) return null;
+
+        if (config.GetValue("Runner:RequireMutualTls", false))
+        {
+            var presented = Request.HttpContext.Connection.ClientCertificate;
+            if (presented is null) return null;
+            var thumbprint = Convert.ToHexString(SHA256.HashData(presented.RawData));
+            if (!string.Equals(thumbprint, runner.IdentityCertThumbprint, StringComparison.OrdinalIgnoreCase))
+                return null;
+        }
+
+        return runner;
     }
 
     private static string Hash(string value) =>

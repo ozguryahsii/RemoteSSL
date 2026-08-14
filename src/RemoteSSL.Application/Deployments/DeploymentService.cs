@@ -20,7 +20,7 @@ namespace RemoteSSL.Application.Deployments;
 public class DeploymentService(
     IRemoteSslDbContext db, ISecretProtector protector, AuditWriter audit,
     INotificationSink notifier, ITlsProber prober, Policies.GovernanceService governance,
-    Artifacts.ArtifactService artifacts)
+    Artifacts.ArtifactService artifacts, Microsoft.Extensions.Configuration.IConfiguration configuration)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -93,6 +93,10 @@ public class DeploymentService(
         var conflict = bindingIds.FirstOrDefault(b => live.Contains(b));
         if (conflict != Guid.Empty)
             throw new InvalidOperationException($"Binding {conflict} already has an active deployment job");
+
+        // §30.2 supply chain: refuse adapters that are not allowlisted, or whose version on
+        // the assigned runner does not match the pin, before any work is queued.
+        await EnsureAdaptersAllowedAsync(bindings, ct);
 
         var (resolvedConcurrency, stopOnFailure, manualContinuation) = ResolveStrategy(strategy, maxConcurrency);
         var job = new DeploymentJob
@@ -268,6 +272,39 @@ public class DeploymentService(
             dispatched++;
         }
         return dispatched;
+    }
+
+    /// <summary>
+    /// Adapter allowlist and version pinning (§30.2, ADR-006). Configured under
+    /// Security:Adapters:Allowed and Security:Adapters:PinnedVersions; unset means unrestricted.
+    /// </summary>
+    private async Task EnsureAdaptersAllowedAsync(
+        IReadOnlyList<DeploymentBinding> bindings, CancellationToken ct)
+    {
+        var allowed = configuration.GetSection("Security:Adapters:Allowed")
+            .GetChildren().Select(c => c.Value).Where(v => !string.IsNullOrWhiteSpace(v)).ToArray()!;
+        var pinned = configuration.GetSection("Security:Adapters:PinnedVersions")
+            .GetChildren()
+            .Where(c => !string.IsNullOrWhiteSpace(c.Value))
+            .ToDictionary(c => c.Key, c => c.Value!);
+        if (allowed.Length == 0 && pinned.Count == 0) return;
+
+        foreach (var binding in bindings)
+        {
+            var target = binding.CertificateStore.Target;
+            var runnerVersions = target.RunnerId is { } runnerId
+                ? await db.Runners.Where(r => r.Id == runnerId)
+                    .Select(r => r.AdapterVersionsJson).FirstOrDefaultAsync(ct)
+                : null;
+
+            var verdict = Security.AdapterAllowlist.Check(allowed, pinned, target.AdapterType, runnerVersions);
+            if (!verdict.Allowed)
+            {
+                audit.Append("service:orchestrator", "deployment.adapter-refused", "target",
+                    target.Id.ToString(), "BLOCKED", new { target.AdapterType, reason = verdict.Reason });
+                throw new InvalidOperationException(verdict.Reason);
+            }
+        }
     }
 
     /// <summary>

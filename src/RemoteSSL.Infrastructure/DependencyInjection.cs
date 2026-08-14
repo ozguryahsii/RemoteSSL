@@ -43,6 +43,7 @@ public static class DependencyInjection
         services.AddScoped<ISecretProtector, Security.DataProtectionSecretProtector>();
         services.AddScoped<Application.Auditing.AuditWriter>();
         services.AddScoped<Application.Policies.GovernanceService>();
+        services.AddScoped<Security.RunnerIdentityService>();
         services.AddScoped<Application.Observability.MetricsRecorder>();
         services.AddScoped<Application.Observability.MetricsQuery>();
         services.AddScoped<Application.Certificates.InventoryService>();

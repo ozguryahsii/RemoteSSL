@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using RemoteSSL.Api.Controllers;
+using RemoteSSL.Api.Security;
 using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Application.Observability;
 using OpenTelemetry.Resources;
@@ -14,6 +15,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 // Idempotency-Key support for create endpoints (§27.2).
 builder.Services.AddScoped<RemoteSSL.Api.Idempotency.IdempotencyFilter>();
+// §24.2 attribute-based scope checks on operations that touch real systems.
+builder.Services.AddScoped<ScopeGuard>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddRemoteSslInfrastructure(builder.Configuration);
@@ -44,35 +47,10 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .AllowAnyMethod()));
 
 var authEnabled = builder.Configuration.GetValue("Auth:Enabled", false);
-if (authEnabled)
-{
-    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(o =>
-        o.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidIssuer = "remotessl",
-            ValidAudience = "remotessl",
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(builder.Configuration["Auth:JwtSecret"]
-                    ?? throw new InvalidOperationException("Auth:JwtSecret is required when Auth:Enabled=true")))
-        });
-    builder.Services.AddAuthorizationBuilder()
-        .SetFallbackPolicy(new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
-            .RequireAuthenticatedUser().Build())
-        // Role policies per design doc §24.1
-        .AddPolicy("Admin", p => p.RequireRole("PlatformAdministrator"))
-        .AddPolicy("CertOps", p => p.RequireRole("CertificateOperator", "PlatformAdministrator"))
-        .AddPolicy("DeployOps", p => p.RequireRole("DeploymentOperator", "PlatformAdministrator"))
-        .AddPolicy("Approver", p => p.RequireRole("CertificateApprover", "PlatformAdministrator"));
-}
-else
-{
-    // Auth disabled (dev): all policies pass so [Authorize(Policy=...)] attributes stay inert.
-    builder.Services.AddAuthorizationBuilder()
-        .AddPolicy("Admin", p => p.RequireAssertion(_ => true))
-        .AddPolicy("CertOps", p => p.RequireAssertion(_ => true))
-        .AddPolicy("DeployOps", p => p.RequireAssertion(_ => true))
-        .AddPolicy("Approver", p => p.RequireAssertion(_ => true));
-}
+builder.Services.AddRemoteSslAuthentication(builder.Configuration);
+
+// §30.2: bound request rates so a stolen token or a loop cannot hammer the control plane.
+builder.Services.AddRemoteSslRateLimiting(builder.Configuration);
 
 var app = builder.Build();
 
@@ -82,7 +60,9 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseSecurityHeaders();
 app.UseCors();
+app.UseRateLimiter();
 if (authEnabled) app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

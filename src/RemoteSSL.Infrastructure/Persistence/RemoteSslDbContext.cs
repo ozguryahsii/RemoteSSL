@@ -31,6 +31,7 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<CertificatePolicy> CertificatePolicies => Set<CertificatePolicy>();
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
     public DbSet<Artifact> Artifacts => Set<Artifact>();
+    public DbSet<RunnerCertificateAuthority> RunnerAuthorities => Set<RunnerCertificateAuthority>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {

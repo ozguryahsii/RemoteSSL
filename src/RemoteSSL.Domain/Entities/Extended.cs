@@ -125,6 +125,13 @@ public class UserAccount
     public string PasswordHash { get; set; } = string.Empty;
     /// <summary>JSON array, e.g. ["Admin"] — roles per design doc §24.1.</summary>
     public string RolesJson { get; set; } = "[]";
+    /// <summary>
+    /// JSON array of scope rules (§24.2): action + environment/targetGroup/adapter limits.
+    /// Empty = the user's roles alone decide, which is the pre-scope behaviour.
+    /// </summary>
+    public string ScopesJson { get; set; } = "[]";
+    /// <summary>Subject from the identity provider when the account is federated (§4.3).</summary>
+    public string? ExternalSubject { get; set; }
     public bool Enabled { get; set; } = true;
     public DateTimeOffset CreatedAt { get; set; }
 }

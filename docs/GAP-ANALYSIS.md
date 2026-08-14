@@ -62,17 +62,23 @@ key taşıyan artifact'leri reddeder.
 | 14.4 | Probe policy alanları | §5.2 | ✅ protocol, timeout, retry (transient hatalarda backoff'lu tekrar) — Monitors → Edit'ten düzenlenebilir |
 | 14.5 | Monitor-certificate `confidence` / `source` | §5.2 | ✅ doğrudan handshake gözlemi 100 güven + `probe` / `internal-probe` kaynağı olarak kaydediliyor |
 
-## F15 — Kimlik, RBAC ve güvenlik mimarisi
+## F15 — Kimlik, RBAC ve güvenlik mimarisi ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 15.1 | OIDC/SAML SSO (Entra ID/Keycloak) + upstream MFA | §4.3, §30.2 | YOK (yerel JWT var) |
-| 15.2 | ABAC scope modeli: `scope.environment`, `scope.targetGroup`, `scope.adapter`, `condition.approvalRequired` | §24.2 | YOK (yalnız rol bazlı) |
-| 15.3 | Rol seti tamlığı: Viewer, Security Auditor, Break-glass Administrator | §24.1 | KISMİ (4 rol var) |
-| 15.4 | Runner kimliği için mTLS/client certificate ve revocation | §8.2, §30.2 | KISMİ (API key + HMAC imzalı job context) |
-| 15.5 | Adapter paket imzalama / allowlist / sürüm sabitleme (supply-chain kontrolü) | §30.2, ADR-006 | YOK |
-| 15.6 | Secure coding hattı: SBOM/dependency scan, SAST/DAST, secret scanning, image scan | §30.3 | YOK |
-| 15.7 | CSRF koruması ve API rate limit | §30.2, §4.2 | YOK |
+| 15.1 | OIDC SSO + MFA | §4.3, §30.2 | ✅ `Auth:Oidc:*` ile Entra ID/Keycloak; yerel JWT ile birlikte çalışır, roller yerel hesaptan gelir, `Auth:Oidc:RequireMfa` ile IdP'nin MFA iddiası (amr/acr) zorunlu kılınır. **SAML yapılmadı** — her iki hedef IdP de OIDC konuşuyor; SAML üçüncü parti yığın gerektirir (aşağıdaki kalan listesinde) |
+| 15.2 | ABAC scope modeli | §24.2 | ✅ kullanıcı başına kural listesi (action + environment + targetGroup + adapter + approvalRequired); deployment oluşturma her hedef için ayrı kontrol edilir, ret audit'lenir (`authorization.denied`) |
+| 15.3 | Rol seti | §24.1 | ✅ yedi rolün tamamı; `Reader` ve `Auditor` politikaları eklendi, Settings ekranından atanabiliyor |
+| 15.4 | Runner mTLS kimliği + revocation | §8.2, §30.2 | ✅ runner kendi anahtarını üretip CSR gönderir, control plane iç CA ile clientAuth sertifikası imzalar; `Runner:RequireMutualTls` ile zorunlu, revoke edilen kimlik API key'i geçerli olsa bile reddedilir |
+| 15.5 | Adapter allowlist + sürüm sabitleme | §30.2, ADR-006 | ✅ `Security:Adapters:Allowed` / `PinnedVersions`; runner adapter sürümlerini bildirir, uymayan hedefe iş kuyruğa bile girmez. **Paket imzalama** dosya olarak dağıtılan plugin modeli olmadığı için kapsam dışı bırakıldı (gerekçe kodda) |
+| 15.6 | Güvenlik CI hattı | §30.3 | ✅ `.github/workflows/security.yml`: NuGet/npm zafiyet taraması, gitleaks secret taraması, CodeQL SAST, CycloneDX SBOM, Trivy dosya sistemi taraması |
+| 15.7 | Rate limit + güvenlik başlıkları | §30.2, §4.2 | ✅ çağıran başına dakikalık limit (runner trafiği ayrı, daha geniş kova; health/metrics muaf), 429 + Retry-After; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Cross-Origin-Resource-Policy`. CSRF ayrı bir önlem gerektirmiyor: API cookie değil bearer token ile çalışıyor |
+
+### F15'ten kalan
+- **SAML SSO** — Entra ID ve Keycloak OIDC ile karşılandığı için ertelendi; SAML gerekirse
+  Sustainsys.Saml2 benzeri bir yığın eklenmelidir.
+- **Adapter paket imzalama** — adapter'lar runner binary'si içinde geldiği sürece imzalanacak
+  bir paket yok; süreç dışı plugin modeli gelirse ADR-006 yeniden ele alınmalı.
 
 ## F16 — Secret provider ve private key koruması
 

@@ -351,10 +351,14 @@ export function CaIntegrations() {
 }
 
 export function Settings() {
-  const [users, reload] = useData<{ id: string; username: string; rolesJson: string; enabled: boolean }[]>('/api/v1/users')
+  const [users, reload] = useData<{
+    id: string; username: string; rolesJson: string; scopesJson: string
+    externalSubject: string | null; enabled: boolean
+  }[]>('/api/v1/users')
   const [username, setUsername] = useState(''); const [password, setPassword] = useState('')
   const [roles, setRoles] = useState<string[]>(['Viewer'])
-  const allRoles = ['Viewer', 'CertificateOperator', 'DeploymentOperator', 'CertificateApprover', 'SecurityAuditor', 'PlatformAdministrator']
+  const allRoles = ['Viewer', 'CertificateOperator', 'DeploymentOperator', 'CertificateApprover',
+    'SecurityAuditor', 'PlatformAdministrator', 'BreakGlassAdministrator']
 
   async function addUser(e: React.FormEvent) {
     e.preventDefault()
@@ -379,6 +383,35 @@ export function Settings() {
       reload()
     }
   }
+  /** §24.2: scope rules narrow a role to an environment, target group and adapter set. */
+  async function editScopes(u: { id: string; username: string; scopesJson: string }) {
+    const current = JSON.stringify(JSON.parse(u.scopesJson || '[]'), null, 2)
+    const next = window.prompt(
+      `Scope rules for ${u.username} — JSON array. Empty array = roles alone decide.\n`
+      + `Example: [{"action":"certificate.deploy","environment":"PROD","targetGroup":"WEB","adapters":["nginx"]}]`,
+      current)
+    if (next === null) return
+    try {
+      const scopes = JSON.parse(next)
+      const res = await apiPut(`/api/v1/users/${u.id}`, { scopes })
+      if (!res.ok) alert(`Save failed (${res.status})`)
+      reload()
+    } catch {
+      alert('That is not valid JSON.')
+    }
+  }
+
+  /** Links a local account to an identity-provider subject for SSO (§4.3). */
+  async function editFederation(u: { id: string; username: string; externalSubject: string | null }) {
+    const next = window.prompt(
+      `Identity provider subject (sub claim) for ${u.username}. Leave empty to unlink.`,
+      u.externalSubject ?? '')
+    if (next === null) return
+    await apiPut(`/api/v1/users/${u.id}`,
+      next ? { externalSubject: next } : { clearExternalSubject: true })
+    reload()
+  }
+
   async function removeUser(u: { id: string; username: string }) {
     if (!window.confirm(`Delete user ${u.username}?`)) return
     await apiDelete(`/api/v1/users/${u.id}`)
@@ -404,15 +437,24 @@ export function Settings() {
         <button type="submit">Add user</button>
       </form>
       <table className="data-table">
-        <thead><tr><th>Username</th><th>Roles</th><th>Enabled</th><th></th></tr></thead>
+        <thead><tr><th>Username</th><th>Roles</th><th>Scope</th><th>SSO subject</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           {(users ?? []).map((u) => (
             <tr key={u.id}>
               <td>{u.username}</td>
               <td className="small">{JSON.parse(u.rolesJson || '[]').join(', ')}</td>
+              <td className="small muted">
+                {(JSON.parse(u.scopesJson || '[]') as { action: string; environment?: string }[]).length === 0
+                  ? 'unrestricted'
+                  : (JSON.parse(u.scopesJson) as { action: string; environment?: string }[])
+                      .map((r, i) => <div key={i}>{r.action}{r.environment ? ` @ ${r.environment}` : ''}</div>)}
+              </td>
+              <td className="small muted">{u.externalSubject ?? '—'}</td>
               <td>{u.enabled ? <span className="ok">yes</span> : <span className="bad">no</span>}</td>
               <td className="actions">
                 <button onClick={() => editRoles(u)}>Roles</button>
+                <button onClick={() => editScopes(u)}>Scopes</button>
+                <button onClick={() => editFederation(u)}>SSO</button>
                 <button onClick={() => resetPassword(u)}>Reset password</button>
                 <button onClick={() => toggleUser(u)}>{u.enabled ? 'Disable' : 'Enable'}</button>
                 <button className="danger" onClick={() => removeUser(u)}>Delete</button>

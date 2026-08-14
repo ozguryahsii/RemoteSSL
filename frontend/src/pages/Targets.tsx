@@ -4,7 +4,7 @@ import { useData, post } from './SimplePages'
 
 interface TargetRow {
   id: string; name: string; targetType: string; adapterType: string
-  environment: string | null; haRole: string | null
+  environment: string | null; haRole: string | null; targetGroup: string | null
   credentialRefId: string | null; connectionConfigJson: string
   stores: { id: string; storeType: string; storePath: string; alias: string | null }[]
 }
@@ -38,7 +38,7 @@ export default function Targets() {
   const [testResult, setTestResult] = useState<string | null>(null)
   const [discovery, setDiscovery] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
-  const [eHaRole, setEHaRole] = useState('')
+  const [eHaRole, setEHaRole] = useState(''); const [eGroup, setEGroup] = useState('')
   const [eName, setEName] = useState(''); const [eAdapter, setEAdapter] = useState('nginx')
   const [eHost, setEHost] = useState(''); const [ePort, setEPort] = useState('22'); const [eCred, setECred] = useState('')
   const [eMethod, setEMethod] = useState('winrm')
@@ -79,7 +79,7 @@ export default function Targets() {
 
   function startEdit(t: TargetRow) {
     setEditing(t.id); setEName(t.name); setEAdapter(t.adapterType); setECred(t.credentialRefId ?? '')
-    setEHaRole(t.haRole ?? '')
+    setEHaRole(t.haRole ?? ''); setEGroup(t.targetGroup ?? '')
     try {
       const c = JSON.parse(t.connectionConfigJson)
       if (c.managementUrl) {
@@ -100,6 +100,7 @@ export default function Targets() {
     const res = await patchTarget(id, {
       name: eName, adapterType: eAdapter, connectionConfig,
       haRole: eHaRole || null, clearHaRole: !eHaRole,
+      targetGroup: eGroup || null, clearTargetGroup: !eGroup,
       credentialRefId: eCred || null, clearCredential: !eCred,
     })
     if (!res.ok) { alert('Update failed: ' + ((await res.json()).title ?? res.status)); return }
@@ -183,7 +184,7 @@ export default function Targets() {
         </div>
       )}
       <table className="data-table">
-        <thead><tr><th>Name</th><th>Adapter</th><th>Connection</th><th>HA role</th><th>Stores</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Adapter</th><th>Connection</th><th>HA role</th><th>Group</th><th>Stores</th><th></th></tr></thead>
         <tbody>
           {(targets ?? []).map((t) => editing === t.id ? (
             <tr key={t.id} className="editing-row">
@@ -211,6 +212,10 @@ export default function Targets() {
                 </select>
               </td>
               <td>
+                <input value={eGroup} onChange={(e) => setEGroup(e.target.value)} placeholder="group"
+                       title="Used by scope rules (§24.2)" style={{ width: 90 }} />
+              </td>
+              <td>
                 <select value={eCred} onChange={(e) => setECred(e.target.value)}>
                   <option value="">no credential</option>
                   {(creds ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -226,6 +231,7 @@ export default function Targets() {
               <td>{t.name}</td><td>{t.adapterType}</td>
               <td className="small muted">{t.connectionConfigJson}</td>
               <td className="small">{t.haRole ?? <span className="muted">—</span>}</td>
+              <td className="small">{t.targetGroup ?? <span className="muted">—</span>}</td>
               <td className="small">
                 {t.stores.length === 0 ? '—' : t.stores.map((s) => (
                   <span key={s.id} className="store-chip">
@@ -243,7 +249,7 @@ export default function Targets() {
               </td>
             </tr>
           ))}
-          {(targets ?? []).length === 0 && <tr><td colSpan={6} className="muted">No targets yet.</td></tr>}
+          {(targets ?? []).length === 0 && <tr><td colSpan={7} className="muted">No targets yet.</td></tr>}
         </tbody>
       </table>
     </div>

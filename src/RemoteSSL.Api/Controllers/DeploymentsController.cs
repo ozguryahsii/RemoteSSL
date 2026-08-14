@@ -8,7 +8,8 @@ namespace RemoteSSL.Api.Controllers;
 [ApiController]
 [Route("api/v1/deployments")]
 public class DeploymentsController(
-    IRemoteSslDbContext db, DeploymentService service, DeploymentPlanner planner) : ControllerBase
+    IRemoteSslDbContext db, DeploymentService service, DeploymentPlanner planner,
+    Security.ScopeGuard scopes) : ControllerBase
 {
     public record CreateDeploymentRequest(
         Guid CertificateVersionId, List<Guid> BindingIds, string Strategy = "sequential",
@@ -181,16 +182,51 @@ public class DeploymentsController(
     {
         try
         {
+            // §24.2: the caller's scope must cover every environment/group/adapter this job touches.
+            foreach (var scope in await DescribeScopeAsync(req.CertificateVersionId, req.BindingIds, req.ApprovalRequired, ct))
+                await scopes.EnsureAllowedAsync(User, scope, ct);
+
             var job = await service.CreateJobAsync(req.CertificateVersionId, req.BindingIds,
                 req.Strategy, req.RequestedBy, req.ApprovalRequired, ct, req.MaxConcurrency);
             if (req.AutoExecute && !req.ApprovalRequired) await service.ExecuteAsync(job.Id, ct);
             return CreatedAtAction(nameof(Get), new { id = job.Id }, new { job.Id, Status = job.Status.ToString() });
         }
+        catch (Security.ScopeDeniedException ex) { return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails { Title = ex.Message }); }
         catch (KeyNotFoundException ex) { return NotFound(new ProblemDetails { Title = ex.Message }); }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {
             return UnprocessableEntity(new ProblemDetails { Title = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// One scope request per distinct target the job would touch, so a scope limited to a
+    /// group or adapter blocks a job that reaches beyond it (§24.2).
+    /// </summary>
+    private async Task<IReadOnlyList<Application.Security.ScopeRequest>> DescribeScopeAsync(
+        Guid versionId, IReadOnlyList<Guid> bindingIds, bool approvalRequired, CancellationToken ct)
+    {
+        var environment = await db.CertificateVersions.AsNoTracking()
+            .Where(v => v.Id == versionId).Select(v => v.Certificate.Environment).FirstOrDefaultAsync(ct);
+
+        var targets = await db.DeploymentBindings.AsNoTracking()
+            .Where(b => bindingIds.Contains(b.Id))
+            .Select(b => new
+            {
+                b.CertificateStore.Target.TargetGroup,
+                b.CertificateStore.Target.AdapterType,
+                TargetEnvironment = b.CertificateStore.Target.Environment
+            })
+            .ToListAsync(ct);
+
+        if (targets.Count == 0)
+            return [new Application.Security.ScopeRequest("certificate.deploy", environment, null, null, approvalRequired)];
+
+        return targets
+            .Select(t => new Application.Security.ScopeRequest(
+                "certificate.deploy", environment ?? t.TargetEnvironment, t.TargetGroup, t.AdapterType, approvalRequired))
+            .Distinct()
+            .ToList();
     }
 
     [HttpPost("{id:guid}/approve")]

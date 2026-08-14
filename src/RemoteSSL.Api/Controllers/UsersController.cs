@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RemoteSSL.Application.Abstractions;
 using RemoteSSL.Application.Auditing;
+using RemoteSSL.Application.Security;
 using RemoteSSL.Domain.Entities;
 
 namespace RemoteSSL.Api.Controllers;
@@ -15,16 +16,16 @@ namespace RemoteSSL.Api.Controllers;
 public class UsersController(IRemoteSslDbContext db, AuditWriter audit) : ControllerBase
 {
     private static readonly PasswordHasher<string> Hasher = new();
-    private static readonly string[] ValidRoles =
-        ["Viewer", "CertificateOperator", "DeploymentOperator", "CertificateApprover",
-         "SecurityAuditor", "PlatformAdministrator", "BreakGlassAdministrator"];
+    private static readonly string[] ValidRoles = Security.AuthenticationSetup.Roles;
 
-    public record CreateUserRequest(string Username, string Password, List<string> Roles);
+    public record CreateUserRequest(
+        string Username, string Password, List<string> Roles,
+        List<ScopeRule>? Scopes = null, string? ExternalSubject = null);
 
     [HttpGet]
     public async Task<IEnumerable<object>> List(CancellationToken ct) =>
         await db.Users.AsNoTracking()
-            .Select(u => new { u.Id, u.Username, u.RolesJson, u.Enabled, u.CreatedAt })
+            .Select(u => new { u.Id, u.Username, u.RolesJson, u.ScopesJson, u.ExternalSubject, u.Enabled, u.CreatedAt })
             .ToListAsync(ct);
 
     [HttpPost]
@@ -42,6 +43,8 @@ public class UsersController(IRemoteSslDbContext db, AuditWriter audit) : Contro
             Username = req.Username,
             PasswordHash = Hasher.HashPassword(req.Username, req.Password),
             RolesJson = JsonSerializer.Serialize(req.Roles),
+            ScopesJson = JsonSerializer.Serialize(req.Scopes ?? []),
+            ExternalSubject = req.ExternalSubject,
             CreatedAt = DateTimeOffset.UtcNow
         };
         db.Users.Add(user);
@@ -51,7 +54,9 @@ public class UsersController(IRemoteSslDbContext db, AuditWriter audit) : Contro
         return new { user.Id };
     }
 
-    public record UpdateUserRequest(string? Password, List<string>? Roles);
+    public record UpdateUserRequest(
+        string? Password, List<string>? Roles,
+        List<ScopeRule>? Scopes = null, string? ExternalSubject = null, bool ClearExternalSubject = false);
 
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, UpdateUserRequest req, CancellationToken ct)
@@ -69,7 +74,11 @@ public class UsersController(IRemoteSslDbContext db, AuditWriter audit) : Contro
             if (invalid is not null) return ValidationProblem($"Unknown role '{invalid}'.");
             user.RolesJson = JsonSerializer.Serialize(req.Roles);
         }
-        audit.Append("user:admin", "user.update", "user", id.ToString(), "OK");
+        if (req.Scopes is not null) user.ScopesJson = JsonSerializer.Serialize(req.Scopes);
+        if (req.ClearExternalSubject) user.ExternalSubject = null;
+        else if (req.ExternalSubject is not null) user.ExternalSubject = req.ExternalSubject;
+        audit.Append("user:admin", "user.update", "user", id.ToString(), "OK",
+            new { roles = req.Roles, scopes = req.Scopes?.Count, federated = user.ExternalSubject is not null });
         await db.SaveChangesAsync(ct);
         return NoContent();
     }

@@ -23,6 +23,31 @@ public class RunnerNode
     /// <summary>SHA-256 hash of the runner's API key (issued at registration; plaintext never stored).</summary>
     public string? ApiKeyHash { get; set; }
 
+    /// <summary>Set when the runner's identity certificate was revoked (§8.2, §30.2).</summary>
+    public DateTimeOffset? IdentityRevokedAt { get; set; }
+    public string? IdentityRevokedReason { get; set; }
+
+    /// <summary>
+    /// Adapter versions the runner reports at heartbeat, as JSON {"nginx":"1.2.0",…}. Version
+    /// pinning (§30.2 supply chain) compares this against the allowlist before dispatching.
+    /// </summary>
+    public string AdapterVersionsJson { get; set; } = "{}";
+
     public DateTimeOffset? LastHeartbeatAt { get; set; }
     public DateTimeOffset RegisteredAt { get; set; }
+}
+
+
+/// <summary>
+/// The control plane's internal CA for runner identity certificates (§8.2). Its only job is
+/// signing runner client certificates, so it is deliberately separate from the CA connectors
+/// that issue server certificates.
+/// </summary>
+public class RunnerCertificateAuthority
+{
+    public Guid Id { get; set; }
+    public string CertificatePem { get; set; } = string.Empty;
+    /// <summary>Data-protection encrypted PKCS#8 key; never returned by any API.</summary>
+    public string EncryptedKeyPem { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAt { get; set; }
 }
