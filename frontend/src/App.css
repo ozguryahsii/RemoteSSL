@@ -324,3 +324,18 @@ select {
 }
 .plan-box h4 { margin: 0 0 10px; font-size: 14px; }
 .plan-box .kv { margin-bottom: 12px; }
+
+/* PEM output (CSR or exported key) on the Keys screen. */
+.pem-block {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow: auto;
+}

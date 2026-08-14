@@ -18,6 +18,7 @@ public interface IRemoteSslDbContext
     DbSet<CertificateStore> CertificateStores { get; }
     DbSet<DeploymentBinding> DeploymentBindings { get; }
     DbSet<CredentialRef> CredentialRefs { get; }
+    DbSet<ManagedKey> ManagedKeys { get; }
     DbSet<DeploymentJob> DeploymentJobs { get; }
     DbSet<RunnerNode> Runners { get; }
     DbSet<AuditEvent> AuditEvents { get; }

@@ -62,6 +62,22 @@ public static class DependencyInjection
         services.AddSingleton<Notifications.WebhookNotificationService>();
         services.AddSingleton<Application.Abstractions.INotificationSink, Notifications.CompositeNotificationSink>();
         services.AddSingleton<Security.VaultSecretClient>();
+
+        // Secret providers (§7.2). All three register unconditionally; each reports itself as
+        // disabled until its configuration is present, so the broker refuses cleanly rather than
+        // failing halfway through a deployment.
+        services.AddSingleton<Application.Abstractions.ISecretProvider, Security.VaultSecretProvider>();
+        services.AddSingleton<Application.Abstractions.ISecretProvider, Security.CyberArkSecretProvider>();
+        services.AddSingleton<Application.Abstractions.ISecretProvider, Security.AzureKeyVaultSecretProvider>();
+        services.AddScoped<Application.Security.SecretBroker>();
+        services.AddHostedService<Scheduling.SecretRotationService>();
+
+        // Key providers (§16.3): software always, token/cloud only where configured.
+        services.AddSingleton<Application.Abstractions.IKeyProvider, Security.SoftwareKeyProvider>();
+        services.AddSingleton<Application.Abstractions.IKeyProvider, Security.Pkcs11KeyProvider>();
+        services.AddSingleton<Application.Abstractions.IKeyProvider, Security.CloudKmsKeyProvider>();
+        services.AddScoped<Application.Security.ManagedKeyService>();
+
         services.AddSingleton<Scheduling.PostgresLeaderLock>();
 
         return services;

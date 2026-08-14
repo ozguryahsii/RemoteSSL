@@ -20,6 +20,20 @@ public sealed class WindowsDeployPayload
     public string? IisHostHeader { get; set; }
     public int IisPort { get; set; } = 443;
     public string? ExpectedSha1Thumbprint { get; set; }
+
+    /// <summary>
+    /// Import the private key as non-exportable (design doc §11.4). Default on: once the key is in
+    /// the store there is no legitimate reason for it to be copied out again.
+    /// </summary>
+    public bool NonExportablePrivateKey { get; set; } = true;
+
+    /// <summary>
+    /// Accounts that get read access to the private key — the app pool or service identity that
+    /// has to use the certificate, e.g. "IIS AppPool\\Default Web Site" or "NT SERVICE\\W3SVC"
+    /// (§11.4). Without this, a non-exportable key installed by an admin is unreadable by the
+    /// service that needs it.
+    /// </summary>
+    public List<string> PrivateKeyReadAccounts { get; set; } = [];
 }
 
 /// <summary>
@@ -80,9 +94,11 @@ public static class WindowsDeployer
                 // INSTALL into store
                 var storeName = p.StorePath.Split('\\').Last();
                 var location = p.StorePath.StartsWith("CurrentUser", StringComparison.OrdinalIgnoreCase) ? "CurrentUser" : "LocalMachine";
+                // -Exportable is opt-in; leaving it off makes the key non-exportable (§11.4).
                 var import = channel.RunPs(
                     $"$pwd = ConvertTo-SecureString (Get-Content '{tempPwd}' -Raw) -AsPlainText -Force; " +
-                    $"$c = Import-PfxCertificate -FilePath '{tempPfx}' -CertStoreLocation Cert:\\{location}\\{storeName} -Password $pwd; " +
+                    $"$c = Import-PfxCertificate -FilePath '{tempPfx}' -CertStoreLocation Cert:\\{location}\\{storeName} -Password $pwd" +
+                    (p.NonExportablePrivateKey ? "" : " -Exportable") + "; " +
                     "$c.Thumbprint");
                 var newThumb = import.Stdout.Trim().Split('\n').LastOrDefault()?.Trim() ?? "";
                 if (!import.Ok || string.IsNullOrEmpty(newThumb))
@@ -95,7 +111,21 @@ public static class WindowsDeployer
                     steps.Add(new("Install", false, $"imported thumbprint {newThumb} != expected"));
                     return new DeployOutcome(false, false, steps);
                 }
-                steps.Add(new("Install", true, $"imported {newThumb} into {location}\\{storeName}"));
+                steps.Add(new("Install", true, $"imported {newThumb} into {location}\\{storeName}"
+                    + (p.NonExportablePrivateKey ? "; private key non-exportable" : "; private key exportable")));
+
+                // PRIVATE KEY ACL: grant the service identity read access (§11.4)
+                if (p.PrivateKeyReadAccounts.Count > 0)
+                {
+                    var acl = channel.RunPs(GrantPrivateKeyAccessScript(location, storeName, newThumb, p.PrivateKeyReadAccounts));
+                    if (!acl.Ok)
+                    {
+                        steps.Add(new("PrivateKeyAcl", false, $"granting private key access failed: {Trunc(acl.Stderr)}"));
+                        return new DeployOutcome(false, false, steps);
+                    }
+                    steps.Add(new("PrivateKeyAcl", true,
+                        $"read access granted to {string.Join(", ", p.PrivateKeyReadAccounts)}"));
+                }
 
                 // ACTIVATE: IIS https binding update
                 if (p.IisSiteName is not null)
@@ -155,4 +185,34 @@ public static class WindowsDeployer
     }
 
     private static string Trunc(string s) => s.Length <= 400 ? s : s[..400];
+
+    /// <summary>
+    /// Grants read access on the certificate's private key file to the given accounts (§11.4).
+    /// CNG and legacy CSP keys live in different places, so both are tried; the script fails only
+    /// when neither yields a key file, which means the certificate has no private key at all.
+    /// </summary>
+    public static string GrantPrivateKeyAccessScript(
+        string location, string storeName, string thumbprint, IEnumerable<string> accounts)
+    {
+        var accountList = string.Join(",", accounts.Select(a => $"'{a.Replace("'", "''")}'"));
+        return
+            $"$cert = Get-Item Cert:\\{location}\\{storeName}\\{thumbprint}; " +
+            "$key = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert); " +
+            "if (-not $key) { $key = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($cert) }; " +
+            "if (-not $key) { throw 'certificate has no private key' }; " +
+            "if ($key.Key -and $key.Key.UniqueName) { " +
+            "  $path = Join-Path $env:ProgramData 'Microsoft\\Crypto\\Keys' | Join-Path -ChildPath $key.Key.UniqueName; " +
+            "  if (-not (Test-Path $path)) { $path = Join-Path $env:ProgramData 'Microsoft\\Crypto\\RSA\\MachineKeys' | Join-Path -ChildPath $key.Key.UniqueName } " +
+            "} else { " +
+            "  $path = Join-Path $env:ProgramData 'Microsoft\\Crypto\\RSA\\MachineKeys' | Join-Path -ChildPath $key.CspKeyContainerInfo.UniqueKeyContainerName " +
+            "}; " +
+            "if (-not (Test-Path $path)) { throw \"private key file not found: $path\" }; " +
+            "$acl = Get-Acl $path; " +
+            $"foreach ($account in @({accountList})) {{ " +
+            "  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($account,'Read','Allow'); " +
+            "  $acl.AddAccessRule($rule) " +
+            "}; " +
+            "Set-Acl -Path $path -AclObject $acl; " +
+            "'granted'";
+    }
 }

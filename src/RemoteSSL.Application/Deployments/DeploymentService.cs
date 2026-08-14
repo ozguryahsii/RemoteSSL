@@ -745,7 +745,15 @@ public class DeploymentService(
             iisSiteName = svc.TryGetProperty("iisSiteName", out var s) ? s.GetString() : null,
             iisHostHeader = svc.TryGetProperty("iisHostHeader", out var h) ? h.GetString() : null,
             iisPort = svc.TryGetProperty("iisPort", out var ip) && ip.TryGetInt32(out var ipi) ? ipi : 443,
-            expectedSha1Thumbprint = version.Sha1Thumbprint
+            expectedSha1Thumbprint = version.Sha1Thumbprint,
+            // §11.4: non-exportable unless the store explicitly asks otherwise, plus the service
+            // identities that must be able to read the key.
+            nonExportablePrivateKey = !svc.TryGetProperty("exportablePrivateKey", out var ex) || !ex.GetBoolean(),
+            privateKeyReadAccounts = svc.TryGetProperty("privateKeyReadAccounts", out var acc)
+                                     && acc.ValueKind == JsonValueKind.Array
+                ? acc.EnumerateArray().Select(a => a.GetString() ?? string.Empty)
+                    .Where(a => a.Length > 0).ToArray()
+                : []
         };
     }
 

@@ -502,6 +502,66 @@ runner'ın bildirdiğiyle uyuşmazsa iş kuyruğa girmez.
 **Güvenlik CI hattı** (§30.3): `.github/workflows/security.yml` — NuGet/npm zafiyet taraması,
 gitleaks, CodeQL, CycloneDX SBOM ve Trivy. Her push/PR'da ve haftalık çalışır.
 
+## 20. Secret sağlayıcıları, rotation ve anahtar koruması (F16)
+
+**Credential tipleri** (§7.2). **Credentials** ekranında tip + sağlayıcı seçilir; form seçilen
+tipin gerektirdiği alanları gösterir. Desteklenen tipler: `UsernamePassword`, `SshPrivateKey`,
+`SshCertificate`, `KerberosServiceAccount`, `ApiKeySecret`, `OAuthClientCredentials`,
+`BearerToken`, `ClientCertificate`, `ExternalSecretReference`. Eksik alanla kayıt 400 döner —
+örneğin OAuth için client id + client secret + token endpoint üçü de zorunludur.
+
+**Dış sağlayıcılar.** `InternalVault` dışında bir sağlayıcı seçildiğinde secret burada tutulmaz,
+yalnızca identifier saklanır:
+
+| Sağlayıcı | Identifier | Ayarlar |
+|-----------|-----------|---------|
+| HashiCorpVault | `vault://<mount>/<path>` | `Vault:Addr`, `Vault:Token` |
+| CyberArk (CCP) | `cyberark://<safe>/<object>` | `CyberArk:BaseUrl`, `CyberArk:AppId` |
+| AzureKeyVault | `azurekv://<vault>/<secret>` | `AzureKeyVault:TenantId`, `ClientId`, `ClientSecret` |
+
+Ayarı olmayan bir sağlayıcı çağrıldığında iş sessizce devam etmez; 422 ile "not configured" döner.
+
+**Rotation ve erişim audit'i** (§7.3). Credential'a gün cinsinden rotation aralığı verilir; süre
+dolunca satır **overdue** görünür, `credential.rotation_due` audit kaydı ve bildirimi üretilir
+(kimse bloklanmaz). **Rotate** düğmesi yeni materyali alır ve saati sıfırlar; dış sağlayıcılarda
+secret provider'da döndürülür, buradaki onay yalnızca saati sıfırlar. Her okuma
+`credential.access` olarak audit'e düşer ve **Last access** sütununda görünür — audit detayında
+secret değeri asla yer almaz.
+
+**Runner-direct secret** (§7.3, ADR-003). Control plane'de `Secrets:RunnerDirect=true` yapılırsa,
+dış sağlayıcıdaki credential'lar runner'a değer olarak değil **referans** olarak verilir; runner
+kendi `Vault:*` / `CyberArk:*` / `AzureKeyVault:*` ayarlarıyla secret'ı doğrudan çeker. Runner'da
+o sağlayıcı yapılandırılmamışsa iş açık bir hata ile durur. `InternalVault` credential'ları bu
+modda da control plane'de çözülür.
+
+**Anahtar yönetimi** (§16.3). Yeni **Keys** ekranı: sağlayıcı (Software / Pkcs11 / CloudKms),
+algoritma, sahip (owner/team), environment, purpose ve **export policy**.
+
+```bash
+curl -s localhost:5200/api/v1/keys/providers
+# [{"provider":"Software","enabled":true},{"provider":"Pkcs11","enabled":false},...]
+```
+
+- **CSR**: satırdaki **CSR** düğmesi subject + SAN alır ve anahtarla imzalanmış PKCS#10 üretir.
+  PKCS#11 / cloud HSM anahtarlarında imza token'ın kendisinde atılır, özel anahtar hiç dışarı çıkmaz.
+- **Export policy**: non-exportable oluşturulan anahtarın private half'i hiçbir yoldan verilmez —
+  deneme 403 döner ve `key.export` / `DENIED` olarak audit'e yazılır. Token ve cloud anahtarları
+  tanım gereği exportable oluşturulamaz.
+- **HSM ayarları**: `Hsm:Pkcs11:LibraryPath`, `Hsm:Pkcs11:TokenLabel`, `Hsm:Pkcs11:Pin`.
+  Cloud HSM için `AzureKeyVault:*` + `AzureKeyVault:KeyVaultName` (`azurekms://<vault>/<key>`).
+  Yapılandırılmamış sağlayıcı UI'da seçilemez.
+
+**Windows private key koruması** (§11.4). Windows deployment'ı PFX'i varsayılan olarak
+**non-exportable** import eder. Servis kimliğine okuma yetkisi vermek için store'un service
+binding JSON'una eklenir:
+
+```json
+{ "iisSiteName": "Default Web Site", "privateKeyReadAccounts": ["IIS AppPool\\Default Web Site"] }
+```
+
+Anahtarın dışa aktarılabilir olması gerekiyorsa `"exportablePrivateKey": true` eklenir. Job
+adımlarında `PrivateKeyAcl` adımı yetkinin verildiğini gösterir.
+
 ## Bilinen sınırlar
 
 - **GlobalSign HVCA connector canlı hesapla doğrulanacak** (tek bilinçli eksik; docs/ca-connector.md).

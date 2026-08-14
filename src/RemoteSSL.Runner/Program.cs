@@ -4,6 +4,7 @@ using RemoteSSL.Runner;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<RunnerSecretResolver>();
 builder.Services.AddHostedService<Worker>();
 
 // §32.2: the runner is the last leg of the request → CA → job → runner → target chain.

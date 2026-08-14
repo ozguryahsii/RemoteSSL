@@ -98,6 +98,22 @@ public class CredentialRef
     /// <summary>Data-protection-encrypted secret material for the internal vault provider; never plaintext.</summary>
     public string? EncryptedSecret { get; set; }
 
+    /// <summary>Last time the secret behind this reference was read, for access audit (§7.3).</summary>
+    public DateTimeOffset? LastAccessedAt { get; set; }
+    /// <summary>Who or what read it last — a user or a runner.</summary>
+    public string? LastAccessedBy { get; set; }
+
+    /// <summary>Rotation cadence in days; 0 disables the rotation reminder (§7.3).</summary>
+    public int RotationIntervalDays { get; set; }
+    public DateTimeOffset? LastRotatedAt { get; set; }
+    /// <summary>Set when a rotation is requested but the new material has not been supplied yet.</summary>
+    public bool RotationPending { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>Rotation due date derived from the cadence; null when rotation is not configured.</summary>
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public DateTimeOffset? RotationDueAt =>
+        RotationIntervalDays <= 0 ? null : (LastRotatedAt ?? CreatedAt).AddDays(RotationIntervalDays);
 }

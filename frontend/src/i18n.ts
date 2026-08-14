@@ -17,6 +17,7 @@ const resources = {
         approvals: 'Approvals',
         runners: 'Runners',
         credentials: 'Credentials',
+        keys: 'Keys',
         caIntegrations: 'CA Integrations',
         policies: 'Policies',
         audit: 'Audit',

@@ -15,7 +15,9 @@ namespace RemoteSSL.Runner;
 /// pipeline and report step results. All connections are outbound to the control
 /// plane; the control plane never dials the runner.
 /// </summary>
-public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogger<Worker> logger) : BackgroundService
+public class Worker(
+    IConfiguration config, IHttpClientFactory httpFactory, ILogger<Worker> logger,
+    RunnerSecretResolver secrets) : BackgroundService
 {
     /// <summary>Activity source name registered with OpenTelemetry in Program.cs (§32.2).</summary>
     public const string ActivitySourceName = "RemoteSSL.Runner";
@@ -272,11 +274,35 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
         var res = await GetAsync(http, $"api/v1/runners/{_runnerId}/credentials/{credId.GetGuid()}", ct);
         res.EnsureSuccessStatusCode();
         var body = await res.Content.ReadFromJsonAsync<JsonElement>(Json, ct);
-        var secretJson = JsonDocument.Parse(body.GetProperty("secret").GetString()!).RootElement;
-        return new SshCredentials(
-            body.TryGetProperty("username", out var u) ? u.GetString() ?? "root" : "root",
-            secretJson.TryGetProperty("Password", out var pw) ? pw.GetString() : null,
-            secretJson.TryGetProperty("PrivateKeyPem", out var pk) ? pk.GetString() : null);
+        var username = body.TryGetProperty("username", out var u) ? u.GetString() ?? "root" : "root";
+        var mode = body.TryGetProperty("mode", out var m) ? m.GetString() : "Value";
+
+        // Runner-direct mode (§7.3, ADR-003): the control plane sent only a pointer, so the
+        // secret is fetched here and exists nowhere else.
+        if (mode == "Reference")
+        {
+            var provider = body.GetProperty("provider").GetString()!;
+            var identifier = body.GetProperty("secretIdentifier").GetString()!;
+            if (!secrets.CanResolve(provider))
+                throw new InvalidOperationException(
+                    $"Control plane delegated secret retrieval to this runner, but '{provider}' is not configured here.");
+            var direct = await secrets.ResolveAsync(provider, identifier, ct);
+            return new SshCredentials(username, direct.Password, direct.PrivateKeyPem);
+        }
+
+        var secretText = body.TryGetProperty("secret", out var s) ? s.GetString() : null;
+        if (secretText is null) return new SshCredentials(username, null, null);
+        var secretJson = JsonDocument.Parse(secretText).RootElement;
+        return new SshCredentials(username, Text(secretJson, "password"), Text(secretJson, "privateKeyPem"));
+    }
+
+    /// <summary>Secret payloads are camelCase over the wire, but older ones were PascalCase.</summary>
+    private static string? Text(JsonElement element, string camelCaseName)
+    {
+        var pascal = char.ToUpperInvariant(camelCaseName[0]) + camelCaseName[1..];
+        if (element.TryGetProperty(camelCaseName, out var v) && v.ValueKind == JsonValueKind.String)
+            return v.GetString();
+        return element.TryGetProperty(pascal, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
     }
 
     private static WindowsDeployPayload ToWindowsPayload(JsonElement e) => new()
@@ -290,7 +316,11 @@ public class Worker(IConfiguration config, IHttpClientFactory httpFactory, ILogg
         IisSiteName = e.TryGetProperty("iisSiteName", out var s) ? s.GetString() : null,
         IisHostHeader = e.TryGetProperty("iisHostHeader", out var h) ? h.GetString() : null,
         IisPort = e.TryGetProperty("iisPort", out var p) ? p.GetInt32() : 443,
-        ExpectedSha1Thumbprint = e.TryGetProperty("expectedSha1Thumbprint", out var t) ? t.GetString() : null
+        ExpectedSha1Thumbprint = e.TryGetProperty("expectedSha1Thumbprint", out var t) ? t.GetString() : null,
+        NonExportablePrivateKey = !e.TryGetProperty("nonExportablePrivateKey", out var ne) || ne.GetBoolean(),
+        PrivateKeyReadAccounts = e.TryGetProperty("privateKeyReadAccounts", out var acc) && acc.ValueKind == JsonValueKind.Array
+            ? acc.EnumerateArray().Select(a => a.GetString() ?? string.Empty).Where(a => a.Length > 0).ToList()
+            : []
     };
 
     private static JavaKeystorePayload ToJavaPayload(JsonElement e, SshCredentials creds) => new()

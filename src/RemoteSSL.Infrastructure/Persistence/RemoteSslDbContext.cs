@@ -15,6 +15,7 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
     public DbSet<CertificateStore> CertificateStores => Set<CertificateStore>();
     public DbSet<DeploymentBinding> DeploymentBindings => Set<DeploymentBinding>();
     public DbSet<CredentialRef> CredentialRefs => Set<CredentialRef>();
+    public DbSet<ManagedKey> ManagedKeys => Set<ManagedKey>();
     public DbSet<DeploymentJob> DeploymentJobs => Set<DeploymentJob>();
     public DbSet<DeploymentJobTarget> DeploymentJobTargets => Set<DeploymentJobTarget>();
     public DbSet<DeploymentStep> DeploymentSteps => Set<DeploymentStep>();
@@ -142,6 +143,20 @@ public class RemoteSslDbContext(DbContextOptions<RemoteSslDbContext> options) : 
             e.Property(x => x.Name).HasMaxLength(256);
             e.Property(x => x.SecretIdentifier).HasMaxLength(1024);
             e.Property(x => x.AccessPolicyJson).HasColumnType("jsonb");
+            e.Property(x => x.LastAccessedBy).HasMaxLength(256);
+        });
+
+        b.Entity<ManagedKey>(e =>
+        {
+            e.Property(x => x.Label).HasMaxLength(256);
+            e.Property(x => x.Reference).HasMaxLength(1024);
+            e.Property(x => x.Algorithm).HasMaxLength(16);
+            e.Property(x => x.OwnerId).HasMaxLength(256);
+            e.Property(x => x.OwnerTeam).HasMaxLength(256);
+            e.Property(x => x.Environment).HasMaxLength(64);
+            e.Property(x => x.Purpose).HasMaxLength(256);
+            e.Property(x => x.CreatedBy).HasMaxLength(256);
+            e.HasIndex(x => x.Label);
         });
 
         b.Entity<DeploymentJob>(e =>

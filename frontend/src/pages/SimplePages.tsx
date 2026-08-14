@@ -55,79 +55,205 @@ export function Runners() {
   )
 }
 
+const CREDENTIAL_TYPES = [
+  'UsernamePassword', 'SshPrivateKey', 'SshCertificate', 'KerberosServiceAccount',
+  'ApiKeySecret', 'OAuthClientCredentials', 'BearerToken', 'ClientCertificate', 'ExternalSecretReference',
+] as const
+
+const PROVIDERS = ['InternalVault', 'HashiCorpVault', 'CyberArk', 'AzureKeyVault'] as const
+
+type SecretInput = {
+  password?: string; privateKeyPem?: string; sshCertificate?: string; realm?: string
+  token?: string; clientId?: string; clientSecret?: string; tokenEndpoint?: string
+  pkcs12Base64?: string; pkcs12Password?: string
+}
+
+/** Which secret fields a credential type actually needs (design doc §7.2). */
+const FIELDS_BY_TYPE: Record<string, { key: keyof SecretInput; label: string; secret?: boolean }[]> = {
+  UsernamePassword: [{ key: 'password', label: 'password', secret: true }],
+  SshPrivateKey: [{ key: 'password', label: 'passphrase (optional)', secret: true }, { key: 'privateKeyPem', label: 'private key PEM' }],
+  SshCertificate: [{ key: 'privateKeyPem', label: 'private key PEM' }, { key: 'sshCertificate', label: 'signed SSH certificate' }],
+  KerberosServiceAccount: [{ key: 'password', label: 'password', secret: true }, { key: 'realm', label: 'realm' }],
+  ApiKeySecret: [{ key: 'token', label: 'api key', secret: true }],
+  BearerToken: [{ key: 'token', label: 'bearer token', secret: true }],
+  OAuthClientCredentials: [
+    { key: 'clientId', label: 'client id' },
+    { key: 'clientSecret', label: 'client secret', secret: true },
+    { key: 'tokenEndpoint', label: 'token endpoint' },
+  ],
+  ClientCertificate: [
+    { key: 'pkcs12Base64', label: 'PKCS#12 (base64)' },
+    { key: 'pkcs12Password', label: 'PKCS#12 password', secret: true },
+  ],
+  ExternalSecretReference: [],
+}
+
+type CredentialRow = {
+  id: string; name: string; credentialType: string; provider: string; username: string | null
+  secretIdentifier: string; hasSecret: boolean; rotationIntervalDays: number
+  lastRotatedAt: string | null; rotationDueAt: string | null; rotationOverdue: boolean
+  rotationPending: boolean; lastAccessedAt: string | null; lastAccessedBy: string | null
+}
+
+/** The secret half of a credential form; the same control set is used for create, edit and rotate. */
+function SecretFields({ type, value, onChange }: {
+  type: string; value: SecretInput; onChange: (v: SecretInput) => void
+}) {
+  const fields = FIELDS_BY_TYPE[type] ?? []
+  if (fields.length === 0) return <span className="muted small">This type keeps its secret in the external provider.</span>
+  return (
+    <>
+      {fields.map((f) => (
+        <input
+          key={f.key}
+          value={value[f.key] ?? ''}
+          type={f.secret ? 'password' : 'text'}
+          placeholder={f.label}
+          onChange={(e) => onChange({ ...value, [f.key]: e.target.value })}
+        />
+      ))}
+    </>
+  )
+}
+
 export function Credentials() {
-  const [creds, reload] = useData<{
-    id: string; name: string; credentialType: string; provider: string; username: string | null; hasSecret: boolean
-  }[]>('/api/v1/credentials')
+  const [creds, reload, error] = useData<CredentialRow[]>('/api/v1/credentials')
   const [name, setName] = useState(''); const [username, setUsername] = useState('')
-  const [password, setPassword] = useState(''); const [privateKey, setPrivateKey] = useState('')
+  const [type, setType] = useState<string>('UsernamePassword')
+  const [provider, setProvider] = useState<string>('InternalVault')
+  const [identifier, setIdentifier] = useState('')
+  const [rotationDays, setRotationDays] = useState('0')
+  const [secret, setSecret] = useState<SecretInput>({})
+
   const [editing, setEditing] = useState<string | null>(null)
   const [eName, setEName] = useState(''); const [eUser, setEUser] = useState('')
-  const [ePass, setEPass] = useState(''); const [eKey, setEKey] = useState('')
+  const [eRotation, setERotation] = useState('0'); const [eSecret, setESecret] = useState<SecretInput>({})
+  const [rotating, setRotating] = useState<CredentialRow | null>(null)
+  const [rotateSecret, setRotateSecret] = useState<SecretInput>({})
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
     await post('/api/v1/credentials', {
-      name, credentialType: privateKey ? 'SshPrivateKey' : 'UsernamePassword',
-      username, password: password || null, privateKeyPem: privateKey || null,
+      name, credentialType: type, username: username || null, provider,
+      secretIdentifier: identifier || null, rotationIntervalDays: Number(rotationDays) || 0,
+      secret: provider === 'InternalVault' ? secret : null,
     })
-    setName(''); setUsername(''); setPassword(''); setPrivateKey(''); reload()
+    setName(''); setUsername(''); setIdentifier(''); setSecret({}); setRotationDays('0'); reload()
   }
-  function startEdit(c: { id: string; name: string; username: string | null }) {
-    setEditing(c.id); setEName(c.name); setEUser(c.username ?? ''); setEPass(''); setEKey('')
+
+  function startEdit(c: CredentialRow) {
+    setEditing(c.id); setEName(c.name); setEUser(c.username ?? '')
+    setERotation(String(c.rotationIntervalDays)); setESecret({})
   }
-  async function saveEdit(id: string) {
+
+  async function saveEdit(id: string, c: CredentialRow) {
     await apiPatch(`/api/v1/credentials/${id}`, {
-      name: eName, username: eUser, password: ePass || null, privateKeyPem: eKey || null,
+      name: eName, username: eUser, rotationIntervalDays: Number(eRotation) || 0,
+      secret: c.provider === 'InternalVault' && Object.keys(eSecret).length > 0 ? eSecret : null,
     })
     setEditing(null); reload()
   }
+
+  async function submitRotation() {
+    if (!rotating) return
+    await post(`/api/v1/credentials/${rotating.id}/rotate`, {
+      secret: rotating.provider === 'InternalVault' ? rotateSecret : null,
+    })
+    setRotating(null); setRotateSecret({}); reload()
+  }
+
   async function remove(id: string) {
     if (!window.confirm('Delete this credential?')) return
     const res = await apiDelete(`/api/v1/credentials/${id}`)
     if (!res.ok) alert('Delete failed: ' + ((await res.json()).title ?? res.status))
     reload()
   }
+
   return (
     <div className="page">
       <h1>Credentials</h1>
-      <p className="muted small">Secret values are write-only: stored encrypted, never displayed. Leave secret fields blank on edit to keep the current secret.</p>
+      <p className="muted small">
+        Secret values are write-only: stored encrypted, never displayed. Leave secret fields blank on edit to keep
+        the current secret. External providers hold the secret themselves — only the identifier is stored here.
+      </p>
+      {error && <p className="bad small">{error}</p>}
       <form className="inline-form" onSubmit={add}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="name" required />
-        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" required />
-        <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password" type="password" />
-        <input value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} placeholder="SSH private key PEM (optional)" />
+        <select value={type} onChange={(e) => { setType(e.target.value); setSecret({}) }}>
+          {CREDENTIAL_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+          {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" />
+        {provider === 'InternalVault'
+          ? <SecretFields type={type} value={secret} onChange={setSecret} />
+          : <input value={identifier} onChange={(e) => setIdentifier(e.target.value)}
+              placeholder={provider === 'CyberArk' ? 'cyberark://safe/object'
+                : provider === 'AzureKeyVault' ? 'azurekv://vault/secret' : 'vault://mount/path'} required />}
+        <input value={rotationDays} onChange={(e) => setRotationDays(e.target.value)}
+          type="number" min={0} style={{ width: 110 }} placeholder="rotate (days)" title="Rotation interval in days; 0 = no reminder" />
         <button type="submit">Add credential</button>
       </form>
+
+      {rotating && (
+        <div className="inline-form" style={{ marginTop: 8 }}>
+          <strong>Rotate “{rotating.name}”</strong>
+          {rotating.provider === 'InternalVault'
+            ? <SecretFields type={rotating.credentialType} value={rotateSecret} onChange={setRotateSecret} />
+            : <span className="muted small">Rotate the secret in {rotating.provider}, then confirm here to reset the clock.</span>}
+          <button onClick={submitRotation}>Confirm rotation</button>
+          <button onClick={() => { setRotating(null); setRotateSecret({}) }}>Cancel</button>
+        </div>
+      )}
+
       <table className="data-table">
-        <thead><tr><th>Name</th><th>Type</th><th>Provider</th><th>Username</th><th>Secret</th><th></th></tr></thead>
+        <thead><tr>
+          <th>Name</th><th>Type</th><th>Provider</th><th>Username</th><th>Secret</th>
+          <th>Rotation</th><th>Last access</th><th></th>
+        </tr></thead>
         <tbody>
           {(creds ?? []).map((c) => editing === c.id ? (
             <tr key={c.id} className="editing-row">
-              <td><input value={eName} onChange={(e) => setEName(e.target.value)} /></td>
-              <td className="muted small">{c.credentialType}</td><td className="muted small">{c.provider}</td>
-              <td><input value={eUser} onChange={(e) => setEUser(e.target.value)} style={{ width: 120 }} /></td>
-              <td>
-                <input value={ePass} onChange={(e) => setEPass(e.target.value)} placeholder="new password" type="password" style={{ width: 130 }} />
-                <input value={eKey} onChange={(e) => setEKey(e.target.value)} placeholder="new key PEM" style={{ width: 130 }} />
-              </td>
+              <td><input value={eName} onChange={(e) => setEName(e.target.value)} style={{ width: 120 }} /></td>
+              <td className="muted small">{c.credentialType}</td>
+              <td className="muted small">{c.provider}</td>
+              <td><input value={eUser} onChange={(e) => setEUser(e.target.value)} style={{ width: 110 }} /></td>
+              <td><SecretFields type={c.credentialType} value={eSecret} onChange={setESecret} /></td>
+              <td><input value={eRotation} onChange={(e) => setERotation(e.target.value)} type="number" min={0} style={{ width: 70 }} /></td>
+              <td className="muted small">—</td>
               <td className="actions">
-                <button onClick={() => saveEdit(c.id)}>Save</button>
+                <button onClick={() => saveEdit(c.id, c)}>Save</button>
                 <button onClick={() => setEditing(null)}>Cancel</button>
               </td>
             </tr>
           ) : (
             <tr key={c.id}>
-              <td>{c.name}</td><td>{c.credentialType}</td><td>{c.provider}</td>
+              <td>{c.name}</td><td className="small">{c.credentialType}</td><td className="small">{c.provider}</td>
               <td>{c.username ?? '—'}</td>
-              <td>{c.hasSecret ? <span className="ok">stored (encrypted)</span> : <span className="muted">external</span>}</td>
+              <td className="small">
+                {c.hasSecret
+                  ? <span className="ok">stored (encrypted)</span>
+                  : <span className="muted" title={c.secretIdentifier}>{c.secretIdentifier}</span>}
+              </td>
+              <td className="small">
+                {c.rotationIntervalDays === 0
+                  ? <span className="muted">not configured</span>
+                  : c.rotationOverdue || c.rotationPending
+                    ? <span className="bad">overdue since {c.rotationDueAt ? new Date(c.rotationDueAt).toLocaleDateString() : '—'}</span>
+                    : <span className="ok">due {c.rotationDueAt ? new Date(c.rotationDueAt).toLocaleDateString() : '—'}</span>}
+              </td>
+              <td className="small muted">
+                {c.lastAccessedAt ? `${new Date(c.lastAccessedAt).toLocaleString()} — ${c.lastAccessedBy ?? ''}` : 'never'}
+              </td>
               <td className="actions">
                 <button onClick={() => startEdit(c)}>Edit</button>
+                <button onClick={() => { setRotating(c); setRotateSecret({}) }}>Rotate</button>
                 <button className="danger" onClick={() => remove(c.id)}>Delete</button>
               </td>
             </tr>
           ))}
-          {(creds ?? []).length === 0 && <tr><td colSpan={6} className="muted">No credentials yet.</td></tr>}
+          {(creds ?? []).length === 0 && <tr><td colSpan={8} className="muted">No credentials yet.</td></tr>}
         </tbody>
       </table>
     </div>

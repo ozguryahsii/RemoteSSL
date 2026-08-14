@@ -80,16 +80,22 @@ key taşıyan artifact'leri reddeder.
 - **Adapter paket imzalama** — adapter'lar runner binary'si içinde geldiği sürece imzalanacak
   bir paket yok; süreç dışı plugin modeli gelirse ADR-006 yeniden ele alınmalı.
 
-## F16 — Secret provider ve private key koruması
+## F16 — Secret provider ve private key koruması ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 16.1 | CyberArk ve Azure Key Vault secret provider implementasyonları (enum'da var, kod yok) | §7.2, FR-020 | YOK |
-| 16.2 | Credential tipleri: SSH certificate, Kerberos/WinRM service account, OAuth client credentials, bearer token, client certificate/PFX | §7.2 | KISMİ (user/pass + SSH key) |
-| 16.3 | Secret rotation ve secret erişim audit'i | §7.3 | YOK |
-| 16.4 | Runner'ın secret'ı doğrudan provider'dan short-lived credential ile alması | §7.3, ADR-003 | KISMİ (control plane broker) |
-| 16.5 | HSM/KMS: PKCS#11 provider soyutlaması, cloud HSM key referansı, key export policy, key sahiplik metadata'sı | §16.3 | YOK |
-| 16.6 | Windows non-exportable private key üretimi ve private key ACL (app pool/service account yetkisi) | §11.4 | YOK |
+| 16.1 | CyberArk ve Azure Key Vault secret provider implementasyonları (enum'da var, kod yok) | §7.2, FR-020 | ✅ `ExternalSecretProviders.cs`: Vault + CyberArk CCP + Azure Key Vault, `ISecretProvider` arkasında |
+| 16.2 | Credential tipleri: SSH certificate, Kerberos/WinRM service account, OAuth client credentials, bearer token, client certificate/PFX | §7.2 | ✅ `SecretMaterial` tüm tipleri taşıyor; `CredentialValidation` her tip için zorunlu alanları doğruluyor; UI tipe göre alan gösteriyor |
+| 16.3 | Secret rotation ve secret erişim audit'i | §7.3 | ✅ `RotationIntervalDays`/`LastRotatedAt`, `/credentials/{id}/rotate`, `SecretRotationService` (leader-elected), `credential.access` + `credential.rotate` audit'i, `LastAccessedAt/By` |
+| 16.4 | Runner'ın secret'ı doğrudan provider'dan short-lived credential ile alması | §7.3, ADR-003 | ✅ `Secrets:RunnerDirect=true` iken broker "Reference" döner; runner `RunnerSecretResolver` ile secret'ı kendisi çeker, plaintext control plane'e hiç uğramaz |
+| 16.5 | HSM/KMS: PKCS#11 provider soyutlaması, cloud HSM key referansı, key export policy, key sahiplik metadata'sı | §16.3 | ✅ `IKeyProvider` + Software/PKCS#11/CloudKMS; `ManagedKey` (owner, team, environment, purpose, export policy); non-exportable key export'u 403 + audit; token key'i CSR'ı token üzerinde imzalıyor |
+| 16.6 | Windows non-exportable private key üretimi ve private key ACL (app pool/service account yetkisi) | §11.4 | ✅ `Import-PfxCertificate` varsayılan non-exportable; `PrivateKeyReadAccounts` ile CNG/CSP key dosyasına read ACL |
+
+### F16 notları
+- PKCS#11 sağlayıcısı `Hsm:Pkcs11:LibraryPath` + `Pin` verilmedikçe `Enabled=false` döner; UI'da
+  seçilemez. Cloud HSM için `AzureKeyVault:*` ayarları kullanılır (`azurekms://<vault>/<key>`).
+- Token ve cloud key'ler tanım gereği exportable oluşturulamaz; istenirse istek reddedilir,
+  sessizce software key'e düşülmez.
 
 ## F17 — Entegrasyonlar, event modeli ve bildirim
 

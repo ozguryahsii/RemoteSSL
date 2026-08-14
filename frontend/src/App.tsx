@@ -9,6 +9,7 @@ import Deployments from './pages/Deployments'
 import Requests from './pages/Requests'
 import { Runners, Credentials, Approvals, Audit } from './pages/SimplePages'
 import Dashboard from './pages/Dashboard'
+import Keys from './pages/Keys'
 import { Login, Policies, CaIntegrations, Settings } from './pages/AdminPages'
 import './App.css'
 
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { path: '/approvals', key: 'approvals' },
   { path: '/runners', key: 'runners' },
   { path: '/credentials', key: 'credentials' },
+  { path: '/keys', key: 'keys' },
   { path: '/ca-integrations', key: 'caIntegrations' },
   { path: '/policies', key: 'policies' },
   { path: '/audit', key: 'audit' },
@@ -92,6 +94,7 @@ export default function App() {
             <Route path="/requests" element={<Requests />} />
             <Route path="/runners" element={<Runners />} />
             <Route path="/credentials" element={<Credentials />} />
+            <Route path="/keys" element={<Keys />} />
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/audit" element={<Audit />} />
             <Route path="/login" element={<Login />} />

@@ -84,6 +84,17 @@ public enum SecretProviderType
     AzureKeyVault
 }
 
+/// <summary>Where a private key physically lives (§16.3).</summary>
+public enum KeyProviderKind
+{
+    /// <summary>Control-plane software key, encrypted at rest.</summary>
+    Software = 0,
+    /// <summary>A PKCS#11 token — an on-prem HSM or a smartcard-style device.</summary>
+    Pkcs11,
+    /// <summary>A cloud KMS / managed HSM key, referenced by URI and used through its own API.</summary>
+    CloudKms
+}
+
 public enum DeploymentJobStatus
 {
     Pending = 0,

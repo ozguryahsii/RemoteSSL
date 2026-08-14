@@ -23,6 +23,7 @@ namespace RemoteSSL.Api.Controllers;
 public class RunnersController(
     IRemoteSslDbContext db, IConfiguration config, ISecretProtector protector,
     DeploymentService deployments, AuditWriter audit,
+    Application.Security.SecretBroker broker,
     Infrastructure.Security.RunnerIdentityService identities) : ControllerBase
 {
     public record RegisterRequest(string BootstrapToken, string Name, string? Segment, string[] Capabilities,
@@ -238,36 +239,45 @@ public class RunnersController(
     }
 
     /// <summary>
-    /// Execution-time credential resolution (design doc §7.3): material is returned
-    /// to the authenticated runner only, never persisted in job payloads.
+    /// Execution-time credential resolution (design doc §7.3). The broker decides whether the
+    /// control plane resolves the secret and returns it to the authenticated runner, or hands back
+    /// only a reference so the runner fetches it straight from the provider (ADR-003) — in that
+    /// mode the plaintext never passes through here at all. Either way nothing is persisted in a
+    /// job payload.
     /// </summary>
     [HttpGet("{id:guid}/credentials/{credId:guid}")]
     public async Task<ActionResult<object>> GetCredential(Guid id, Guid credId, CancellationToken ct)
     {
         var runner = await AuthenticateAsync(id, ct);
         if (runner is null) return Unauthorized();
-        var cred = await db.CredentialRefs.AsNoTracking().FirstOrDefaultAsync(c => c.Id == credId, ct);
-        if (cred is null) return NotFound();
 
-        string secretJson;
-        switch (cred.Provider)
+        Application.Security.ResolvedCredential resolved;
+        try
         {
-            case SecretProviderType.InternalVault when cred.EncryptedSecret is not null:
-                secretJson = protector.Unprotect(cred.EncryptedSecret);
-                break;
-            case SecretProviderType.HashiCorpVault:
-                var vault = HttpContext.RequestServices.GetRequiredService<Infrastructure.Security.VaultSecretClient>();
-                var (password, key) = await vault.ReadAsync(cred.SecretIdentifier, ct);
-                secretJson = System.Text.Json.JsonSerializer.Serialize(new { Password = password, PrivateKeyPem = key });
-                break;
-            default:
-                return UnprocessableEntity(new ProblemDetails
-                { Title = $"Secret provider {cred.Provider} is not yet wired; configure InternalVault or HashiCorpVault." });
+            resolved = await broker.ResolveForRunnerAsync(credId, $"runner:{runner.Name}", ct);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return UnprocessableEntity(new ProblemDetails { Title = ex.Message });
         }
 
-        audit.Append($"runner:{runner.Name}", "credential.access", "credential_ref", credId.ToString(), "OK");
-        await db.SaveChangesAsync(ct);
-        return new { cred.CredentialType, cred.Username, Secret = secretJson };
+        return new
+        {
+            resolved.Mode,
+            CredentialType = resolved.CredentialType.ToString(),
+            resolved.Username,
+            Provider = resolved.Provider.ToString(),
+            // Only set in Reference mode; the runner uses it against its own provider client.
+            SecretIdentifier = resolved.Mode == "Reference" ? resolved.SecretIdentifier : null,
+            Secret = resolved.Material is null
+                ? null
+                : System.Text.Json.JsonSerializer.Serialize(resolved.Material,
+                    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))
+        };
     }
 
     /// <summary>
