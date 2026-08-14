@@ -922,7 +922,60 @@ Endpoint sayısına göre önerilen değerler `docs/HA-DR-RUNBOOK.md` §6'da.
 geri dönüş sonrası `GET /api/v1/audit/integrity` kontrolü, S3 versioning/object-lock ve üç aylık
 tatbikat listesi.
 
-## 26. Test paketini çalıştırmak: lab ve ölçek (F22)
+## 26. Declarative manifest (F23)
+
+Deployments ekranında **Apply a manifest** düğmesi paneli açar: manifest'i yapıştırın, **Dry run**
+ile ne olacağını görün, sonra **Apply** edin. Apply, dry-run çözümlenmeden aktif olmaz.
+
+```yaml
+apiVersion: remotessl/v1
+kind: CertificateDeployment
+metadata:
+  name: web-tier-renewal
+spec:
+  certificate:
+    commonName: www.example.com   # veya: thumbprint: AA:BB:...
+    version: latest               # latest = yeni üretilmiş sürüm · active = şu an aktif olan
+  targets:                        # seçiciler OR'lanır, bir seçicinin alanları AND'lenir
+    - environment: production
+      adapter: nginx
+    - name: lb-01
+  strategy:
+    type: wave                    # sequential | parallel | wave | canary | manual | ha-pair | all-at-once
+    maxConcurrency: 2
+  verification:
+    remoteTlsVerify: true
+    host: www.example.com
+    port: 443
+  approval:
+    required: true
+```
+
+API ile:
+
+```bash
+# Dry run — hiçbir şey yaratmaz, etkiyi ve blocker'ları döner
+curl -sX POST http://localhost:5200/api/v1/deployments/manifest/plan \
+  -H 'Content-Type: application/json' \
+  -d "{\"manifest\": $(python3 -c 'import json,sys;print(json.dumps(open("deploy.yaml").read()))')}"
+
+# Apply — normal deployment job'u yaratır
+curl -sX POST http://localhost:5200/api/v1/deployments/manifest/apply \
+  -H 'Content-Type: application/json' \
+  -d "{\"manifest\": $(python3 -c 'import json,sys;print(json.dumps(open("deploy.yaml").read()))'), \"requestedBy\":\"ci\"}"
+```
+
+Doğrulanması beklenenler:
+
+- **Manifest hiçbir kontrolü atlamaz.** Manifest onay istemese bile politika gerektiriyorsa iş
+  `PendingApproval` doğar; aynı binding'e ikinci apply eşzamanlılık kilidine takılır (422).
+- **Hiçbir şeye uymayan seçici hatadır**, uyarı değil — dosyanın saydığı bir hedef atlanamaz.
+- İki ortamda aynı common name varsa manifest reddedilir ve `thumbprint` istenir.
+- `verification` yalnızca beyan ettiği anahtarları binding'e yazar; `certPath`, `keyPath`,
+  `validateCmd`, `reloadCmd` gibi mevcut ayarlar korunur.
+- Bozuk YAML satır/sütun ile, şema hataları ise **tek seferde hepsi** raporlanır.
+
+## 27. Test paketini çalıştırmak: lab ve ölçek (F22)
 
 Test paketi varsayılan olarak **hermetiktir** — hiçbir dış bağımlılık istemez:
 

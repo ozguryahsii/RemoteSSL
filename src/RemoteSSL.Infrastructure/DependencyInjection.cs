@@ -59,6 +59,7 @@ public static class DependencyInjection
         services.AddScoped<Application.Certificates.InventoryService>();
         services.AddScoped<Application.Deployments.DeploymentService>();
         services.AddScoped<Application.Deployments.DeploymentPlanner>();
+        services.AddScoped<Application.Deployments.ManifestService>();
         // §34.2 runner failover: reclaims work stranded on a runner that stopped answering.
         services.AddScoped<Application.Deployments.RunnerFailover>();
         services.AddHostedService<Scheduling.RunnerFailoverService>();

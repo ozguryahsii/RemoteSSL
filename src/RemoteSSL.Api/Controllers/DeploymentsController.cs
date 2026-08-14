@@ -9,7 +9,7 @@ namespace RemoteSSL.Api.Controllers;
 [Route("api/v1/deployments")]
 public class DeploymentsController(
     IRemoteSslDbContext db, DeploymentService service, DeploymentPlanner planner,
-    Security.ScopeGuard scopes) : ControllerBase
+    ManifestService manifests, Security.ScopeGuard scopes) : ControllerBase
 {
     public record CreateDeploymentRequest(
         Guid CertificateVersionId, List<Guid> BindingIds, string Strategy = "sequential",
@@ -190,6 +190,75 @@ public class DeploymentsController(
                 req.Strategy, req.RequestedBy, req.ApprovalRequired, ct, req.MaxConcurrency);
             if (req.AutoExecute && !req.ApprovalRequired) await service.ExecuteAsync(job.Id, ct);
             return CreatedAtAction(nameof(Get), new { id = job.Id }, new { job.Id, Status = job.Status.ToString() });
+        }
+        catch (Security.ScopeDeniedException ex) { return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails { Title = ex.Message }); }
+        catch (KeyNotFoundException ex) { return NotFound(new ProblemDetails { Title = ex.Message }); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            return UnprocessableEntity(new ProblemDetails { Title = ex.Message });
+        }
+    }
+
+    public record ManifestRequest(string Manifest, string RequestedBy = "api", bool AutoExecute = false);
+
+    /// <summary>
+    /// Validates a declarative manifest and reports what it would do, without changing anything
+    /// (§38). This is the dry run: it resolves the certificate and the target selectors and then
+    /// produces the same impact preview as <c>POST plan</c>, so a manifest can be reviewed in a
+    /// pull request with its blast radius attached.
+    /// </summary>
+    [HttpPost("manifest/plan")]
+    [Microsoft.AspNetCore.Authorization.Authorize(Policy = "DeployOps")]
+    public async Task<ActionResult<object>> ManifestPlan(ManifestRequest req, CancellationToken ct)
+    {
+        var parsed = ManifestParser.Parse(req.Manifest);
+        if (!parsed.Ok)
+            return UnprocessableEntity(new { ok = false, errors = parsed.Errors, warnings = Array.Empty<string>() });
+
+        var (resolution, plan) = await manifests.PlanAsync(parsed.Manifest!, ct);
+        return Ok(new { ok = resolution.Ok, resolution.Errors, resolution.Warnings, resolution, plan });
+    }
+
+    /// <summary>
+    /// Applies a manifest: resolves it, writes any verification overrides it declares, and creates
+    /// a deployment job through the normal orchestrator — so governance, approval, the adapter
+    /// allowlist and scope all apply exactly as they do from the UI (§38).
+    /// </summary>
+    [HttpPost("manifest/apply")]
+    [Microsoft.AspNetCore.Authorization.Authorize(Policy = "DeployOps")]
+    [ServiceFilter(typeof(Idempotency.IdempotencyFilter))]
+    public async Task<ActionResult<object>> ManifestApply(ManifestRequest req, CancellationToken ct)
+    {
+        var parsed = ManifestParser.Parse(req.Manifest);
+        if (!parsed.Ok)
+            return UnprocessableEntity(new { ok = false, errors = parsed.Errors });
+
+        try
+        {
+            // Resolve first so the scope check sees the real targets: a manifest must not be able
+            // to reach an environment or adapter the caller's scope does not cover (§24.2).
+            var resolution = await manifests.ResolveAsync(parsed.Manifest!, ct);
+            if (!resolution.Ok)
+                return UnprocessableEntity(new { ok = false, resolution.Errors, resolution.Warnings });
+
+            foreach (var scope in await DescribeScopeAsync(resolution.CertificateVersionId!.Value,
+                         resolution.Targets.Select(t => t.BindingId).ToList(), resolution.ApprovalRequired, ct))
+                await scopes.EnsureAllowedAsync(User, scope, ct);
+
+            var (applied, job) = await manifests.ApplyAsync(parsed.Manifest!, req.RequestedBy, ct);
+            if (job is null)
+                return UnprocessableEntity(new { ok = false, applied.Errors, applied.Warnings });
+
+            if (req.AutoExecute && !applied.ApprovalRequired) await service.ExecuteAsync(job.Id, ct);
+
+            return Ok(new
+            {
+                ok = true,
+                jobId = job.Id,
+                status = job.Status.ToString(),
+                applied.Warnings,
+                targets = applied.Targets.Select(t => t.Target)
+            });
         }
         catch (Security.ScopeDeniedException ex) { return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails { Title = ex.Message }); }
         catch (KeyNotFoundException ex) { return NotFound(new ProblemDetails { Title = ex.Message }); }

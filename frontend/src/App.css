@@ -212,6 +212,12 @@ select {
   width: 100%; font-family: ui-monospace, monospace; font-size: 12px;
   border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; box-sizing: border-box;
 }
+/* Manifests are whitespace-significant, so the editor keeps a fixed-width font and no wrapping. */
+.manifest-editor {
+  width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; box-sizing: border-box;
+  white-space: pre; overflow-x: auto; tab-size: 2;
+}
 .store-chip { display: inline-flex; align-items: center; gap: 4px; background: #f1f5f9; border-radius: 10px; padding: 2px 8px; margin: 1px 4px 1px 0; }
 .chip-x { border: none; background: none; padding: 0 2px; color: var(--bad); font-weight: 700; cursor: pointer; }
 .editing-row td { background: #fefce8; }

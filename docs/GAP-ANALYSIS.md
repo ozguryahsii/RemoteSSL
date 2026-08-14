@@ -225,11 +225,29 @@ key taşıyan artifact'leri reddeder.
 - Toplu insert sonrası testte `ANALYZE` çalıştırılıyor: aksi hâlde planlayıcı boş tablo
   istatistikleriyle karar verip indeksi kullanmıyor. Üretimde bunu autovacuum yapar.
 
-## F23 — Declarative manifest
+## F23 — Declarative manifest ✅ TAMAMLANDI
 
 | # | Madde | Doküman | Durum |
 |---|-------|---------|-------|
-| 23.1 | `apiVersion: remotessl/v1 / kind: CertificateDeployment` manifest'inin import/apply edilmesi (strategy + verification + targets) | §38 | YOK |
+| 23.1 | `apiVersion: remotessl/v1 / kind: CertificateDeployment` manifest'inin import/apply edilmesi (strategy + verification + targets) | §38 | ✅ YAML manifest parse + doğrulama (`DeploymentManifest.cs`), çözümleme/dry-run/apply (`ManifestService.cs`), `POST /api/v1/deployments/manifest/plan` ve `.../apply`, Deployments ekranında yapıştır → dry-run → apply paneli. `spec.certificate` (commonName veya thumbprint, `version: active\|latest`), `spec.targets` (name/environment/adapter/group/haRole seçicileri), `spec.strategy` (§21.4'ün yedi stratejisi + maxConcurrency), `spec.verification` (remoteTlsVerify + host/port/sni), `spec.approval` |
+
+### F23 notları
+- **Manifest ikinci bir deployment yolu değil, bir girdi biçimidir.** Apply, çözümlemeden sonra
+  işi normal `DeploymentService.CreateJobAsync` üzerinden yaratır; governance, onay, adapter
+  allowlist, scope (§24.2) ve §21.1 boru hattı aynen geçerlidir. Canlı doğrulamada manifest onay
+  istemediği hâlde politika gereği iş `PendingApproval` doğdu ve aynı binding'e ikinci apply
+  eşzamanlılık kilidine takıldı — yani manifest hiçbir kontrolü atlamıyor.
+- **Sessiz eksik deployment yok.** Hiçbir şeye uymayan bir seçici uyarı değil **hata**: dosyanın
+  saydığı dört sunucudan üçüne dağıtım yapmak, bir sunucunun eski sertifikayla süresi dolana kadar
+  kalmasının en kolay yoludur. Aynı sebeple boş seçici listesi ve kriteri olmayan seçici de
+  reddediliyor (aksi hâlde "tüm envanter" anlamına gelirdi).
+- **Belirsizlik tahmin edilmiyor.** İki ortamda aynı common name varsa manifest reddedilir ve
+  `thumbprint` kullanılması istenir; yanlış ortama dağıtım en pahalı sonuçtur.
+- Doğrulama tüm hataları tek seferde döndürür (dosya tek turda düzeltilsin), bozuk YAML ise
+  satır/sütun ile raporlanır.
+- `spec.verification` apply sırasında binding'e yazılır; yalnızca manifest'in beyan ettiği
+  anahtarlar değişir, binding üzerindeki diğer ayarlar korunur (canlı testte `certPath`,
+  `keyPath`, `validateCmd`, `reloadCmd` yerinde kaldı).
 
 ---
 
