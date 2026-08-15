@@ -25,12 +25,121 @@ public class AutomationService(
 {
     public async Task TickAsync(CancellationToken ct)
     {
+        await ExpiryScanAsync(ct);
         await requests.PollPendingAsync(ct);
         await TriggerRenewalsAsync(ct);
         await DeployIssuedRenewalsAsync(ct);
         await ExecuteApprovedJobsAsync(ct);
+        await RetryFailedDeploymentsAsync(ct);
         await DetectDriftAsync(ct);
     }
+
+    /// <summary>
+    /// §29.1 expiry scan, which FR-002 depends on.
+    ///
+    /// Expiry alerting used to happen only where a probe observed a certificate, which meant a
+    /// certificate with no monitor endpoint — one issued here and deployed to an internal target
+    /// nobody probes, or simply imported — never raised a single T-90…T-1 alarm and kept whatever
+    /// health it was created with, indefinitely. Expiry is a property of the certificate, not of
+    /// whether someone happens to be watching it, so it is computed here from the inventory.
+    /// The probe path deliberately does not emit these events; two sources would alert twice for
+    /// the same threshold, each keeping its own idea of what it had already announced.
+    /// </summary>
+    private async Task ExpiryScanAsync(CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        // Revoked and superseded are terminal: their expiry is not news.
+        var certificates = await db.Certificates
+            .Where(c => c.HealthStatus != CertificateHealthStatus.Revoked
+                        && c.HealthStatus != CertificateHealthStatus.Superseded)
+            .Select(c => new
+            {
+                Certificate = c,
+                // Any version that is not itself retired, including one merely Observed on an
+                // endpoint: FR-002 covers certificates RemoteSSL discovered as much as ones it
+                // issued, and the longest-lived one is what the estate actually depends on.
+                NotAfter = c.Versions
+                    .Where(v => v.Status != CertificateVersionStatus.Revoked
+                                && v.Status != CertificateVersionStatus.Superseded)
+                    .OrderByDescending(v => v.NotAfter)
+                    .Select(v => (DateTimeOffset?)v.NotAfter)
+                    .FirstOrDefault()
+            })
+            .ToListAsync(ct);
+
+        foreach (var row in certificates)
+        {
+            if (row.NotAfter is not { } notAfter) continue;
+            var certificate = row.Certificate;
+            var daysLeft = ExpiryCalculator.DaysUntilExpiry(notAfter, now);
+
+            // A renewal that pushed the expiry back clears the alert history, so the new version
+            // alerts on its own thresholds rather than staying silent behind the old one's.
+            if (certificate.LastExpiryAlertThreshold is { } alerted && daysLeft > alerted)
+                certificate.LastExpiryAlertThreshold = null;
+
+            var crossed = ExpiryCalculator.CrossedThresholds(certificate.LastExpiryAlertThreshold, daysLeft);
+
+            // First sight of a certificate that is already inside several thresholds — an import,
+            // or the first tick after this scan was introduced — reports only the most urgent one.
+            // The earlier thresholds passed before RemoteSSL knew about it; announcing them now
+            // would claim they just happened, and on an estate of any size the first tick would be
+            // an alarm storm rather than a signal.
+            if (certificate.LastExpiryAlertThreshold is null && crossed.Count > 1)
+                crossed = [crossed.Min()];
+
+            foreach (var threshold in crossed)
+            {
+                certificate.LastExpiryAlertThreshold = threshold;
+                logger.LogWarning("Certificate {Cn} expires in {Days} days (T-{Threshold} crossed)",
+                    certificate.CommonName, daysLeft, threshold);
+
+                notifier.Notify(Events.DomainEvents.CertificateExpiring, new
+                {
+                    certificateId = certificate.Id,
+                    commonName = certificate.CommonName,
+                    environment = certificate.Environment,
+                    owner = certificate.OwnerId,
+                    notAfter,
+                    daysLeft,
+                    threshold
+                });
+                audit.Append("service:automation", "certificate.expiring", "certificate",
+                    certificate.Id.ToString(), $"T-{threshold}",
+                    new { certificate.CommonName, daysLeft, threshold, notAfter });
+            }
+
+            if (daysLeft < 0 && certificate.HealthStatus != CertificateHealthStatus.Expired)
+                notifier.Notify(Events.DomainEvents.CertificateExpired, new
+                {
+                    certificateId = certificate.Id,
+                    commonName = certificate.CommonName,
+                    environment = certificate.Environment,
+                    notAfter
+                });
+
+            // Deployment state (pending/partial/failed) outranks expiry-derived health, so it is
+            // never overwritten here — that is the §19.2 precedence the resolver encodes.
+            var derived = ExpiryCalculator.HealthFor(notAfter, now);
+            if (certificate.HealthStatus != derived
+                && certificate.HealthStatus is CertificateHealthStatus.Unknown
+                    or CertificateHealthStatus.Healthy or CertificateHealthStatus.ExpiringSoon
+                    or CertificateHealthStatus.Critical or CertificateHealthStatus.Expired)
+            {
+                certificate.HealthStatus = derived;
+                certificate.UpdatedAt = now;
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// The expiry scan on its own, so it can be exercised without the request and deployment
+    /// services a full tick needs.
+    /// </summary>
+    public Task ExpiryScanForTestsAsync(CancellationToken ct) => ExpiryScanAsync(ct);
 
     private async Task TriggerRenewalsAsync(CancellationToken ct)
     {
@@ -143,6 +252,81 @@ public class AutomationService(
             await deployments.ExecuteAsync(job.Id, ct);
         }
     }
+
+    /// <summary>
+    /// §29.1 deployment retry, bounded by the §29.2 rule: a transient failure (the runner was
+    /// offline, the host was briefly unreachable) is retried with backoff; an authentication
+    /// failure, a thumbprint mismatch or a config-validation failure is not, because retrying
+    /// those just fails again more loudly and hides a change that needs a human.
+    /// </summary>
+    private async Task RetryFailedDeploymentsAsync(CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        var failed = await db.DeploymentJobs
+            .Include(j => j.Targets)
+            .Where(j => j.Status == DeploymentJobStatus.Failed && j.RequestedBy == "automation"
+                        && j.RetryCount < MaxDeploymentRetries && j.CompletedAt != null)
+            .ToListAsync(ct);
+
+        foreach (var job in failed)
+        {
+            // Exponential backoff: 5, 25, 125 minutes. Long enough that a runner restart or a
+            // network blip has actually resolved before the next attempt.
+            var wait = TimeSpan.FromMinutes(Math.Pow(5, job.RetryCount + 1));
+            if (now - job.CompletedAt!.Value < wait) continue;
+
+            var targetIds = job.Targets.Select(t => t.Id).ToList();
+            var steps = await db.DeploymentSteps
+                .Where(s => targetIds.Contains(s.DeploymentJobTargetId) && s.Status == StepStatus.Failed)
+                .ToListAsync(ct);
+
+            if (!steps.All(s => IsTransient(s.StepType)))
+            {
+                // Record the decision once, so an operator looking at a stuck job can see that it
+                // was considered and deliberately left alone rather than forgotten.
+                if (job.RetryCount == 0)
+                {
+                    job.RetryCount = MaxDeploymentRetries;
+                    audit.Append("service:automation", "deployment.retry-declined", "deployment_job",
+                        job.Id.ToString(), "MANUAL_ACTION_REQUIRED",
+                        new { reason = "the failure is not transient", steps = steps.Select(s => s.StepType.ToString()) },
+                        job.CorrelationId);
+                }
+                continue;
+            }
+
+            job.RetryCount++;
+            audit.Append("service:automation", "deployment.retry", "deployment_job", job.Id.ToString(),
+                $"ATTEMPT_{job.RetryCount}", new { after = wait.TotalMinutes }, job.CorrelationId);
+            await db.SaveChangesAsync(ct);
+
+            try
+            {
+                var retry = await deployments.CreateJobAsync(
+                    job.CertificateVersionId, job.Targets.Select(t => t.DeploymentBindingId).ToList(),
+                    job.Strategy, "automation", approvalRequired: false, ct,
+                    job.MaxConcurrency, job.CorrelationId);
+                await deployments.ExecuteAsync(retry.Id, ct);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+            {
+                // A binding that is busy or gone is not something a retry can fix.
+                logger.LogWarning("Deployment {Job} could not be retried: {Reason}", job.Id, ex.Message);
+            }
+        }
+    }
+
+    /// <summary>How many automatic attempts a transiently failed deployment gets (§29.2).</summary>
+    private const int MaxDeploymentRetries = 3;
+
+    /// <summary>
+    /// Steps whose failure is plausibly a network or availability problem. Everything else —
+    /// config validation, verification, rollback — means the target disagreed with us, which is
+    /// not a condition that improves by asking again.
+    /// </summary>
+    private static bool IsTransient(DeploymentStepType step) =>
+        step is DeploymentStepType.PreCheck or DeploymentStepType.PrepareUpload;
 
     private async Task DetectDriftAsync(CancellationToken ct)
     {

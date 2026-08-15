@@ -11,7 +11,8 @@ namespace RemoteSSL.Application.Monitoring;
 /// <summary>
 /// Runs one probe for a monitor endpoint and folds the result into the inventory:
 /// dedup by SHA-256 thumbprint, renewal linking to the same logical certificate,
-/// monitor-certificate correlation and expiry threshold events (design doc §6).
+/// monitor-certificate correlation (design doc §6). Expiry alerting is not done here — it is
+/// the §29.1 expiry scan's job, so it also covers certificates nobody probes.
 /// </summary>
 public class MonitorProbeService(
     IRemoteSslDbContext db,
@@ -122,12 +123,6 @@ public class MonitorProbeService(
     public async Task<MonitorEndpoint> ApplyResultAsync(
         MonitorEndpoint monitor, TlsProbeResult result, ProbeVantage vantage, CancellationToken ct = default)
     {
-        var lastSeenVersion = vantage == ProbeVantage.External ? monitor.LastObservedVersion : monitor.InternalObservedVersion;
-        var lastProbeAt = vantage == ProbeVantage.External ? monitor.LastProbeAt : monitor.InternalProbeAt;
-        var previousDaysLeft = lastSeenVersion is not null && lastProbeAt is not null
-            ? ExpiryCalculator.DaysUntilExpiry(lastSeenVersion.NotAfter, lastProbeAt.Value)
-            : (int?)null;
-
         var now = DateTimeOffset.UtcNow;
 
         if (vantage == ProbeVantage.External)
@@ -190,8 +185,12 @@ public class MonitorProbeService(
             }
 
             await UpsertMonitorLinkAsync(monitor, version.CertificateId, now, vantage, ct);
-            EmitExpiryEvents(monitor, parsed, previousDaysLeft, now);
 
+            // Expiry alerting is NOT done here. It belongs to the §29.1 expiry scan, which is
+            // certificate-level: expiry is a property of the certificate, not of whether an
+            // endpoint happens to be watched. Emitting from both places would alert twice for
+            // the same threshold, because each path keeps its own idea of what it has announced —
+            // and would still miss every certificate nobody probes. See AutomationService.
             version.Certificate.HealthStatus = ExpiryCalculator.HealthFor(parsed.NotAfter, now);
             version.Certificate.UpdatedAt = now;
         }
@@ -340,32 +339,6 @@ public class MonitorProbeService(
             link.LastSeenAt = now;
             link.Source = source;
             link.Confidence = 100;
-        }
-    }
-
-    private void EmitExpiryEvents(MonitorEndpoint monitor, ParsedCertificate parsed, int? previousDaysLeft, DateTimeOffset now)
-    {
-        var daysLeft = ExpiryCalculator.DaysUntilExpiry(parsed.NotAfter, now);
-        foreach (var threshold in ExpiryCalculator.CrossedThresholds(previousDaysLeft, daysLeft))
-        {
-            logger.LogWarning("Certificate {Cn} on {Host}:{Port} expires in {Days} days (T-{Threshold} crossed)",
-                parsed.CommonName, monitor.Host, monitor.Port, daysLeft, threshold);
-            notifier.Notify("certificate.expiring", new
-            {
-                commonName = parsed.CommonName, host = monitor.Host, port = monitor.Port,
-                daysLeft, threshold
-            });
-            db.AuditEvents.Add(new AuditEvent
-            {
-                Timestamp = now,
-                Actor = "service:monitoring",
-                Action = "certificate.expiring",
-                ObjectType = "monitor_endpoint",
-                ObjectId = monitor.Id.ToString(),
-                Result = $"T-{threshold}",
-                CorrelationId = Guid.NewGuid().ToString("N"),
-                DetailsJson = $$"""{"commonName":"{{parsed.CommonName}}","host":"{{monitor.Host}}","port":{{monitor.Port}},"daysLeft":{{daysLeft}},"threshold":{{threshold}}}"""
-            });
         }
     }
 

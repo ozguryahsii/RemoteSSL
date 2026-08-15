@@ -37,6 +37,13 @@ public class DeploymentJob : ITenantScoped
     /// <summary>Set when this job was created to roll a previous job back (FR-018).</summary>
     public Guid? RolledBackFromJobId { get; set; }
 
+    /// <summary>
+    /// Automatic retries already spent on this job (§29.1 deployment retry, §29.2 backoff).
+    /// Also used as a tombstone: a job whose failure was judged non-transient is set to the
+    /// maximum so it is never reconsidered.
+    /// </summary>
+    public int RetryCount { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? StartedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }

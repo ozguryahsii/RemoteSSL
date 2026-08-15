@@ -64,8 +64,9 @@ public class MonitorProbeServiceTests
         Assert.Equal(CertificateHealthStatus.Healthy, logical.HealthStatus);
         Assert.Equal(version.Id, db.MonitorEndpoints.Single().LastObservedVersionId);
         Assert.Single(db.MonitorCertificateLinks);
-        // First observation at 59 days crosses T-90 and T-60.
-        Assert.Equal(2, db.AuditEvents.Count(e => e.Action == "certificate.expiring"));
+        // Expiry alerting belongs to the §29.1 scan, not to the probe: emitting from both would
+        // alert twice for the same threshold and would still miss certificates nobody probes.
+        Assert.Empty(db.AuditEvents.Where(e => e.Action == "certificate.expiring"));
     }
 
     [Fact]

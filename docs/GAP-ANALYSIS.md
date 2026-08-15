@@ -39,6 +39,33 @@ dokümandan farklı yapılmış olmasıydı.
   §21.1 boru hattı ve §21.4'ün altı stratejisi, §5.2 şeması, §9.1 adapter sözleşmesi
   (`cleanup` dahil).
 
+## F25 — Doküman denetiminin ikinci turu ✅ TAMAMLANDI
+
+F24 turu FR/NFR listelerine ve belirli bölümlere odaklanmıştı. İkinci turda kalan bölümler
+(§19, §22–§25, §29–§35, §43) tarandı ve **üç boşluk daha** çıktı.
+
+| # | Boşluk | Doküman | Ne yapıldı |
+|---|--------|---------|------------|
+| 25.1 | **Expiry scan yoktu — FR-002 probe'a bağlıydı.** T-90…T-1 uyarıları yalnızca probe yolundan üretiliyordu. Yani monitor endpoint'i olmayan bir sertifika (içeride dağıtılmış, kimsenin taramadığı ya da sadece içe aktarılmış) **hiç uyarı üretmiyordu** ve sağlık durumu oluşturulduğu günden itibaren hiç güncellenmiyordu | §29.1, FR-002 | `AutomationService.ExpiryScanAsync`: envanterden hesaplıyor, probe'dan bağımsız. Canlı doğrulama: hiç taranmayan `smoke.local` artık T-45 uyarısı üretiyor |
+| 25.2 | **§24.2'nin beş scope boyutundan ikisi yoktu**: business unit ve certificate tag. Bu boyutları adlandıran bir kural hiçbir zaman eşleşemezdi | §24.2 | `Certificate.BusinessUnit` + `TagsJson`; `ScopeRule`/`ScopeRequest` beş boyutu da taşıyor ve deployment kontrolü hepsini dolduruyor. Etiket adlandıran bir kural, etiketsiz sertifikayı kapsamaz |
+| 25.3 | **Deployment retry görevi yoktu** | §29.1, §29.2 | `RetryFailedDeploymentsAsync`: yalnızca geçici hatalarda (PreCheck/PrepareUpload) 5/25/125 dk backoff ile en fazla 3 deneme. Config validation, doğrulama veya rollback hatası **denenmiyor** — bunlar hedefin bizimle aynı fikirde olmadığı anlamına gelir, tekrar sormakla düzelmez ve `deployment.retry-declined` olarak audit'lenir |
+
+### F25 notları
+- **Expiry uyarısı artık tek kaynaktan.** Probe yolundan `certificate.expiring` emisyonu
+  kaldırıldı. İki kaynak, her biri kendi "neyi duyurdum" defterini tuttuğu için aynı eşikte
+  **iki kez** alarm üretiyordu — ve buna rağmen taranmayan sertifikaları yine kaçırıyordu.
+  Expiry sertifikanın özelliğidir, birinin onu izliyor olmasının değil.
+- **İlk görüşte alarm fırtınası yok.** Zaten birkaç eşiği geçmiş bir sertifika ilk taramada
+  yalnızca **en acil** eşiği bildirir. Geçmiş eşikler RemoteSSL onu tanımadan önce geçmişti;
+  şimdi duyurmak "az önce oldu" demek olurdu ve gerçek bir envanterde ilk tick sinyal değil
+  gürültü üretirdi.
+- **§19.2 önceliği korunuyor**: tarama `PendingDeployment`/`PartiallyDeployed`/`DeploymentFailed`
+  durumlarının üzerine yazmıyor; yalnızca expiry türevi durumları günceller. Revoked ve
+  superseded sertifikalar tamamen dışarıda.
+- Migration: `F25ExpiryScanAndScopeDimensions` (Certificates'a `BusinessUnit`, `TagsJson`,
+  `LastExpiryAlertThreshold`; DeploymentJobs'a `RetryCount`). Mevcut satırlar `TagsJson='[]'`
+  alır — boş string geçerli JSON olmadığı için varsayılan migration'da düzeltildi.
+
 ---
 
 ## F11 — Sertifika politikası, lifecycle ve onay derinliği ✅ TAMAMLANDI

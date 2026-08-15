@@ -19,10 +19,30 @@ public class Certificate : ITenantScoped
     public string CommonName { get; set; } = string.Empty;
     public string? Environment { get; set; }
     public string? OwnerId { get; set; }
+
+    /// <summary>
+    /// Owning business unit (§24.2). Authorization can be scoped to it, so a team that runs one
+    /// division's estate cannot deploy into another's even within the same environment.
+    /// </summary>
+    public string? BusinessUnit { get; set; }
+
+    /// <summary>
+    /// Free-form tags as a JSON array (§24.2 "certificate tag"). A scope rule can name a tag,
+    /// which is how a grant covers a set of certificates that share no environment or group.
+    /// </summary>
+    public string TagsJson { get; set; } = "[]";
+
     public Guid? RenewalPolicyId { get; set; }
     /// <summary>Certificate policy (§5.2 policy_id, §39); null = the default policy applies.</summary>
     public Guid? CertificatePolicyId { get; set; }
     public CertificateHealthStatus HealthStatus { get; set; }
+
+    /// <summary>
+    /// Lowest FR-002 threshold already alerted on, so the expiry scan (§29.1) emits each of
+    /// T-90…T-1 exactly once as the remaining lifetime passes it. Null = nothing alerted yet;
+    /// reset when a renewal replaces the active version.
+    /// </summary>
+    public int? LastExpiryAlertThreshold { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 

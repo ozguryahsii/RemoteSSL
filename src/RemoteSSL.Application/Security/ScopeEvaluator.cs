@@ -12,7 +12,14 @@ public sealed record ScopeRule(
     string? Environment = null,
     string? TargetGroup = null,
     IReadOnlyList<string>? Adapters = null,
-    bool? ApprovalRequired = null);
+    bool? ApprovalRequired = null,
+    /// <summary>§24.2 business unit: divides an estate that shares environments.</summary>
+    string? BusinessUnit = null,
+    /// <summary>
+    /// §24.2 certificate tag. Matches when the certificate carries this tag, which is how a
+    /// grant covers a set of certificates that share no environment, unit or target group.
+    /// </summary>
+    string? CertificateTag = null);
 
 /// <summary>What is being attempted, described in the terms §24.2 uses.</summary>
 public sealed record ScopeRequest(
@@ -20,7 +27,10 @@ public sealed record ScopeRequest(
     string? Environment = null,
     string? TargetGroup = null,
     string? Adapter = null,
-    bool ApprovalRequired = false);
+    bool ApprovalRequired = false,
+    string? BusinessUnit = null,
+    /// <summary>Every tag the certificate carries; the rule matches if any of them does.</summary>
+    IReadOnlyList<string>? CertificateTags = null);
 
 /// <summary>
 /// Attribute-based authorization on top of roles (§24.2): a role says what kind of work a
@@ -49,8 +59,19 @@ public static class ScopeEvaluator
     private static bool Matches(ScopeRule rule, ScopeRequest request) =>
         ValueMatches(rule.Environment, request.Environment)
         && ValueMatches(rule.TargetGroup, request.TargetGroup)
+        && ValueMatches(rule.BusinessUnit, request.BusinessUnit)
+        && TagMatches(rule.CertificateTag, request.CertificateTags)
         && AdapterMatches(rule.Adapters, request.Adapter)
         && (rule.ApprovalRequired is not { } required || required == request.ApprovalRequired);
+
+    /// <summary>
+    /// A rule that names no tag does not constrain. A rule that names one requires the
+    /// certificate to actually carry it — an untagged certificate is not covered, which is the
+    /// safe reading: a tag-scoped grant should not silently widen to everything untagged.
+    /// </summary>
+    private static bool TagMatches(string? required, IReadOnlyList<string>? tags) =>
+        string.IsNullOrWhiteSpace(required)
+        || (tags is not null && tags.Any(t => string.Equals(t, required, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>
     /// "certificate.deploy" matches exactly; "certificate.*" and "*" widen it. Wildcards are

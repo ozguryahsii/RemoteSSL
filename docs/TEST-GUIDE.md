@@ -1043,7 +1043,39 @@ curl -s http://localhost:5200/api/v1/runners | python3 -m json.tool | grep -A3 c
 `openssl`, `keytool`, `orapki`, `powershell` yalnızca runner makinesinde gerçekten varsa listelenir.
 JDK'sı olmayan bir runner `keytool` gerektiren bir işi kabul etmez.
 
-## 28. Test paketini çalıştırmak: lab ve ölçek (F22)
+## 28. Expiry scan, scope boyutları ve deployment retry (F25)
+
+**Expiry scan (§29.1, FR-002)** — artık probe'dan bağımsız. Monitor endpoint'i olmayan bir
+sertifika da T-90/60/45/30/15/7/1 eşiklerinde uyarı üretir:
+
+```bash
+# Automation tick'i bekleyin, sonra:
+psql -c "SELECT \"CommonName\",\"LastExpiryAlertThreshold\" FROM \"Certificates\" ORDER BY 1;"
+psql -c "SELECT \"Actor\",\"Result\" FROM \"AuditEvents\" WHERE \"Action\"='certificate.expiring' ORDER BY \"Timestamp\" DESC LIMIT 5;"
+```
+
+Beklenenler:
+- Uyarıların **tamamı** `service:automation` kaynaklı — probe yolu artık expiry uyarısı üretmez,
+  aksi hâlde aynı eşik iki kez alarm verirdi.
+- Her eşik **bir kez**; tick'ler tekrarlansa da yenilenmez.
+- Zaten birkaç eşiği geçmiş bir sertifika ilk taramada yalnızca **en acil** eşiği bildirir.
+- Yenileme süreyi ileri attığında sayaç sıfırlanır; yeni sürüm kendi eşiklerinde uyarır.
+- `Revoked`/`Superseded` sertifikalar tamamen dışarıda; `PendingDeployment` gibi deployment
+  durumlarının üzerine yazılmaz (§19.2).
+
+**Scope boyutları (§24.2)** — beş boyut: environment, business unit, certificate tag,
+target group, adapter. Sertifikaya `businessUnit` ve `tags` verip bir kullanıcıya dar bir kural
+tanımlayın; kapsam dışına çıkan deployment 403 döner ve `authorization.denied` audit'lenir.
+Etiket adlandıran bir kural, **etiketsiz** bir sertifikayı kapsamaz.
+
+**Deployment retry (§29.1/§29.2)** — yalnızca geçici hatalar tekrar denenir:
+
+| Hata | Davranış |
+|---|---|
+| PreCheck / PrepareUpload (runner offline, host erişilemez) | 5 / 25 / 125 dk backoff ile en fazla 3 deneme |
+| Config validation, verify, rollback | **Denenmez** — `deployment.retry-declined` olarak audit'lenir, manuel müdahale ister |
+
+## 29. Test paketini çalıştırmak: lab ve ölçek (F22)
 
 Test paketi varsayılan olarak **hermetiktir** — hiçbir dış bağımlılık istemez:
 

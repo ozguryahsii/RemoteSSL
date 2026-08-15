@@ -275,8 +275,16 @@ public class DeploymentsController(
     private async Task<IReadOnlyList<Application.Security.ScopeRequest>> DescribeScopeAsync(
         Guid versionId, IReadOnlyList<Guid> bindingIds, bool approvalRequired, CancellationToken ct)
     {
-        var environment = await db.CertificateVersions.AsNoTracking()
-            .Where(v => v.Id == versionId).Select(v => v.Certificate.Environment).FirstOrDefaultAsync(ct);
+        // §24.2 scopes the grant by five things; all five have to be described here or a rule
+        // naming one of them could never match and would silently deny (or, worse, widen).
+        var certificate = await db.CertificateVersions.AsNoTracking()
+            .Where(v => v.Id == versionId)
+            .Select(v => new { v.Certificate.Environment, v.Certificate.BusinessUnit, v.Certificate.TagsJson })
+            .FirstOrDefaultAsync(ct);
+
+        var environment = certificate?.Environment;
+        var businessUnit = certificate?.BusinessUnit;
+        var tags = ParseTags(certificate?.TagsJson);
 
         var targets = await db.DeploymentBindings.AsNoTracking()
             .Where(b => bindingIds.Contains(b.Id))
@@ -289,13 +297,23 @@ public class DeploymentsController(
             .ToListAsync(ct);
 
         if (targets.Count == 0)
-            return [new Application.Security.ScopeRequest("certificate.deploy", environment, null, null, approvalRequired)];
+            return [new Application.Security.ScopeRequest("certificate.deploy", environment, null, null,
+                approvalRequired, businessUnit, tags)];
 
         return targets
             .Select(t => new Application.Security.ScopeRequest(
-                "certificate.deploy", environment ?? t.TargetEnvironment, t.TargetGroup, t.AdapterType, approvalRequired))
+                "certificate.deploy", environment ?? t.TargetEnvironment, t.TargetGroup, t.AdapterType,
+                approvalRequired, businessUnit, tags))
             .Distinct()
             .ToList();
+    }
+
+    /// <summary>Tags are stored as a JSON array; a malformed value must not deny every deployment.</summary>
+    private static IReadOnlyList<string> ParseTags(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try { return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? []; }
+        catch (System.Text.Json.JsonException) { return []; }
     }
 
     [HttpPost("{id:guid}/approve")]
