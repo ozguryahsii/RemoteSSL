@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import { MAX_PAGE, TruncationNotice } from './SimplePages'
 import { API_BASE, apiGet, apiGetPage, apiPost, apiPatch, apiDelete } from '../api/client'
 
@@ -19,6 +20,7 @@ interface CertificateListItem {
   ownerId: string | null
   monitorCount: number
   versionCount: number
+  installedOn: string[]
 }
 
 interface VersionDto {
@@ -376,13 +378,23 @@ export default function Certificates() {
   return (
     <div className="page">
       <h1>{t('nav.certificates')}</h1>
+      {/*
+        A certificate gets here one of three ways, and none of them used to be discoverable
+        from this screen: ask a CA for one, watch an endpoint until its certificate is
+        discovered, or install one on a server you manage.
+      */}
+      <div className="actions" style={{ marginBottom: 16 }}>
+        <Link to="/requests"><button>Request a certificate</button></Link>
+        <Link to="/monitors"><button>Monitor an endpoint</button></Link>
+        <Link to="/targets"><button>Add a server</button></Link>
+      </div>
       <TruncationNotice shown={certs.length} total={certTotal} />
       {/* Inventory columns per design doc §26.1 */}
       <table className="data-table">
         <thead>
           <tr>
-            <th>Certificate</th><th>Expiry</th><th>CA</th><th>Managed</th>
-            <th>Deployments</th><th>Auto renew</th><th>Status</th><th>Monitors</th>
+            <th>Certificate</th><th>Expiry</th><th>Installed on</th><th>CA</th>
+            <th>Auto renew</th><th>Status</th><th>Monitors</th>
           </tr>
         </thead>
         <tbody>
@@ -398,15 +410,20 @@ export default function Certificates() {
                   : '—'}
                 {c.notAfter && <div className="muted small">{new Date(c.notAfter).toLocaleDateString()}</div>}
               </td>
+              <td className="small">
+                {(c.installedOn ?? []).length === 0
+                  ? <span className="muted">Not installed anywhere</span>
+                  : (c.installedOn ?? []).map((name) => (
+                      <span key={name} className="store-chip">{name}</span>
+                    ))}
+              </td>
               <td className="small">{c.ca ?? '—'}</td>
-              <td>{c.managed ? <span className="ok">Yes</span> : <span className="muted">No</span>}</td>
-              <td>{c.deploymentCount || '—'}</td>
               <td>{c.autoRenew ? <span className="ok">Yes</span> : <span className="muted">No</span>}</td>
               <td><span className={healthClass(c.health)}>{c.health}</span></td>
               <td>{c.monitorCount}</td>
             </tr>
           ))}
-          {certs.length === 0 && <tr><td colSpan={8} className="muted">{t('certificates.empty')}</td></tr>}
+          {certs.length === 0 && <tr><td colSpan={7} className="muted">{t('certificates.empty')}</td></tr>}
         </tbody>
       </table>
 

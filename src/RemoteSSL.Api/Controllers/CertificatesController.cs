@@ -19,7 +19,13 @@ public class CertificatesController(
         Guid Id, string CommonName, string DisplayName, string Health,
         string? IssuerDn, string? Ca, DateTimeOffset? NotAfter, int? DaysUntilExpiry,
         bool Managed, int DeploymentCount, bool AutoRenew,
-        string? Environment, string? OwnerId, int MonitorCount, int VersionCount);
+        string? Environment, string? OwnerId, int MonitorCount, int VersionCount,
+        /// <summary>
+        /// The machines this certificate is installed on. "How many" is not the question an
+        /// operator actually has — "which servers" is — so the names travel with the list
+        /// rather than making them open each certificate to find out.
+        /// </summary>
+        IReadOnlyList<string> InstalledOn);
 
     /// <summary>
     /// Everything the nine certificate detail tabs need (design doc §26.2):
@@ -101,6 +107,12 @@ public class CertificatesController(
                 MonitorCount = c.MonitorLinks.Count,
                 VersionCount = c.Versions.Count,
                 DeploymentCount = db.DeploymentBindings.Count(b => b.CertificateId == c.Id),
+                // The machines, not just the count: "which servers is this on" is the question.
+                InstalledOn = db.DeploymentBindings
+                    .Where(b => b.CertificateId == c.Id)
+                    .Select(b => b.CertificateStore.Target.Name)
+                    .Distinct()
+                    .ToList(),
                 CaName = db.CertificateRequests
                     .Where(r => r.CertificateId == c.Id && r.CaConnectorId != null)
                     .OrderByDescending(r => r.CreatedAt)
@@ -124,7 +136,7 @@ public class CertificatesController(
             x.Latest?.NotAfter,
             x.Latest is null ? null : ExpiryCalculator.DaysUntilExpiry(x.Latest.NotAfter, now),
             x.DeploymentCount > 0, x.DeploymentCount, x.AutoRenew,
-            x.Environment, x.OwnerId, x.MonitorCount, x.VersionCount));
+            x.Environment, x.OwnerId, x.MonitorCount, x.VersionCount, x.InstalledOn));
     }
 
     /// <summary>Extension metadata is stored as JSON; a malformed value must not break the screen.</summary>

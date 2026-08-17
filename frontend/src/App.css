@@ -46,6 +46,14 @@ body {
   flex: 1;
 }
 
+.nav-group { display: flex; flex-direction: column; gap: 2px; }
+.nav-group + .nav-group { margin-top: 18px; }
+/* Quiet enough to read as a divider rather than compete with the links under it. */
+.nav-group-label {
+  padding: 4px 20px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38); font-weight: 600;
+}
+
 .sidebar nav a {
   color: var(--sidebar-text);
   text-decoration: none;
@@ -345,3 +353,10 @@ select {
   max-height: 320px;
   overflow: auto;
 }
+
+/* Folded-away telemetry on the overview screen. */
+.dash-details { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 12px; }
+.dash-details > summary {
+  cursor: pointer; font-weight: 600; color: var(--muted); font-size: 14px; padding: 4px 0;
+}
+.dash-details > summary:hover { color: var(--text); }

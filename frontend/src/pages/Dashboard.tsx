@@ -139,7 +139,7 @@ export default function Dashboard() {
   const [d, , error] = useData<DashboardData>('/api/v1/dashboard', 20000)
   if (!d) return (
     <div className="page">
-      <h1>Dashboard</h1>
+      <h1>Overview</h1>
       {error
         ? <>
             <p className="bad">Dashboard could not be loaded: {error}</p>
@@ -155,7 +155,7 @@ export default function Dashboard() {
 
   return (
     <div className="page">
-      <h1>Dashboard</h1>
+      <h1>Overview</h1>
 
       {/* Active alerts (design doc §32.3) */}
       {(d.alerts ?? []).length > 0 && (
@@ -169,38 +169,23 @@ export default function Dashboard() {
       )}
       {(d.alerts ?? []).length === 0 && <p className="ok small">No active alerts.</p>}
 
-      {/* Metrics (design doc §32.1) */}
+      {/*
+        The estate in four numbers. Everything else that used to sit here — probe latency,
+        queue depth, audit write failures — is operational telemetry: real, but not the
+        question you open this screen to answer. It moved to "System health" at the bottom.
+      */}
       <div className="stat-row">
         <Metric label="Certificates" value={m.certificatesTotal} />
-        <Metric label="Critical / expired" value={m.certificatesCritical} tone={m.certificatesCritical > 0 ? 'bad' : ''} />
         <Metric label="Expiring ≤30 days" value={m.certificatesExpiring} tone={m.certificatesExpiring > 0 ? 'warn' : ''} />
-        <Metric label="Probe success rate" value={m.probeSuccessRate} suffix="%" tone={(m.probeSuccessRate ?? 100) < 100 ? 'warn' : 'ok'} />
-        <Metric label="Deployment success rate" value={m.deploymentSuccessRate} suffix="%" tone={(m.deploymentSuccessRate ?? 100) < 100 ? 'warn' : 'ok'} />
-        <Metric label="Avg deploy duration" value={m.deploymentDurationSeconds} suffix="s" />
-        <Metric label="Rollbacks" value={m.rollbackCount} tone={m.rollbackCount > 0 ? 'warn' : ''} />
-        <Metric label="Runners online" value={`${m.runnersOnline}/${m.runnersTotal}`} tone={m.runnersOnline < m.runnersTotal ? 'bad' : 'ok'} />
-        <Metric label="Job queue depth" value={m.queueDepth} />
-        <Metric label="Renewal failures" value={m.renewalFailureCount} tone={m.renewalFailureCount > 0 ? 'bad' : ''} />
-        <Metric label="Drift (7d)" value={m.driftDetectedCount} tone={m.driftDetectedCount > 0 ? 'warn' : ''} />
-        <Metric label="Pending approvals" value={m.pendingApprovals} tone={m.pendingApprovals > 0 ? 'warn' : ''} />
-        <Metric label="Probe latency p50 / p95" value={m.probeLatencySamples === 0 ? null
-          : `${m.probeLatencyP50Ms ?? '—'} / ${m.probeLatencyP95Ms ?? '—'}`} suffix=" ms" />
-        <Metric label="CA request latency p50 / p95" value={m.caRequestLatencySamples === 0 ? null
-          : `${m.caRequestLatencyP50Ms ?? '—'} / ${m.caRequestLatencyP95Ms ?? '—'}`} suffix=" ms" />
-        <Metric label="Audit write failures (24h)" value={m.auditPipelineFailures}
-          tone={m.auditPipelineFailures > 0 ? 'bad' : 'ok'} />
+        <Metric label="Critical / expired" value={m.certificatesCritical} tone={m.certificatesCritical > 0 ? 'bad' : ''} />
+        <Metric label="Waiting for approval" value={m.pendingApprovals} tone={m.pendingApprovals > 0 ? 'warn' : ''} />
       </div>
 
       <ExpiryBreakdown buckets={d.expiryBuckets ?? []} unknown={d.expiryUnknown ?? 0} />
 
-      <div className="trend-row">
-        <LatencyTrend title="Probe latency" points={d.probeLatencyTrend ?? []} />
-        <LatencyTrend title="CA request latency" points={d.caRequestLatencyTrend ?? []} />
-      </div>
-
       {/* Critical / expiring certificates (§43) */}
       <section className="dash-section">
-        <h2>Critical &amp; expiring certificates <Link className="small" to="/certificates">all certificates →</Link></h2>
+        <h2>Needs attention <Link className="small" to="/certificates">all certificates →</Link></h2>
         <table className="data-table">
           <thead>
             <tr><th>Certificate</th><th>Status</th><th>Expires</th><th>Issuer</th><th>Env</th><th>Monitors</th><th>Deployments</th><th>Auto renew</th></tr>
@@ -329,6 +314,36 @@ export default function Dashboard() {
           )}
         </section>
       </div>
+
+      {/*
+        Operational telemetry (§32.1/§32.2). Kept, because it is what tells you the platform
+        itself is healthy — but at the bottom, and folded away, because it answers a different
+        question from the one this screen exists for.
+      */}
+      <details className="dash-details">
+        <summary>System health</summary>
+        <div className="stat-row">
+          <Metric label="Probe success rate" value={m.probeSuccessRate} suffix="%" tone={(m.probeSuccessRate ?? 100) < 100 ? 'warn' : 'ok'} />
+          <Metric label="Deployment success rate" value={m.deploymentSuccessRate} suffix="%" tone={(m.deploymentSuccessRate ?? 100) < 100 ? 'warn' : 'ok'} />
+          <Metric label="Avg deploy duration" value={m.deploymentDurationSeconds} suffix="s" />
+          <Metric label="Rollbacks" value={m.rollbackCount} tone={m.rollbackCount > 0 ? 'warn' : ''} />
+          <Metric label="Runners online" value={`${m.runnersOnline}/${m.runnersTotal}`} tone={m.runnersOnline < m.runnersTotal ? 'bad' : 'ok'} />
+          <Metric label="Job queue depth" value={m.queueDepth} />
+          <Metric label="Renewal failures" value={m.renewalFailureCount} tone={m.renewalFailureCount > 0 ? 'bad' : ''} />
+          <Metric label="Drift (7d)" value={m.driftDetectedCount} tone={m.driftDetectedCount > 0 ? 'warn' : ''} />
+          <Metric label="Probe latency p50 / p95" value={m.probeLatencySamples === 0 ? null
+            : `${m.probeLatencyP50Ms ?? '—'} / ${m.probeLatencyP95Ms ?? '—'}`} suffix=" ms" />
+          <Metric label="CA request latency p50 / p95" value={m.caRequestLatencySamples === 0 ? null
+            : `${m.caRequestLatencyP50Ms ?? '—'} / ${m.caRequestLatencyP95Ms ?? '—'}`} suffix=" ms" />
+          <Metric label="Audit write failures (24h)" value={m.auditPipelineFailures}
+            tone={m.auditPipelineFailures > 0 ? 'bad' : 'ok'} />
+        </div>
+
+        <div className="trend-row">
+          <LatencyTrend title="Probe latency" points={d.probeLatencyTrend ?? []} />
+          <LatencyTrend title="CA request latency" points={d.caRequestLatencyTrend ?? []} />
+        </div>
+      </details>
     </div>
   )
 }

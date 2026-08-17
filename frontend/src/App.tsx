@@ -13,22 +13,47 @@ import Keys from './pages/Keys'
 import { Login, Policies, CaIntegrations, Settings } from './pages/AdminPages'
 import './App.css'
 
-const NAV_ITEMS = [
-  { path: '/', key: 'dashboard' },
-  { path: '/certificates', key: 'certificates' },
-  { path: '/monitors', key: 'monitors' },
-  { path: '/targets', key: 'targets' },
-  { path: '/requests', key: 'requests' },
-  { path: '/deployments', key: 'deployments' },
-  { path: '/approvals', key: 'approvals' },
-  { path: '/runners', key: 'runners' },
-  { path: '/credentials', key: 'credentials' },
-  { path: '/keys', key: 'keys' },
-  { path: '/ca-integrations', key: 'caIntegrations' },
-  { path: '/policies', key: 'policies' },
-  { path: '/audit', key: 'audit' },
-  { path: '/settings', key: 'settings' },
+/**
+ * The menu is grouped by what someone is trying to do, not by the order the entities were
+ * built. Everyday certificate work comes first; governance stays visible as its own group
+ * because approving and auditing are jobs in their own right, not settings; and the pieces you
+ * configure once — runners, credentials, CAs — sit at the bottom where you go looking for them
+ * rather than trip over them daily.
+ */
+const NAV_GROUPS = [
+  {
+    key: 'daily',
+    items: [
+      { path: '/', key: 'dashboard' },
+      { path: '/certificates', key: 'certificates' },
+      { path: '/monitors', key: 'monitors' },
+      { path: '/targets', key: 'targets' },
+      { path: '/requests', key: 'requests' },
+      { path: '/deployments', key: 'deployments' },
+    ],
+  },
+  {
+    key: 'governance',
+    items: [
+      { path: '/approvals', key: 'approvals' },
+      { path: '/audit', key: 'audit' },
+    ],
+  },
+  {
+    key: 'setup',
+    items: [
+      { path: '/runners', key: 'runners' },
+      { path: '/credentials', key: 'credentials' },
+      { path: '/keys', key: 'keys' },
+      { path: '/ca-integrations', key: 'caIntegrations' },
+      { path: '/policies', key: 'policies' },
+      { path: '/settings', key: 'settings' },
+    ],
+  },
 ] as const
+
+const NAV_ITEMS: readonly { path: string; key: string }[] =
+  NAV_GROUPS.flatMap((g) => g.items as readonly { path: string; key: string }[])
 
 function Placeholder({ titleKey }: { titleKey: string }) {
   const { t } = useTranslation()
@@ -74,10 +99,15 @@ export default function App() {
         <aside className="sidebar">
           <div className="brand">{t('app.title')}</div>
           <nav>
-            {NAV_ITEMS.map((item) => (
-              <NavLink key={item.path} to={item.path} end={item.path === '/'}>
-                {t(`nav.${item.key}`)}
-              </NavLink>
+            {NAV_GROUPS.map((group) => (
+              <div key={group.key} className="nav-group">
+                <div className="nav-group-label">{t(`nav.group.${group.key}`)}</div>
+                {group.items.map((item) => (
+                  <NavLink key={item.path} to={item.path} end={item.path === '/'}>
+                    {t(`nav.${item.key}`)}
+                  </NavLink>
+                ))}
+              </div>
             ))}
           </nav>
           <div className="sidebar-footer">
