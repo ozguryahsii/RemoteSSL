@@ -377,16 +377,15 @@ export default function Certificates() {
 
   return (
     <div className="page">
-      <h1>{t('nav.certificates')}</h1>
       {/*
         A certificate gets here one of three ways, and none of them used to be discoverable
         from this screen: ask a CA for one, watch an endpoint until its certificate is
         discovered, or install one on a server you manage.
       */}
       <div className="actions" style={{ marginBottom: 16 }}>
-        <Link to="/requests"><button>Request a certificate</button></Link>
-        <Link to="/monitors"><button>Monitor an endpoint</button></Link>
-        <Link to="/targets"><button>Add a server</button></Link>
+        <Link to="/certificates/requests"><button>Request a certificate</button></Link>
+        <Link to="/endpoints"><button>Monitor an endpoint</button></Link>
+        <Link to="/servers"><button>Add a server</button></Link>
       </div>
       <TruncationNotice shown={certs.length} total={certTotal} />
       {/* Inventory columns per design doc §26.1 */}

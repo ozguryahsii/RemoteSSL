@@ -239,7 +239,6 @@ export default function Deployments() {
 
   return (
     <div className="page">
-      <h1>Installations</h1>
       <TruncationNotice shown={(jobs ?? []).length} total={jobTotal} />
       <p className="muted small">
         Every certificate installation, past and running. Use “Install on a server” to put a certificate on a

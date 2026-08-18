@@ -82,7 +82,6 @@ export default function Keys() {
 
   return (
     <div className="page">
-      <h1>Keys</h1>
       <p className="muted small">
         Private keys under management. A key created non-exportable can never be read back — that
         is enforced by the platform for software keys and by the device itself for HSM keys.

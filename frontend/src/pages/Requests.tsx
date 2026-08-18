@@ -131,7 +131,6 @@ export default function Requests() {
 
   return (
     <div className="page">
-      <h1>Certificate Requests</h1>
       <TruncationNotice shown={(requests ?? []).length} total={requestTotal} />
       <form onSubmit={create}>
         <div className="inline-form">

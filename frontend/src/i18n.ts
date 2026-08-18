@@ -8,15 +8,24 @@ const resources = {
     translation: {
       app: { title: 'RemoteSSL' },
       nav: {
-        group: {
-          daily: 'Certificate work',
-          governance: 'Approve & audit',
-          setup: 'Setup',
-        },
-        dashboard: 'Overview',
+        home: 'Overview',
         certificates: 'Certificates',
-        monitors: 'Monitored endpoints',
-        targets: 'Servers & devices',
+        servers: 'Servers',
+        endpoints: 'Watched endpoints',
+        activity: 'Activity',
+        setup: 'Setup',
+        tab: {
+          certificates: { all: 'All certificates', requests: 'Requests & CSRs' },
+          activity: { installations: 'Installations', approvals: 'Approvals', audit: 'Audit trail' },
+          setup: {
+            runners: 'Runners', credentials: 'Credentials', keys: 'Keys',
+            authorities: 'Certificate authorities', policies: 'Policies', general: 'General',
+          },
+        },
+        // Screen headings still use these; kept so a page title never falls back to a raw key.
+        dashboard: 'Overview',
+        monitors: 'Watched endpoints',
+        targets: 'Servers',
         requests: 'Requests & CSRs',
         deployments: 'Installations',
         approvals: 'Approvals',
@@ -25,8 +34,8 @@ const resources = {
         keys: 'Keys',
         caIntegrations: 'Certificate authorities',
         policies: 'Policies',
-        audit: 'Audit',
-        settings: 'Settings',
+        audit: 'Audit trail',
+        settings: 'General',
       },
       common: {
         comingSoon: 'This screen arrives in a later phase.',

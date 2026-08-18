@@ -400,3 +400,19 @@ button.chosen { background: #dbeafe; border-color: #93c5fd; color: #1e40af; font
 .screen-help { margin: 0 0 16px; }
 .screen-help > summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .screen-help > summary:hover { color: var(--text); }
+
+/* One subject, several screens: the tabs keep them together instead of scattering them
+   across the top-level menu. */
+.section-tabs {
+  display: flex; gap: 4px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border, #e2e8f0); margin-bottom: 20px;
+}
+.section-tabs a {
+  padding: 9px 16px; text-decoration: none; color: var(--muted);
+  font-size: 14px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.section-tabs a:hover { color: var(--text); }
+.section-tabs a.active { color: var(--sidebar-active); border-bottom-color: var(--sidebar-active); font-weight: 600; }
+.section-title { margin: 0 0 12px; font-size: 24px; }
+/* Pages inside a section already sit under the section heading. */
+.section-tabs + .page > h1:first-child { display: none; }

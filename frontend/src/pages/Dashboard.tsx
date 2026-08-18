@@ -216,7 +216,7 @@ export default function Dashboard() {
       <div className="dash-grid">
         {/* Failed jobs (§43) */}
         <section className="dash-section">
-          <h2>Failed deployment jobs <Link className="small" to="/deployments">all jobs →</Link></h2>
+          <h2>Failed deployment jobs <Link className="small" to="/activity">all jobs →</Link></h2>
           <table className="data-table">
             <thead><tr><th>Certificate</th><th>Status</th><th>Targets</th><th>By</th><th>Finished</th></tr></thead>
             <tbody>
@@ -236,7 +236,7 @@ export default function Dashboard() {
 
         {/* Runner health (§43) */}
         <section className="dash-section">
-          <h2>Runner health <Link className="small" to="/runners">runners →</Link></h2>
+          <h2>Runner health <Link className="small" to="/setup">runners →</Link></h2>
           <table className="data-table">
             <thead><tr><th>Runner</th><th>Segment</th><th>Status</th><th>Last heartbeat</th></tr></thead>
             <tbody>
@@ -257,7 +257,7 @@ export default function Dashboard() {
       <div className="dash-grid">
         {/* Renewal queue (§43) */}
         <section className="dash-section">
-          <h2>Renewal queue <Link className="small" to="/requests">requests →</Link></h2>
+          <h2>Renewal queue <Link className="small" to="/certificates/requests">requests →</Link></h2>
           <table className="data-table">
             <thead><tr><th>Certificate</th><th>State</th><th>Requested by</th><th>Age</th></tr></thead>
             <tbody>
@@ -281,7 +281,7 @@ export default function Dashboard() {
 
         {/* Pending approvals + recent drift */}
         <section className="dash-section">
-          <h2>Pending approvals <Link className="small" to="/approvals">approvals →</Link></h2>
+          <h2>Pending approvals <Link className="small" to="/activity/approvals">approvals →</Link></h2>
           <table className="data-table">
             <thead><tr><th>Job</th><th>Requested by</th><th>Waiting</th></tr></thead>
             <tbody>

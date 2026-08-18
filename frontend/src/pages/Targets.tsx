@@ -202,7 +202,7 @@ export default function Targets() {
 
   return (
     <div className="page">
-      <h1>Managed Targets</h1>
+      <h1>Servers</h1>
       <TruncationNotice shown={(targets ?? []).length} total={targetTotal} />
       <form className="inline-form" onSubmit={add}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="target name" required />

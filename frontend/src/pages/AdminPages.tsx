@@ -72,7 +72,6 @@ export function Policies() {
 
   return (
     <div className="page">
-      <h1>Policies</h1>
       <h2>Renewal policies</h2>
       <form className="inline-form" onSubmit={add}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="policy name" required />
@@ -306,7 +305,6 @@ export function CaIntegrations() {
 
   return (
     <div className="page">
-      <h1>CA Integrations</h1>
       <form className="inline-form" onSubmit={add} style={{ flexWrap: 'wrap' }}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="connector name" required />
         <select value={type} onChange={(e) => setType(e.target.value)}>
@@ -487,7 +485,6 @@ export function Settings() {
 
   return (
     <div className="page">
-      <h1>Settings</h1>
       <h3>Session</h3>
       <p className="small">
         {getToken() ? <>Signed in. <button onClick={() => { setToken(null); window.location.href = '/login' }}>Sign out</button></>

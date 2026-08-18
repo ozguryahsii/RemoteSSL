@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { apiGetText } from './api/client'
 import Monitors from './pages/Monitors'
@@ -14,54 +14,113 @@ import { Login, Policies, CaIntegrations, Settings } from './pages/AdminPages'
 import './App.css'
 
 /**
- * The menu is grouped by what someone is trying to do, not by the order the entities were
- * built. Everyday certificate work comes first; governance stays visible as its own group
- * because approving and auditing are jobs in their own right, not settings; and the pieces you
- * configure once — runners, credentials, CAs — sit at the bottom where you go looking for them
- * rather than trip over them daily.
+ * Six places, named after the things an operator actually has: certificates, the servers they go
+ * on, the endpoints being watched, what happened, and the setup behind it.
+ *
+ * There used to be fourteen entries, one per entity in the data model. That is a faithful map of
+ * the system and a poor map of the work — it asked the reader to already know that installing a
+ * certificate means visiting Targets, then Deployments, or that a CSR lives under a separate
+ * screen from the certificate it will become. Everything is still here; the screens that belong
+ * to one subject now sit behind that subject as tabs, so the top level stays small enough to hold
+ * in your head.
  */
-const NAV_GROUPS = [
+interface Tab { path: string; key: string; element: React.ReactNode }
+interface Section { path: string; key: string; tabs?: Tab[]; element?: React.ReactNode }
+
+const SECTIONS: Section[] = [
+  { path: '/', key: 'home', element: <Dashboard /> },
+
+  // A request is a certificate that does not exist yet, so it belongs with the certificates.
   {
-    key: 'daily',
-    items: [
-      { path: '/', key: 'dashboard' },
-      { path: '/certificates', key: 'certificates' },
-      { path: '/monitors', key: 'monitors' },
-      { path: '/targets', key: 'targets' },
-      { path: '/requests', key: 'requests' },
-      { path: '/deployments', key: 'deployments' },
+    path: '/certificates',
+    key: 'certificates',
+    tabs: [
+      { path: '', key: 'all', element: <Certificates /> },
+      { path: 'requests', key: 'requests', element: <Requests /> },
     ],
   },
+
+  { path: '/servers', key: 'servers', element: <Targets /> },
+  { path: '/endpoints', key: 'endpoints', element: <Monitors /> },
+
+  // What happened, and what is waiting on a person. Installations, approvals and the audit trail
+  // answer the same question at different depths, so they are one section rather than three.
   {
-    key: 'governance',
-    items: [
-      { path: '/approvals', key: 'approvals' },
-      { path: '/audit', key: 'audit' },
+    path: '/activity',
+    key: 'activity',
+    tabs: [
+      { path: '', key: 'installations', element: <Deployments /> },
+      { path: 'approvals', key: 'approvals', element: <Approvals /> },
+      { path: 'audit', key: 'audit', element: <Audit /> },
     ],
   },
+
+  // Everything you set up once and then stop thinking about.
   {
+    path: '/setup',
     key: 'setup',
-    items: [
-      { path: '/runners', key: 'runners' },
-      { path: '/credentials', key: 'credentials' },
-      { path: '/keys', key: 'keys' },
-      { path: '/ca-integrations', key: 'caIntegrations' },
-      { path: '/policies', key: 'policies' },
-      { path: '/settings', key: 'settings' },
+    tabs: [
+      { path: '', key: 'runners', element: <Runners /> },
+      { path: 'credentials', key: 'credentials', element: <Credentials /> },
+      { path: 'keys', key: 'keys', element: <Keys /> },
+      { path: 'authorities', key: 'authorities', element: <CaIntegrations /> },
+      { path: 'policies', key: 'policies', element: <Policies /> },
+      { path: 'general', key: 'general', element: <Settings /> },
     ],
   },
-] as const
+]
 
-const NAV_ITEMS: readonly { path: string; key: string }[] =
-  NAV_GROUPS.flatMap((g) => g.items as readonly { path: string; key: string }[])
+/**
+ * Where the old screens used to live. Bookmarks and links in older messages keep working instead
+ * of landing on a blank page.
+ */
+const MOVED: Record<string, string> = {
+  '/monitors': '/endpoints',
+  '/targets': '/servers',
+  '/deployments': '/activity',
+  '/requests': '/certificates/requests',
+  '/approvals': '/activity/approvals',
+  '/audit': '/activity/audit',
+  '/runners': '/setup',
+  '/credentials': '/setup/credentials',
+  '/keys': '/setup/keys',
+  '/ca-integrations': '/setup/authorities',
+  '/policies': '/setup/policies',
+  '/settings': '/setup/general',
+}
 
-function Placeholder({ titleKey }: { titleKey: string }) {
+/** Tab strip for a section that has more than one screen under it. */
+function SectionTabs({ section }: { section: Section }) {
+  const { t } = useTranslation()
+  const { pathname } = useLocation()
+  if (!section.tabs) return null
+
+  return (
+    <div className="section-tabs">
+      {section.tabs.map((tab) => {
+        const to = tab.path ? `${section.path}/${tab.path}` : section.path
+        // The default tab is also active on the bare section path.
+        const active = pathname === to || (tab.path === '' && pathname === `${section.path}/`)
+        return (
+          <NavLink key={to} to={to} className={active ? 'active' : ''}>
+            {t(`nav.tab.${section.key}.${tab.key}`)}
+          </NavLink>
+        )
+      })}
+    </div>
+  )
+}
+
+function SectionShell({ section, children }: { section: Section; children: React.ReactNode }) {
   const { t } = useTranslation()
   return (
-    <div className="page">
-      <h1>{t(`nav.${titleKey}`)}</h1>
-      <p className="muted">{t('common.comingSoon')}</p>
-    </div>
+    <>
+      {/* The section names the subject once; the tabs name the view of it. The screens inside
+          no longer carry their own heading, so nothing is said twice. */}
+      <h1 className="section-title">{t(`nav.${section.key}`)}</h1>
+      <SectionTabs section={section} />
+      {children}
+    </>
   )
 }
 
@@ -99,15 +158,11 @@ export default function App() {
         <aside className="sidebar">
           <div className="brand">{t('app.title')}</div>
           <nav>
-            {NAV_GROUPS.map((group) => (
-              <div key={group.key} className="nav-group">
-                <div className="nav-group-label">{t(`nav.group.${group.key}`)}</div>
-                {group.items.map((item) => (
-                  <NavLink key={item.path} to={item.path} end={item.path === '/'}>
-                    {t(`nav.${item.key}`)}
-                  </NavLink>
-                ))}
-              </div>
+            {SECTIONS.map((s) => (
+              <NavLink key={s.path} to={s.path} end={s.path === '/'}
+                className={({ isActive }) => (isActive ? 'active' : '')}>
+                {t(`nav.${s.key}`)}
+              </NavLink>
             ))}
           </nav>
           <div className="sidebar-footer">
@@ -116,24 +171,21 @@ export default function App() {
         </aside>
         <main className="content">
           <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/monitors" element={<Monitors />} />
-            <Route path="/certificates" element={<Certificates />} />
-            <Route path="/targets" element={<Targets />} />
-            <Route path="/deployments" element={<Deployments />} />
-            <Route path="/requests" element={<Requests />} />
-            <Route path="/runners" element={<Runners />} />
-            <Route path="/credentials" element={<Credentials />} />
-            <Route path="/keys" element={<Keys />} />
-            <Route path="/approvals" element={<Approvals />} />
-            <Route path="/audit" element={<Audit />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/policies" element={<Policies />} />
-            <Route path="/ca-integrations" element={<CaIntegrations />} />
-            <Route path="/settings" element={<Settings />} />
-            {NAV_ITEMS.filter((i) => !['/', '/monitors', '/certificates', '/targets', '/deployments', '/requests', '/runners', '/credentials', '/approvals', '/audit', '/policies', '/ca-integrations', '/settings'].includes(i.path)).map((item) => (
-              <Route key={item.path} path={item.path} element={<Placeholder titleKey={item.key} />} />
+            {SECTIONS.map((s) =>
+              s.tabs
+                ? s.tabs.map((tab) => (
+                    <Route
+                      key={`${s.path}/${tab.path}`}
+                      path={tab.path ? `${s.path}/${tab.path}` : s.path}
+                      element={<SectionShell section={s}>{tab.element}</SectionShell>}
+                    />
+                  ))
+                : <Route key={s.path} path={s.path} element={s.element} />,
+            )}
+            {Object.entries(MOVED).map(([from, to]) => (
+              <Route key={from} path={from} element={<Navigate to={to} replace />} />
             ))}
+            <Route path="/login" element={<Login />} />
           </Routes>
         </main>
       </div>

@@ -49,7 +49,6 @@ export function Runners() {
   }[]>('/api/v1/runners', 10000)
   return (
     <div className="page">
-      <h1>Runners</h1>
       <table className="data-table">
         <thead><tr><th>Name</th><th>Segment</th><th>Status</th><th>Identity</th><th>Capabilities</th><th>Version</th><th>Last heartbeat</th></tr></thead>
         <tbody>
@@ -192,7 +191,6 @@ export function Credentials() {
 
   return (
     <div className="page">
-      <h1>Credentials</h1>
       <p className="muted small">
         Secret values are write-only: stored encrypted, never displayed. Leave secret fields blank on edit to keep
         the current secret. External providers hold the secret themselves — only the identifier is stored here.
@@ -292,7 +290,6 @@ export function Approvals() {
   }
   return (
     <div className="page">
-      <h1>Approvals</h1>
       <table className="data-table">
         <thead><tr><th>Deployment job</th><th>Requested by</th><th>Created</th><th></th></tr></thead>
         <tbody>
@@ -422,7 +419,6 @@ export function Audit() {
 
   return (
     <div className="page">
-      <h1>Audit</h1>
       <p className="muted small">
         Click a trace id to follow one operation end to end: certificate request → CA → deployment
         job → runner → target. Click a row to see its full context.
