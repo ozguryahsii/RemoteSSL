@@ -59,6 +59,18 @@ Set-StrictMode -Version Latest
 function Step($message) { Write-Host "`n=== $message" -ForegroundColor Cyan }
 # Windows PowerShell 5.1 runs on .NET Framework, where RandomNumberGenerator has no static
 # GetBytes - the instance method is the one both frameworks have.
+# npm, dotnet and sc.exe all write ordinary notices to stderr, and with ErrorActionPreference
+# 'Stop' PowerShell turns any of that into a terminating error - an npm version notice was enough
+# to abort an install. The exit code is the only thing that says whether a native command failed,
+# so that is what is checked.
+function Invoke-Native([scriptblock]$command, [string]$what) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $command 2>&1 | ForEach-Object { "$_" } }
+    finally { $ErrorActionPreference = $previous }
+    if ($LASTEXITCODE -ne 0) { throw "$what failed (exit code $LASTEXITCODE)" }
+}
+
 function New-RandomSecret($byteCount) {
     $bytes = New-Object byte[] $byteCount
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -104,22 +116,19 @@ foreach ($name in 'RemoteSSL Runner', 'RemoteSSL API') {
 Step 'Building the UI'
 Push-Location (Join-Path $repo 'frontend')
 try {
-    if (Test-Path 'package-lock.json') { npm ci } else { npm install }
-    if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+    if (Test-Path 'package-lock.json') { Invoke-Native { npm ci } 'npm ci' }
+    else { Invoke-Native { npm install } 'npm install' }
     # Empty base URL: the UI calls the API it was served from, whatever address that is.
     $env:VITE_API_BASE = ''
-    npm run build
-    if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
+    Invoke-Native { npm run build } 'npm run build'
 }
 finally { Pop-Location }
 
 Step "Publishing the control plane to $apiDir"
-dotnet publish (Join-Path $repo 'src\RemoteSSL.Api') -c Release -o $apiDir
-if ($LASTEXITCODE -ne 0) { throw 'dotnet publish (API) failed' }
+Invoke-Native { dotnet publish (Join-Path $repo 'src\RemoteSSL.Api') -c Release -o $apiDir } 'dotnet publish (API)'
 
 Step "Publishing the runner to $runnerDir"
-dotnet publish (Join-Path $repo 'src\RemoteSSL.Runner') -c Release -o $runnerDir
-if ($LASTEXITCODE -ne 0) { throw 'dotnet publish (runner) failed' }
+Invoke-Native { dotnet publish (Join-Path $repo 'src\RemoteSSL.Runner') -c Release -o $runnerDir } 'dotnet publish (runner)'
 
 Step 'Placing the UI inside the control plane'
 $wwwroot = Join-Path $apiDir 'wwwroot'
@@ -184,7 +193,7 @@ function Install-RemoteSslService($name, $exe, $description) {
     $existing = Get-Service -Name $name -ErrorAction SilentlyContinue
     if ($existing) {
         Step "Updating service $name"
-        sc.exe config "$name" binPath= "`"$exe`"" start= auto | Out-Null
+        Invoke-Native { sc.exe config "$name" binPath= "`"$exe`"" start= auto } "sc config $name" | Out-Null
     }
     else {
         Step "Registering service $name"
@@ -192,7 +201,8 @@ function Install-RemoteSslService($name, $exe, $description) {
             -Description $description -StartupType Automatic | Out-Null
     }
     # Restart on failure rather than leaving the estate unmanaged after one bad night.
-    sc.exe failure "$name" reset= 86400 actions= restart/30000/restart/60000/restart/120000 | Out-Null
+    Invoke-Native { sc.exe failure "$name" reset= 86400 actions= restart/30000/restart/60000/restart/120000 } `
+        "sc failure $name" | Out-Null
     Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$name" `
         -Name Environment -Type MultiString `
         -Value @('DOTNET_ENVIRONMENT=Production', 'ASPNETCORE_ENVIRONMENT=Production')
