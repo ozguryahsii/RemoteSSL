@@ -179,6 +179,9 @@ public class TargetsController(IRemoteSslDbContext db, AuditWriter audit) : Cont
             .Select(b => new
             {
                 b.Id, b.CertificateId,
+                // Callers match on the store, so its id has to travel with the row — otherwise
+                // "is this certificate already bound here?" cannot be answered.
+                StoreId = b.CertificateStoreId,
                 Certificate = b.Certificate.CommonName,
                 Store = new { b.CertificateStore.StoreType, b.CertificateStore.StorePath, b.CertificateStore.Alias },
                 b.ServiceBindingJson

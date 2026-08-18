@@ -360,3 +360,43 @@ select {
   cursor: pointer; font-weight: 600; color: var(--muted); font-size: 14px; padding: 4px 0;
 }
 .dash-details > summary:hover { color: var(--text); }
+
+/* Step-by-step install: the four records it creates are one task, so they read as one. */
+.modal.wizard { width: min(780px, 94vw); }
+.wizard-steps {
+  list-style: none; display: flex; gap: 8px; flex-wrap: wrap;
+  padding: 0; margin: 4px 0 16px; font-size: 13px;
+}
+.wizard-steps li {
+  display: flex; align-items: center; gap: 6px; color: var(--muted);
+  padding: 4px 10px; border-radius: 20px; background: #f1f5f9;
+}
+.wizard-steps li.current { background: #dbeafe; color: #1e40af; font-weight: 600; }
+.wizard-steps li.done { color: var(--ok); }
+.wizard-step-no {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%; background: #fff;
+  font-size: 11px; font-weight: 700;
+}
+.wizard-fields { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.wizard-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
+.wizard-fields label input, .wizard-fields label select { font-weight: 400; }
+.wizard-fields label input {
+  padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px;
+}
+button.chosen { background: #dbeafe; border-color: #93c5fd; color: #1e40af; font-weight: 600; }
+
+/* Detail that used to crowd every row now opens under the row it belongs to. */
+.row-caret { display: inline-block; width: 14px; color: var(--muted); }
+.detail-row > td { background: #f8fafc; }
+.vantage-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px 24px; padding: 4px 2px 8px;
+}
+.vantage-grid h4 { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+.vantage-wide { grid-column: 1 / -1; }
+
+/* Long-form explanation kept available without letting it lead the screen. */
+.screen-help { margin: 0 0 16px; }
+.screen-help > summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.screen-help > summary:hover { color: var(--text); }

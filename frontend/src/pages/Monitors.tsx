@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { apiGet, apiGetPage, apiPost, apiPatch, apiDelete } from '../api/client'
 import { useData, post, MAX_PAGE, TruncationNotice } from './SimplePages'
@@ -164,6 +164,28 @@ function VantageCell({ v, enabled, label }: { v: Vantage; enabled: boolean; labe
   )
 }
 
+/** The certificate this endpoint is actually serving, from whichever vantage last saw one. */
+function served(m: Monitor): ObservedCert | null {
+  return m.external.certificate ?? m.internal.certificate ?? null
+}
+
+/** One word for "is this endpoint answering", collapsing both vantages. */
+function probeLabel(m: Monitor): string {
+  const states = [
+    m.externalProbeEnabled ? m.external.probeStatus : null,
+    m.runnerId ? m.internal.probeStatus : null,
+  ].filter(Boolean) as string[]
+  if (states.length === 0) return 'not probed'
+  if (states.every((x) => x === 'Success')) return 'OK'
+  if (states.every((x) => x === 'NeverProbed')) return 'never probed'
+  return states.find((x) => x !== 'Success' && x !== 'NeverProbed') ?? 'OK'
+}
+
+function probeClass(m: Monitor): string {
+  const label = probeLabel(m)
+  return label === 'OK' ? 'ok' : label === 'not probed' || label === 'never probed' ? 'muted' : 'bad'
+}
+
 export default function Monitors() {
   const { t } = useTranslation()
   const [monitors, setMonitors] = useState<Monitor[]>([])
@@ -185,6 +207,7 @@ export default function Monitors() {
   const [runners] = useData<{ id: string; name: string }[]>('/api/v1/runners')
 
   const [monitorTotal, setMonitorTotal] = useState<number | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   const reload = useCallback(() => {
     // Ask for the largest page the API serves and keep the server-side total: at ten thousand
@@ -281,23 +304,27 @@ export default function Monitors() {
         <button type="submit">{t('monitors.add')}</button>
       </form>
       {error && <p className="error">{error}</p>}
-      <p className="muted small" style={{ marginTop: -12 }}>
-        <strong>Outside</strong> is probed by the control plane over public DNS. <strong>Inside</strong> is probed by a
-        runner that lives in the same network as the application — pick one under <em>Edit → via runner</em>. Only then
-        can RemoteSSL compare the two and tell you whether the certificate was replaced outside, inside, or both.
-        Endpoints that exist only on internal DNS (external probe says DnsResolutionFailed) need a runner to be
-        monitored at all; you can also untick <em>probe externally</em> for them.
-      </p>
+      {/* Two paragraphs of theory above the data made this screen unreadable; it is still here
+          for whoever needs it, one click away. */}
+      <details className="screen-help">
+        <summary>Outside vs inside probing</summary>
+        <p className="muted small">
+          <strong>Outside</strong> is probed by the control plane over public DNS. <strong>Inside</strong> is probed by a
+          runner that lives in the same network as the application — pick one under <em>Edit → via runner</em>. Only then
+          can RemoteSSL compare the two and tell you whether the certificate was replaced outside, inside, or both.
+          Endpoints that exist only on internal DNS (external probe says DnsResolutionFailed) need a runner to be
+          monitored at all; you can also untick <em>probe externally</em> for them.
+        </p>
+      </details>
 
       <table className="data-table">
         <thead>
           <tr>
             <th>{t('monitors.endpoint')}</th>
-            <th>Outside (control plane)</th>
-            <th>Inside (runner)</th>
-            <th>Comparison</th>
-            <th>App health</th>
-            <th>Expected / target</th>
+            <th>Certificate served</th>
+            <th>Expires</th>
+            <th>Probe</th>
+            <th>Drift</th>
             <th></th>
           </tr>
         </thead>
@@ -313,7 +340,7 @@ export default function Monitors() {
                   {(runners ?? []).map((r) => <option key={r.id} value={r.id}>via {r.name}</option>)}
                 </select>
               </td>
-              <td colSpan={4} className="small muted">
+              <td colSpan={3} className="small muted">
                 <div>
                   Interval (min): <input value={eInterval} onChange={(e) => setEInterval(e.target.value)}
                     placeholder="default" type="number" style={{ width: 80 }} />
@@ -338,47 +365,90 @@ export default function Monitors() {
               </td>
             </tr>
           ) : (
-            <tr key={m.id}>
-              <td>
-                {m.host}:{m.port}
-                {m.sni && <div className="muted small">SNI: {m.sni}</div>}
-                {!m.enabled && <span className="tag muted">disabled</span>}
-              </td>
-              <td><VantageCell v={m.external} enabled={m.externalProbeEnabled}
-                               label="external probe turned off for this endpoint" /></td>
-              <td><VantageCell v={m.internal} enabled={!!m.runnerId}
-                               label="not probed from inside — pick a runner under Edit" /></td>
-              <td>
-                <span className={verdictClass(m.verdict)}>{m.verdict}</span>
-                <div className="muted small" style={{ maxWidth: 320 }}>{m.verdictDetail}</div>
-              </td>
-              <td className="small">
-                {m.healthCheckUrl ? (
-                  <>
-                    <span className={healthClassFor(m.healthCheckStatus)}>{m.healthCheckStatus}</span>
-                    <div className="muted">{m.healthCheckDetail ?? m.healthCheckUrl}</div>
-                    {m.healthCheckLatencyMs !== null && <div className="muted">{m.healthCheckLatencyMs} ms</div>}
-                  </>
-                ) : <span className="muted">not configured</span>}
-              </td>
-              <td><ExpectedCell m={m} /></td>
-              <td className="actions">
-                <button onClick={() => probe(m.id)} disabled={busy === m.id}>
-                  {busy === m.id ? t('monitors.probing') : t('monitors.probeNow')}
-                </button>
-                <button onClick={() => startEdit(m)}>Edit</button>
-                <button onClick={() => toggleEnabled(m)}>{m.enabled ? 'Disable' : 'Enable'}</button>
-                <button className="danger" onClick={() => remove(m.id)}>{t('common.delete')}</button>
-              </td>
-            </tr>
+            <Fragment key={m.id}>
+              <tr className="clickable" onClick={() => setExpanded(expanded === m.id ? null : m.id)}>
+                <td>
+                  <span className="row-caret">{expanded === m.id ? '▾' : '▸'}</span>
+                  {m.host}:{m.port}
+                  {m.sni && <div className="muted small">SNI: {m.sni}</div>}
+                  {!m.enabled && <span className="tag muted">disabled</span>}
+                </td>
+                {/* The certificate actually being served, from whichever vantage saw it. */}
+                <td className="small">
+                  {served(m)?.commonName ?? <span className="muted">not observed yet</span>}
+                  {served(m) && <div className="muted">{served(m)!.sha256Thumbprint.slice(0, 12)}…</div>}
+                </td>
+                <td className="small">
+                  {served(m)
+                    ? <span className={healthClass(served(m)!.health)}>{served(m)!.daysUntilExpiry} {t('monitors.days')}</span>
+                    : <span className="muted">—</span>}
+                </td>
+                <td className="small">
+                  <span className={probeClass(m)}>{probeLabel(m)}</span>
+                </td>
+                <td className="small"><span className={driftClass(m.driftStatus)}>{m.driftStatus}</span></td>
+                <td className="actions" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => probe(m.id)} disabled={busy === m.id}>
+                    {busy === m.id ? t('monitors.probing') : t('monitors.probeNow')}
+                  </button>
+                  <button onClick={() => startEdit(m)}>Edit</button>
+                  <button onClick={() => toggleEnabled(m)}>{m.enabled ? 'Disable' : 'Enable'}</button>
+                  <button className="danger" onClick={() => remove(m.id)}>{t('common.delete')}</button>
+                </td>
+              </tr>
+              {expanded === m.id && (
+                <tr className="detail-row">
+                  <td colSpan={6}>
+                    <div className="vantage-grid">
+                      <div>
+                        <h4>Outside (control plane)</h4>
+                        <VantageCell v={m.external} enabled={m.externalProbeEnabled}
+                          label="external probe turned off for this endpoint" />
+                      </div>
+                      <div>
+                        <h4>Inside (runner)</h4>
+                        <VantageCell v={m.internal} enabled={!!m.runnerId}
+                          label="not probed from inside — pick a runner under Edit" />
+                      </div>
+                      <div>
+                        <h4>Comparison</h4>
+                        <span className={verdictClass(m.verdict)}>{m.verdict}</span>
+                        <div className="muted small">{m.verdictDetail}</div>
+                      </div>
+                      <div>
+                        <h4>App health</h4>
+                        <div className="small">
+                          {m.healthCheckUrl ? (
+                            <>
+                              <span className={healthClassFor(m.healthCheckStatus)}>{m.healthCheckStatus}</span>
+                              <div className="muted">{m.healthCheckDetail ?? m.healthCheckUrl}</div>
+                              {m.healthCheckLatencyMs !== null && <div className="muted">{m.healthCheckLatencyMs} ms</div>}
+                            </>
+                          ) : <span className="muted">not configured</span>}
+                        </div>
+                      </div>
+                      <div className="vantage-wide">
+                        <h4>Expected certificate &amp; managed target</h4>
+                        <ExpectedCell m={m} />
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           ))}
           {monitors.length === 0 && (
-            <tr><td colSpan={7} className="muted">{t('monitors.empty')}</td></tr>
+            <tr><td colSpan={6} className="muted">{t('monitors.empty')}</td></tr>
           )}
         </tbody>
       </table>
 
-      <ServicePaths monitors={monitors} />
+      {/* A separate, heavier idea: modelling several TLS layers in front of one app. It is not
+          part of watching an endpoint, so it no longer sits underneath the list unasked. */}
+      <details className="screen-help" style={{ marginTop: 24 }}>
+        <summary>Service paths — multi-layer TLS analysis</summary>
+        <ServicePaths monitors={monitors} />
+      </details>
     </div>
   )
 }

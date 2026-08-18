@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiGet, apiPost } from '../api/client'
 import { useData, MAX_PAGE, TruncationNotice } from './SimplePages'
+import InstallWizard from './InstallWizard'
 
 interface JobRow {
   id: string; status: string; strategy: string; requestedBy: string; approvedBy: string | null
@@ -178,6 +179,7 @@ export default function Deployments() {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [showManifest, setShowManifest] = useState(false)
+  const [showWizard, setShowWizard] = useState(false)
 
   const load = useCallback((id: string) => {
     apiGet<JobDetail>(`/api/v1/deployments/${id}`).then(setDetail).catch(() => {})
@@ -237,17 +239,22 @@ export default function Deployments() {
 
   return (
     <div className="page">
-      <h1>Deployments</h1>
+      <h1>Installations</h1>
       <TruncationNotice shown={(jobs ?? []).length} total={jobTotal} />
       <p className="muted small">
-        Create deployments from the Certificates screen or the API; jobs run transactionally with automatic
-        rollback. Open a job to follow its steps, continue a paused canary wave, or roll it back manually.
+        Every certificate installation, past and running. Use “Install on a server” to put a certificate on a
+        machine step by step. Jobs run transactionally and roll back on their own; open one to follow its steps,
+        release a paused wave, or roll it back by hand.
       </p>
       <div className="actions">
+        <button onClick={() => setShowWizard(true)}>Install on a server</button>
         <button onClick={() => setShowManifest((v) => !v)}>
           {showManifest ? 'Hide manifest' : 'Apply a manifest'}
         </button>
       </div>
+      {showWizard && (
+        <InstallWizard onClose={() => setShowWizard(false)} onInstalled={reloadJobs} />
+      )}
       {showManifest && <ManifestPanel onApplied={reloadJobs} />}
       <table className="data-table">
         <thead><tr><th>Certificate</th><th>Status</th><th>Strategy</th><th>Targets</th><th>Requested by</th><th>Created</th><th>Completed</th></tr></thead>
