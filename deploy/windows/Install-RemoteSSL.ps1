@@ -57,6 +57,14 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 function Step($message) { Write-Host "`n=== $message" -ForegroundColor Cyan }
+# Windows PowerShell 5.1 runs on .NET Framework, where RandomNumberGenerator has no static
+# GetBytes - the instance method is the one both frameworks have.
+function New-RandomSecret($byteCount) {
+    $bytes = New-Object byte[] $byteCount
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    return [Convert]::ToBase64String($bytes)
+}
 function Need($command, $hint) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
         throw "$command not found. $hint"
@@ -75,7 +83,7 @@ Need dotnet 'Install the .NET 8 SDK: https://dotnet.microsoft.com/download/dotne
 Need npm    'Install Node.js 20 or newer: https://nodejs.org/'
 
 if (-not $BootstrapToken) {
-    $BootstrapToken = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+    $BootstrapToken = New-RandomSecret 32
     Write-Host "Generated a runner bootstrap token." -ForegroundColor Yellow
 }
 
@@ -133,7 +141,7 @@ $apiSettings = [ordered]@{
     Runner            = [ordered]@{ BootstrapToken = $BootstrapToken }
     Auth              = [ordered]@{
         Enabled       = $authEnabled
-        JwtSecret     = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+        JwtSecret     = New-RandomSecret 48
         AdminUsername = 'admin'
         AdminPassword = $adminPasswordValue
     }

@@ -46,6 +46,33 @@ public class InstallScriptTests
             + "Use ASCII: an installer is read by whichever PowerShell the server happens to have.");
     }
 
+    /// <summary>
+    /// Constructs that parse everywhere but fail on Windows PowerShell 5.1, which is what a
+    /// Windows Server has out of the box. Each one has cost an install already or is the same
+    /// mistake in a different place: 5.1 runs on .NET Framework, not .NET.
+    /// </summary>
+    public static TheoryData<string, string, string> Incompatible() => new()
+    {
+        { "RandomNumberGenerator]::GetBytes", "the static overload is .NET only",
+            "use RandomNumberGenerator::Create().GetBytes($buffer)" },
+        { "-Encoding utf8NoBOM", "that encoding name arrived with PowerShell 6",
+            "write the file with [IO.File]::WriteAllText and a UTF8Encoding($false)" },
+        { "-AsHashtable", "ConvertFrom-Json gained it in PowerShell 6", "read the properties directly" },
+        { "-AsByteStream", "Get-Content gained it in PowerShell 6", "use [IO.File]::ReadAllBytes" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Incompatible))]
+    public void The_installer_avoids_what_windows_powershell_cannot_run(string pattern, string why, string instead)
+    {
+        foreach (var path in Directory.GetFiles(Path.Combine(RepositoryRoot(), "deploy"), "*.ps1",
+                     SearchOption.AllDirectories))
+        {
+            Assert.False(File.ReadAllText(path).Contains(pattern, StringComparison.Ordinal),
+                $"{Path.GetFileName(path)} uses \"{pattern}\" — {why}. Instead, {instead}.");
+        }
+    }
+
     private static string RepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
