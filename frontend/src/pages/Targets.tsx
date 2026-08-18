@@ -2,6 +2,30 @@ import { useState } from 'react'
 import { apiGet, apiDelete } from '../api/client'
 import { useData, post, MAX_PAGE, TruncationNotice } from './SimplePages'
 
+interface DiscoveredSite {
+  kind: string
+  name: string
+  detail: string | null
+  thumbprint: string | null
+  subject: string | null
+  notAfter: string | null
+  storePath: string | null
+  alias: string | null
+}
+
+interface Discovery {
+  success: boolean
+  sites: DiscoveredSite[]
+  error?: string | null
+  notSupportedReason?: string | null
+  /** Set locally while the runner job is still in flight. */
+  pending?: boolean
+}
+
+function daysLeft(iso: string): number {
+  return Math.floor((new Date(iso).getTime() - Date.now()) / 86400000)
+}
+
 interface TargetRow {
   id: string; name: string; targetType: string; adapterType: string
   environment: string | null; haRole: string | null; targetGroup: string | null
@@ -53,7 +77,8 @@ export default function Targets() {
   const [portTouched, setPortTouched] = useState(false)
   const [winMethod, setWinMethod] = useState('winrm') // winrm | ssh, for windows adapters
   const [testResult, setTestResult] = useState<string | null>(null)
-  const [discovery, setDiscovery] = useState<string | null>(null)
+  const [discovery, setDiscovery] = useState<Discovery | null>(null)
+  const [discoveryFor, setDiscoveryFor] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
   const [eHaRole, setEHaRole] = useState(''); const [eGroup, setEGroup] = useState('')
   const [eName, setEName] = useState(''); const [eAdapter, setEAdapter] = useState('nginx')
@@ -146,45 +171,70 @@ export default function Targets() {
 
   const capability = (type: string) => (adapters ?? []).find((a) => a.type === type)
 
-  async function discoverStores(targetId: string) {
-    setDiscovery('discovering…')
+  /**
+   * Asks the target what it is actually serving: which IIS sites or nginx server blocks exist and
+   * which certificate each one uses today. "Where do I write the file" is the wrong question to
+   * start from — the operator knows the site, not the path.
+   */
+  async function discoverStores(targetId: string, targetName: string) {
+    setDiscoveryFor(targetName)
+    setDiscovery({ success: true, sites: [], pending: true })
     const res = await post(`/api/v1/targets/${targetId}/stores/discover`)
     const { jobId } = await res.json()
     for (let i = 0; i < 20; i++) {
       await new Promise((r) => setTimeout(r, 2000))
       const job = await apiGet<{ status: string; resultJson: string | null }>(`/api/v1/targets/jobs/${jobId}`)
-      if (job.status === 'Succeeded') { setDiscovery(JSON.parse(job.resultJson ?? '{}').output ?? ''); return }
-      if (job.status === 'Failed') { setDiscovery('Discovery failed: ' + (JSON.parse(job.resultJson ?? '{}').output ?? '')); return }
+      if (job.status === 'Succeeded' || job.status === 'Failed') {
+        try { setDiscovery(JSON.parse(job.resultJson ?? '{}') as Discovery) }
+        catch { setDiscovery({ success: false, sites: [], error: 'the runner returned something unreadable' }) }
+        return
+      }
     }
-    setDiscovery('timeout — is a runner online?')
+    setDiscovery({ success: false, sites: [], error: 'timed out — is a runner online for this server?' })
   }
 
   /** §12.3: list everything in a Java keystore, not just the alias we deploy to. */
-  async function inventoryKeystore(targetId: string, storeId: string) {
-    setDiscovery('reading the keystore…')
+  async function inventoryKeystore(targetId: string, storeId: string, targetName: string) {
+    setDiscoveryFor(targetName)
+    setDiscovery({ success: true, sites: [], pending: true })
     const res = await post(`/api/v1/targets/${targetId}/stores/${storeId}/inventory`)
-    if (!res.ok) { setDiscovery((await res.json()).detail ?? `Inventory failed (${res.status})`); return }
+    if (!res.ok) {
+      setDiscovery({ success: false, sites: [],
+        error: (await res.json()).detail ?? `The keystore could not be read (${res.status})` })
+      return
+    }
     const { jobId } = await res.json()
     for (let i = 0; i < 20; i++) {
       await new Promise((r) => setTimeout(r, 2000))
       const job = await apiGet<{ status: string; resultJson: string | null }>(`/api/v1/targets/jobs/${jobId}`)
       if (job.status === 'Succeeded') {
         const result = JSON.parse(job.resultJson ?? '{}')
-        setDiscovery((result.entries ?? []).length === 0
-          ? 'The keystore is empty.'
-          : (result.entries as { alias: string; entryType: string; subject: string | null; notAfter: string | null }[])
-              .map((e) => `${e.alias}  [${e.entryType}]`
-                + (e.subject ? `\n    ${e.subject}` : '')
-                + (e.notAfter ? `\n    expires ${new Date(e.notAfter).toLocaleDateString()}` : ''))
-              .join('\n'))
+        // A keystore alias is a place a certificate lives, so it is reported like any other site.
+        setDiscovery({
+          success: true,
+          sites: (result.entries ?? []).map((e: {
+            alias: string; entryType: string; subject: string | null
+            notAfter: string | null; sha256Thumbprint: string | null
+          }) => ({
+            kind: 'keystore-alias',
+            name: e.alias,
+            detail: e.entryType,
+            thumbprint: e.sha256Thumbprint,
+            subject: e.subject,
+            notAfter: e.notAfter,
+            storePath: null,
+            alias: e.alias,
+          })),
+        })
         return
       }
       if (job.status === 'Failed') {
-        setDiscovery('Inventory failed: ' + (JSON.parse(job.resultJson ?? '{}').error ?? ''))
+        setDiscovery({ success: false, sites: [],
+          error: JSON.parse(job.resultJson ?? '{}').error ?? 'the keystore could not be read' })
         return
       }
     }
-    setDiscovery('timeout — is a runner online?')
+    setDiscovery({ success: false, sites: [], error: 'timed out — is a runner online for this server?' })
   }
 
   async function testConnection(targetId: string) {
@@ -236,8 +286,49 @@ export default function Targets() {
       {testResult && <p className="small">{testResult}</p>}
       {discovery && (
         <div className="detail-panel">
-          <div className="detail-header"><h3>Discovered stores</h3><button onClick={() => setDiscovery(null)}>Close</button></div>
-          <pre className="small" style={{ overflowX: 'auto', whiteSpace: 'pre-wrap' }}>{discovery}</pre>
+          <div className="detail-header">
+            <h3>What {discoveryFor} is serving</h3>
+            <button onClick={() => { setDiscovery(null); setDiscoveryFor(null) }}>Close</button>
+          </div>
+          {discovery.pending && <p className="muted small">Asking the server…</p>}
+          {discovery.error && <p className="bad small">{discovery.error}</p>}
+          {discovery.notSupportedReason && <p className="warn small">{discovery.notSupportedReason}</p>}
+          {!discovery.pending && !discovery.error && (discovery.sites ?? []).length === 0
+            && !discovery.notSupportedReason && (
+              <p className="muted small">Nothing on this server is serving a certificate yet.</p>
+            )}
+          {(discovery.sites ?? []).length > 0 && (
+            <table className="data-table">
+              <thead>
+                <tr><th>Site</th><th>Where</th><th>Certificate it serves now</th><th>Expires</th></tr>
+              </thead>
+              <tbody>
+                {discovery.sites.map((site, i) => (
+                  <tr key={i}>
+                    <td>
+                      {site.name}
+                      <div className="muted small">{site.kind}</div>
+                    </td>
+                    <td className="small muted">{site.detail ?? '—'}</td>
+                    <td className="small">
+                      {site.subject
+                        ? <>{site.subject}<div className="muted">{site.thumbprint?.slice(0, 16)}…</div></>
+                        : site.thumbprint
+                          ? <span className="muted">{site.thumbprint.slice(0, 16)}… (not in this store)</span>
+                          : <span className="warn">nothing bound</span>}
+                    </td>
+                    <td className="small">
+                      {site.notAfter
+                        ? <span className={daysLeft(site.notAfter) < 30 ? 'bad' : 'ok'}>
+                            {daysLeft(site.notAfter)} days
+                          </span>
+                        : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
       <table className="data-table">
@@ -299,10 +390,10 @@ export default function Targets() {
               </td>
               <td className="actions">
                 <button onClick={() => testConnection(t.id)}>Test connection</button>
-                <button onClick={() => discoverStores(t.id)}>Discover stores</button>
+                <button onClick={() => discoverStores(t.id, t.name)}>What's on it?</button>
                 {/* §9.3: only offered where the adapter can actually read the store back. */}
                 {capability(t.adapterType)?.supportsStoreDiscovery && t.stores.length > 0 && (
-                  <button onClick={() => inventoryKeystore(t.id, t.stores[0].id)}>Inventory</button>
+                  <button onClick={() => inventoryKeystore(t.id, t.stores[0].id, t.name)}>Inventory</button>
                 )}
                 <button onClick={() => addStore(t.id)}>Add store</button>
                 <button onClick={() => startEdit(t)}>Edit</button>

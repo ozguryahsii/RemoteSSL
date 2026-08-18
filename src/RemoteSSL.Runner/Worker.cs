@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using RemoteSSL.Adapters.Discovery;
 using RemoteSSL.Adapters.Java;
 using RemoteSSL.Adapters.Linux;
 using RemoteSSL.Adapters.Network;
@@ -218,10 +219,17 @@ public class Worker(
             }
             else if (job.JobType == "discover")
             {
-                var (ok, output) = DiscoverStores(doc.RootElement, kind, creds);
-                success = ok;
-                resultJson = JsonSerializer.Serialize(new { output });
-                steps.Add(new { step = "PreCheck", success = ok, safeLog = ok ? "store discovery completed" : output });
+                var discovery = DiscoverStores(doc.RootElement, kind, creds);
+                success = discovery.Success;
+                resultJson = JsonSerializer.Serialize(discovery, Json);
+                steps.Add(new
+                {
+                    step = "PreCheck",
+                    success,
+                    safeLog = success
+                        ? discovery.NotSupportedReason ?? $"{discovery.Sites.Count} site(s) found"
+                        : discovery.Error ?? "discovery failed",
+                });
             }
             else if (job.JobType == "java-inventory")
             {
@@ -503,10 +511,15 @@ public class Worker(
         }
     }
 
-    /// <summary>Remote store discovery (design doc §27.1): certificate files / store entries on the target.</summary>
-    private (bool Ok, string Output) DiscoverStores(JsonElement e, string? kind, SshCredentials creds)
+    /// <summary>
+    /// Site discovery (design doc §9.1 discover, §27.1): the places on this target that serve a
+    /// certificate, and which certificate each one serves today. Answers "which of my nine IIS
+    /// sites is still on the old wildcard" — a question a list of files on disk cannot.
+    /// </summary>
+    private SiteDiscoveryResult DiscoverStores(JsonElement e, string? kind, SshCredentials creds)
     {
         var conn = e.GetProperty("connection").Deserialize<SshTargetConfig>(Json)!;
+        var adapter = e.TryGetProperty("adapter", out var a) ? a.GetString() ?? "" : "";
         try
         {
             if (kind == "windows")
@@ -516,22 +529,23 @@ public class Worker(
                 using IWindowsChannel channel = method == "ssh"
                     ? new SshWindowsChannel(conn, creds)
                     : new WinRmWindowsChannel(conn.Host, conn.Port, useSsl, creds.Username, creds.Password ?? "");
-                var r = channel.RunPs(
-                    "Get-ChildItem Cert:\\LocalMachine\\My | Select-Object Subject,Thumbprint,NotAfter | Format-Table -AutoSize | Out-String -Width 200");
-                return (r.Ok, r.Ok ? r.Stdout.Trim() : r.Stderr);
+                return SiteDiscovery.DiscoverWindows(channel, iis: adapter == "iis");
             }
 
             using var ssh = new SshConnection(conn, creds);
             ssh.Connect();
-            var find = ssh.Exec(
-                "find /etc/ssl /etc/nginx /etc/apache2 /etc/httpd /etc/haproxy /etc/pki -maxdepth 4 " +
-                "\\( -name '*.crt' -o -name '*.pem' -o -name '*.jks' -o -name '*.p12' -o -name 'ewallet.p12' \\) " +
-                "2>/dev/null | head -100", TimeSpan.FromMinutes(1));
-            return (true, find.Stdout.Trim().Length > 0 ? find.Stdout.Trim() : "no certificate files found in common locations");
+
+            if (adapter is "nginx" or "generic-file" or "generic-ssh")
+                return SiteDiscovery.DiscoverNginx(ssh);
+
+            // Everything else: say so rather than return a file listing dressed up as an answer.
+            return new SiteDiscoveryResult(true, [], null,
+                $"RemoteSSL cannot yet list the individual sites of a '{adapter}' target. "
+                + "Add the location by hand, or use a monitored endpoint to see what it serves.");
         }
         catch (Exception ex)
         {
-            return (false, ex.Message);
+            return new SiteDiscoveryResult(false, [], ex.Message);
         }
     }
 

@@ -177,6 +177,14 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
 
     const path = pathByTarget[server]
     if (!path) throw new Error(`No location chosen for ${targets.find((t) => t.id === server)?.name ?? server}.`)
+
+    // A location this server already has is that location, not a second one with the same name.
+    // Creating a duplicate would leave two stores pointing at one directory and, worse, two
+    // bindings that both claim to own it.
+    const already = targets.find((t) => t.id === server)?.stores
+      .find((st) => st.storePath.replace(/\/+$/, '') === path.replace(/\/+$/, ''))
+    if (already) return already.id
+
     const adapter = adapters.find((a) => a.type === targets.find((t) => t.id === server)?.adapterType) ?? formAdapter
     const res = await apiPost(`/api/v1/targets/${server}/stores`, {
       storeType: adapter?.channel === 'winrm' ? 'windows-my' : 'pem-file',
