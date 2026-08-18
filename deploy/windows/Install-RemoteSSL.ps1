@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Installs RemoteSSL (control plane + UI + runner) on a Windows server.
 
@@ -10,8 +10,8 @@
     The UI is published into the API's wwwroot, so one service serves both the screens and the API
     on one port: no second web server, no CORS list, one address to open.
 
-    The runner is installed on this machine on purpose — WinRM / PowerShell Remoting is the primary
-    management channel for Windows targets (design doc §11.1), and it is executed from a Windows
+    The runner is installed on this machine on purpose - WinRM / PowerShell Remoting is the primary
+    management channel for Windows targets (design doc section 11.1), and it is executed from a Windows
     runner.
 
 .PARAMETER InstallRoot
@@ -29,10 +29,10 @@
 
 .PARAMETER AdminPassword
     Turns on authentication and sets the admin password. Without it the control plane is left open
-    to anyone who can reach the port — acceptable only on an isolated test network.
+    to anyone who can reach the port - acceptable only on an isolated test network.
 
     The account is seeded once, against an empty database; afterwards passwords are changed in the
-    UI under Setup → Users, and a different value here has no effect.
+    UI under Setup -> Users, and a different value here has no effect.
 
 .EXAMPLE
     .\Install-RemoteSSL.ps1 -DbConnection "Host=localhost;Port=5432;Database=remotessl;Username=remotessl;Password=Secret1" -AdminPassword "Str0ng!Pass"
@@ -65,7 +65,7 @@ function Need($command, $hint) {
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
         ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw 'Run this from an elevated PowerShell — registering services requires it.'
+    throw 'Run this from an elevated PowerShell - registering services requires it.'
 }
 
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
@@ -159,7 +159,7 @@ $runnerSettings = [ordered]@{
     ($runnerSettings | ConvertTo-Json -Depth 6), $utf8)
 
 # Both files carry secrets (database password, bootstrap token, admin password), so they are
-# readable by administrators and the service account only (§22.3).
+# readable by administrators and the service account only (section 22.3).
 foreach ($file in (Join-Path $apiDir 'appsettings.Production.json'),
                   (Join-Path $runnerDir 'appsettings.Production.json')) {
     $acl = Get-Acl $file
@@ -220,9 +220,9 @@ Write-Host "  Health        $health"
 Write-Host "  Runner        $RunnerName (segment $RunnerSegment)"
 if ($AdminPassword) {
     Write-Host "  Sign in       admin / the password you passed"
-    Write-Host "                (seeded on an empty database only — change it under Setup -> Users)"
+    Write-Host "                (seeded on an empty database only - change it under Setup -> Users)"
 }
-else { Write-Host "  Authentication is OFF — anyone who can reach the port has full access." -ForegroundColor Yellow }
+else { Write-Host "  Authentication is OFF - anyone who can reach the port has full access." -ForegroundColor Yellow }
 Write-Host "  Bootstrap token: $BootstrapToken"
 Write-Host ""
 Write-Host "Logs: Get-EventLog -LogName Application -Source 'RemoteSSL*' -Newest 20"

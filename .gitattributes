@@ -1,0 +1,2 @@
+# Windows PowerShell reads these; keep CRLF line endings on checkout.
+*.ps1 text eol=crlf
