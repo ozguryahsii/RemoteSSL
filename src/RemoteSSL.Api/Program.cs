@@ -10,7 +10,17 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using RemoteSSL.Infrastructure;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    // A Windows service starts in System32, and a web host takes its content root from the working
+    // directory — so appsettings.Production.json and wwwroot, which sit beside the binary, were
+    // never found and the service died on a null connection string. Under the service control
+    // manager the content root is the install folder; started by hand it is unchanged.
+    ContentRootPath = Microsoft.Extensions.Hosting.WindowsServices.WindowsServiceHelpers.IsWindowsService()
+        ? AppContext.BaseDirectory
+        : null,
+});
 
 // So the control plane can run as a Windows service on the server that manages the estate.
 // No effect on other platforms.
@@ -28,8 +38,14 @@ builder.Services.AddRemoteSslInfrastructure(builder.Configuration);
 // The database is required; the queue and the cache are checked only where they are configured.
 // An install that leaves them out must not report itself unhealthy for something it never uses —
 // a health endpoint that is always red tells the operator nothing.
-var health = builder.Services.AddHealthChecks()
-    .AddNpgSql(builder.Configuration.GetConnectionString("Database")!, name: "postgres");
+// Said plainly and early: without it the failure surfaces as a null argument from deep inside a
+// health-check library, which describes nothing an operator can act on.
+var database = builder.Configuration.GetConnectionString("Database")
+    ?? throw new InvalidOperationException(
+        "No database connection string. Set ConnectionStrings:Database in appsettings.Production.json "
+        + $"beside the binary ({AppContext.BaseDirectory}) or in the environment.");
+
+var health = builder.Services.AddHealthChecks().AddNpgSql(database, name: "postgres");
 var rabbit = builder.Configuration.GetConnectionString("RabbitMq");
 if (!string.IsNullOrWhiteSpace(rabbit)) health.AddRabbitMQ(rabbitConnectionString: rabbit, name: "rabbitmq");
 var redis = builder.Configuration.GetConnectionString("Redis");

@@ -224,17 +224,39 @@ if (-not $SkipFirewallRule) {
 Step 'Starting services'
 Start-Service 'RemoteSSL API'
 # The runner registers with the control plane, so it follows it.
-Start-Sleep -Seconds 8
+Start-Sleep -Seconds 5
 Start-Service 'RemoteSSL Runner'
 
 Step 'Checking health'
-$health = try { (Invoke-WebRequest "http://localhost:$Port/health" -UseBasicParsing).Content }
-          catch { "unreachable: $($_.Exception.Message)" }
+# The first start applies migrations and seeds, and reports 503 until that finishes, so this waits
+# rather than judging the install on a single early answer.
+# Asked without a proxy: a machine configured to send everything through one answers 503 for
+# localhost, which looks exactly like a broken install and is not one.
+$handler = New-Object System.Net.Http.HttpClientHandler
+$handler.UseProxy = $false
+$client = New-Object System.Net.Http.HttpClient($handler)
+$client.Timeout = [TimeSpan]::FromSeconds(10)
+
+$health = 'no answer'
+$deadline = (Get-Date).AddMinutes(2)
+while ((Get-Date) -lt $deadline) {
+    try {
+        $health = $client.GetStringAsync("http://localhost:$Port/health").GetAwaiter().GetResult()
+        if ($health -eq 'Healthy') { break }
+    }
+    catch { $health = "not ready yet: $($_.Exception.InnerException.Message)" }
+    Start-Sleep -Seconds 3
+}
+$client.Dispose()
 
 Write-Host ""
 Write-Host "RemoteSSL is installed." -ForegroundColor Green
 Write-Host "  UI + API      http://$($env:COMPUTERNAME):$Port"
 Write-Host "  Health        $health"
+if ($health -ne 'Healthy') {
+    Write-Host "  The control plane did not report healthy. Run it in the foreground to see why:" -ForegroundColor Yellow
+    Write-Host "    Stop-Service 'RemoteSSL API'; $apiDir\RemoteSSL.Api.exe" -ForegroundColor Yellow
+}
 Write-Host "  Runner        $RunnerName (segment $RunnerSegment)"
 if ($AdminPassword) {
     Write-Host "  Sign in       admin / the password you passed"
