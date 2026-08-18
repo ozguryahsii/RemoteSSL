@@ -19,3 +19,6 @@ frontend/dist/
 # Local secrets / env
 *.env
 appsettings.*.local.json
+
+# Built UI copied into the API for a single-origin install
+src/RemoteSSL.Api/wwwroot/

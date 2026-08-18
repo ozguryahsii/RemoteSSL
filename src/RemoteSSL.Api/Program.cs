@@ -12,6 +12,10 @@ using RemoteSSL.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// So the control plane can run as a Windows service on the server that manages the estate.
+// No effect on other platforms.
+builder.Services.AddWindowsService(o => o.ServiceName = "RemoteSSL API");
+
 builder.Services.AddControllers();
 // Idempotency-Key support for create endpoints (§27.2).
 builder.Services.AddScoped<RemoteSSL.Api.Idempotency.IdempotencyFilter>();
@@ -21,10 +25,15 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddRemoteSslInfrastructure(builder.Configuration);
 
-builder.Services.AddHealthChecks()
-    .AddNpgSql(builder.Configuration.GetConnectionString("Database")!, name: "postgres")
-    .AddRabbitMQ(rabbitConnectionString: builder.Configuration.GetConnectionString("RabbitMq")!, name: "rabbitmq")
-    .AddRedis(builder.Configuration.GetConnectionString("Redis")!, name: "redis");
+// The database is required; the queue and the cache are checked only where they are configured.
+// An install that leaves them out must not report itself unhealthy for something it never uses —
+// a health endpoint that is always red tells the operator nothing.
+var health = builder.Services.AddHealthChecks()
+    .AddNpgSql(builder.Configuration.GetConnectionString("Database")!, name: "postgres");
+var rabbit = builder.Configuration.GetConnectionString("RabbitMq");
+if (!string.IsNullOrWhiteSpace(rabbit)) health.AddRabbitMQ(rabbitConnectionString: rabbit, name: "rabbitmq");
+var redis = builder.Configuration.GetConnectionString("Redis");
+if (!string.IsNullOrWhiteSpace(redis)) health.AddRedis(redis, name: "redis");
 
 // §32.2 distributed tracing: the RemoteSSL activity source carries the correlation id
 // that spans certificate request → CA → deployment job → runner → target. Exported over
@@ -72,8 +81,24 @@ app.UseAuditContext();
 // §35: resolve the caller's tenant before any tenant-scoped query runs.
 app.UseTenantContext();
 app.UseAuthorization();
+
+// A single-server install (a test box, for instance) puts the built UI in wwwroot and is then
+// served from here: same origin as the API, so there is no second web server to set up and no
+// CORS list to keep in step. Absent that folder — the development setup, where Vite serves the
+// UI — nothing below changes.
+if (File.Exists(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "index.html")))
+{
+    app.UseDefaultFiles();
+    app.UseStaticFiles();
+}
+
 app.MapControllers();
 app.MapHealthChecks("/health").AllowAnonymous();
+
+// The UI routes on paths the API does not serve (/servers, /certificates …); a browser asking
+// for one directly must get the application, not a 404.
+if (File.Exists(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "index.html")))
+    app.MapFallbackToFile("index.html").AllowAnonymous();
 
 using (var scope = app.Services.CreateScope())
 {

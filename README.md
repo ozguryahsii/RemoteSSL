@@ -37,6 +37,19 @@ cd frontend && npm install && npm run dev
 Default local credentials (development only) live in `docker-compose.yml` and
 `src/RemoteSSL.Api/appsettings.json`.
 
+## Windows server install
+
+For a real (test or management) server, `docs/WINDOWS-INSTALL.md` walks through it end to end:
+PostgreSQL, one elevated PowerShell command, and RemoteSSL runs as two Windows services with the
+UI served from the same port as the API.
+
+```powershell
+.\deploy\windows\Install-RemoteSSL.ps1 -DbConnection "Host=localhost;…" -AdminPassword "…"
+```
+
+The runner belongs on Windows: WinRM / PowerShell Remoting is the primary management channel for
+Windows targets (§11.1), and Linux targets are reached over SSH from the same machine.
+
 ## Build & test
 
 ```bash
