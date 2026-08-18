@@ -2,16 +2,15 @@ import { useEffect, useState } from 'react'
 import { apiGet, apiPost } from '../api/client'
 
 /**
- * Installing a certificate on a machine touches four things — a server, a store on it, a binding
- * between that store and the certificate, and finally the installation job. Each had its own
- * screen, none of them said they were steps of one task, and nothing told you the order. Someone
- * who wanted to put a certificate on a server had to already know the model to find the path
- * through it.
+ * Putting one certificate on many machines is the ordinary case, not the advanced one: a wildcard
+ * covers a whole estate, and when it is renewed every machine serving it has to be updated in the
+ * same pass or the ones left behind quietly expire.
  *
- * This walks the same four steps in order, creating whatever is missing as it goes, and finishes
- * on the impact preview so nobody installs into production without seeing what changes. It calls
- * exactly the endpoints the individual screens call — it is a route through the product, not a
- * second way to do it.
+ * Installing touches four records — a server, a store on it, a binding between that store and the
+ * certificate, and the job. Each had its own screen, none said it was a step of one task, and
+ * nothing stated the order. This walks the steps for as many servers as are selected at once,
+ * creates whatever is missing, and ends on the impact preview. It calls exactly the endpoints the
+ * individual screens call: a route through the product, not a second way to do it.
  */
 
 interface CertificateOption {
@@ -19,7 +18,7 @@ interface CertificateOption {
   commonName: string
   daysUntilExpiry: number | null
   health: string
-  installedOn: string[]
+  installedOn: { server: string; state: string }[]
 }
 
 interface StoreOption { id: string; storeType: string; storePath: string; alias: string | null }
@@ -54,6 +53,8 @@ interface Adapter {
 
 interface CredentialOption { id: string; name: string; credentialType: string }
 
+interface BindingRow { id: string; certificateId: string; storeId: string; serviceBindingJson: string }
+
 interface PlannedTarget {
   target: string
   adapter: string
@@ -76,7 +77,17 @@ interface Plan {
   blockers: string[]
 }
 
-const STEPS = ['Certificate', 'Server', 'Where on the server', 'Review & install'] as const
+const STEPS = ['Certificate', 'Servers', 'Where on each server', 'Review & install'] as const
+
+/** Strategies the orchestrator implements (§21.4), described in terms of what they do to you. */
+const STRATEGIES = [
+  { value: 'sequential', label: 'One server at a time (safest)' },
+  { value: 'wave', label: 'A few at a time, stop if one fails' },
+  { value: 'parallel', label: 'A few at a time, keep going' },
+  { value: 'canary', label: 'One first, then continue by hand' },
+  { value: 'ha-pair', label: 'HA pairs — standby member first' },
+  { value: 'all-at-once', label: 'All at once' },
+]
 
 export default function InstallWizard({ onClose, onInstalled }: { onClose: () => void; onInstalled: () => void }) {
   const [step, setStep] = useState(0)
@@ -90,8 +101,9 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
 
   const [certificateId, setCertificateId] = useState('')
 
-  // Step 2 — an existing server, or a new one described here.
-  const [targetId, setTargetId] = useState('')
+  // Step 2 — any number of existing servers, and optionally one new one described here.
+  const [targetIds, setTargetIds] = useState<string[]>([])
+  const [filter, setFilter] = useState('')
   const [newServer, setNewServer] = useState(false)
   const [name, setName] = useState('')
   const [adapterType, setAdapterType] = useState('nginx')
@@ -100,15 +112,17 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
   const [environment, setEnvironment] = useState('')
   const [credentialId, setCredentialId] = useState('')
 
-  // Step 3 — an existing store on that server, or a new path plus the adapter's service fields.
-  const [storeId, setStoreId] = useState('')
-  const [newStore, setNewStore] = useState(false)
-  const [storePath, setStorePath] = useState('')
-  const [alias, setAlias] = useState('')
+  // Step 3 — per server: which store, or a new path. Service settings are shared, and only used
+  // where a server has no existing binding to copy the real paths from.
+  const [storeByTarget, setStoreByTarget] = useState<Record<string, string>>({})
+  const [pathByTarget, setPathByTarget] = useState<Record<string, string>>({})
   const [service, setService] = useState<Record<string, string>>({})
 
+  const [strategy, setStrategy] = useState('sequential')
+  const [maxConcurrency, setMaxConcurrency] = useState('2')
+
   const [plan, setPlan] = useState<Plan | null>(null)
-  const [bindingId, setBindingId] = useState('')
+  const [bindingIds, setBindingIds] = useState<string[]>([])
   const [done, setDone] = useState<string | null>(null)
 
   useEffect(() => {
@@ -118,53 +132,34 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
     apiGet<CredentialOption[]>('/api/v1/credentials').then(setCredentials).catch(() => {})
   }, [])
 
-  const adapter = adapters.find((a) => a.type === adapterType)
-  const target = targets.find((t) => t.id === targetId)
-  // A server that already exists brings its own adapter; only a new one is being chosen here.
-  const effectiveAdapter = newServer ? adapter : adapters.find((a) => a.type === target?.adapterType)
+  const newAdapter = adapters.find((a) => a.type === adapterType)
+  const chosen = targets.filter((t) => targetIds.includes(t.id))
+  /** The adapter the shared service form is drawn from: the new server's, or the first chosen. */
+  const formAdapter = newServer && chosen.length === 0
+    ? newAdapter
+    : adapters.find((a) => a.type === chosen[0]?.adapterType) ?? newAdapter
+  const mixedAdapters = new Set(chosen.map((t) => t.adapterType)).size > 1
 
-  /** Service fields start from whatever defaults the adapter declares. */
   function adapterDefaults(a: Adapter | undefined): Record<string, string> {
     const next: Record<string, string> = {}
     for (const f of a?.serviceFields ?? []) if (f.default) next[f.key] = f.default
     return next
   }
 
-  useEffect(() => { setService(adapterDefaults(effectiveAdapter)) }, [effectiveAdapter?.type])
+  useEffect(() => { setService(adapterDefaults(formAdapter)) }, [formAdapter?.type])
 
-  /**
-   * Picking a location that is already in use prefills the paths and commands from a binding that
-   * already lives there. Those are the values this adapter really uses on this machine — far
-   * better than an empty form, and better than guessing a convention that may not be the one in
-   * use here.
-   */
-  useEffect(() => {
-    if (newStore || !storeId || !targetId) return
-    let cancelled = false
-    apiGet<{ storeId: string; serviceBindingJson: string }[]>(`/api/v1/targets/${targetId}/bindings`)
-      .then((rows) => {
-        if (cancelled) return
-        const sibling = rows.find((b) => b.storeId === storeId)
-        if (!sibling) return
-        try {
-          const existing = JSON.parse(sibling.serviceBindingJson || '{}') as Record<string, unknown>
-          const next = { ...adapterDefaults(effectiveAdapter) }
-          for (const [k, v] of Object.entries(existing)) {
-            if (typeof v === 'string' || typeof v === 'number') next[k] = String(v)
-          }
-          setService(next)
-        } catch { /* a malformed binding is not worth breaking the form over */ }
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [storeId, newStore, targetId, effectiveAdapter?.type])
+  const visible = targets.filter((t) =>
+    filter === '' || `${t.name} ${t.adapterType} ${t.environment ?? ''}`.toLowerCase().includes(filter.toLowerCase()))
 
-  async function ensureServer(): Promise<string> {
-    if (!newServer) return targetId
+  function toggle(id: string) {
+    setTargetIds(targetIds.includes(id) ? targetIds.filter((x) => x !== id) : [...targetIds, id])
+  }
+
+  async function createServer(): Promise<string> {
     const res = await apiPost('/api/v1/targets', {
       name,
-      targetType: effectiveAdapter?.channel === 'winrm' ? 'WindowsServer'
-        : effectiveAdapter?.channel === 'rest' ? 'NetworkDevice' : 'LinuxServer',
+      targetType: newAdapter?.channel === 'winrm' ? 'WindowsServer'
+        : newAdapter?.channel === 'rest' ? 'NetworkDevice' : 'LinuxServer',
       adapterType,
       environment: environment || null,
       connectionConfig: { host, port: Number(port) },
@@ -177,11 +172,16 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
   }
 
   async function ensureStore(server: string): Promise<string> {
-    if (!newStore) return storeId
+    const existing = storeByTarget[server]
+    if (existing) return existing
+
+    const path = pathByTarget[server]
+    if (!path) throw new Error(`No location chosen for ${targets.find((t) => t.id === server)?.name ?? server}.`)
+    const adapter = adapters.find((a) => a.type === targets.find((t) => t.id === server)?.adapterType) ?? formAdapter
     const res = await apiPost(`/api/v1/targets/${server}/stores`, {
-      storeType: effectiveAdapter?.channel === 'winrm' ? 'windows-my' : 'pem-file',
-      storePath,
-      alias: alias || null,
+      storeType: adapter?.channel === 'winrm' ? 'windows-my' : 'pem-file',
+      storePath: path,
+      alias: null,
       config: {},
     })
     const body = await res.json()
@@ -189,47 +189,35 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
     return body.id as string
   }
 
-  /** Reuses the binding when this certificate is already bound to this store. */
+  /**
+   * One binding per server. Reuses the binding when this certificate already lives in that store;
+   * otherwise copies the service settings from whatever binding is already there, because those
+   * are the paths and commands this machine really uses. The shared form is the last resort.
+   */
   async function ensureBinding(server: string, store: string): Promise<string> {
-    const existing = await apiGet<{ id: string; certificateId: string; storeId: string }[]>(
-      `/api/v1/targets/${server}/bindings`).catch(() => [])
-    const match = existing.find((b) => b.certificateId === certificateId && b.storeId === store)
-    if (match) return match.id
+    const rows = await apiGet<BindingRow[]>(`/api/v1/targets/${server}/bindings`).catch(() => [])
+    const mine = rows.find((b) => b.certificateId === certificateId && b.storeId === store)
+    if (mine) return mine.id
+
+    const sibling = rows.find((b) => b.storeId === store)
+    let serviceBinding: Record<string, string> = service
+    if (sibling) {
+      try {
+        const parsed = JSON.parse(sibling.serviceBindingJson || '{}') as Record<string, unknown>
+        const copied: Record<string, string> = {}
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'string' || typeof v === 'number') copied[k] = String(v)
+        }
+        if (Object.keys(copied).length > 0) serviceBinding = copied
+      } catch { /* a malformed binding is not worth failing the install over */ }
+    }
 
     const res = await apiPost(`/api/v1/targets/stores/${store}/bindings`, {
-      certificateId,
-      serviceBinding: service,
-      activationPolicy: {},
+      certificateId, serviceBinding, activationPolicy: {},
     })
     const body = await res.json()
     if (!res.ok) throw new Error(body.title ?? `The binding could not be created (${res.status})`)
     return body.id as string
-  }
-
-  /** Creates whatever is missing, then previews the impact — nothing is installed yet. */
-  async function prepareReview() {
-    setBusy(true); setError(null)
-    try {
-      const server = await ensureServer()
-      const store = await ensureStore(server)
-      const binding = await ensureBinding(server, store)
-      setBindingId(binding)
-
-      const versionId = await activeVersionOf(certificateId)
-      const res = await apiPost('/api/v1/deployments/plan', {
-        certificateVersionId: versionId,
-        bindingIds: [binding],
-        strategy: 'sequential',
-      })
-      const body = await res.json()
-      if (!res.ok) throw new Error(body.title ?? `The plan could not be produced (${res.status})`)
-      setPlan(body)
-      setStep(3)
-      // The lists are stale now that a server or store may have been created.
-      apiGet<TargetOption[]>('/api/v1/targets?take=500').then(setTargets).catch(() => {})
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally { setBusy(false) }
   }
 
   async function activeVersionOf(id: string): Promise<string> {
@@ -242,14 +230,40 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
     return usable.id
   }
 
+  /** Creates whatever is missing for every chosen server, then previews the impact. */
+  async function prepareReview() {
+    setBusy(true); setError(null)
+    try {
+      const servers = [...targetIds]
+      const created = await Promise.all(servers.map(async (s) => ensureBinding(s, await ensureStore(s))))
+      setBindingIds(created)
+
+      const versionId = await activeVersionOf(certificateId)
+      const res = await apiPost('/api/v1/deployments/plan', {
+        certificateVersionId: versionId,
+        bindingIds: created,
+        strategy,
+        maxConcurrency: Number(maxConcurrency) || 0,
+      })
+      const body = await res.json()
+      if (!res.ok) throw new Error(body.title ?? `The plan could not be produced (${res.status})`)
+      setPlan(body)
+      setStep(3)
+      apiGet<TargetOption[]>('/api/v1/targets?take=500').then(setTargets).catch(() => {})
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setBusy(false) }
+  }
+
   async function install() {
     setBusy(true); setError(null)
     try {
       const versionId = await activeVersionOf(certificateId)
       const res = await apiPost('/api/v1/deployments', {
         certificateVersionId: versionId,
-        bindingIds: [bindingId],
-        strategy: 'sequential',
+        bindingIds,
+        strategy,
+        maxConcurrency: Number(maxConcurrency) || 0,
         requestedBy: 'ui',
         approvalRequired: plan?.approvalRequired ?? false,
         autoExecute: !(plan?.approvalRequired ?? false),
@@ -257,25 +271,42 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
       const body = await res.json()
       if (!res.ok) throw new Error(body.title ?? `The installation could not be started (${res.status})`)
       setDone(plan?.approvalRequired
-        ? `Job ${body.id} created and is waiting for approval.`
-        : `Job ${body.id} started.`)
+        ? `Job ${body.id} created for ${bindingIds.length} server(s) and is waiting for approval.`
+        : `Job ${body.id} started on ${bindingIds.length} server(s).`)
       onInstalled()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally { setBusy(false) }
   }
 
+  /** Step 2 also creates the new server, so the next step can list it like any other. */
+  async function leaveServerStep() {
+    if (!newServer) { setStep(2); return }
+    setBusy(true); setError(null)
+    try {
+      const id = await createServer()
+      const refreshed = await apiGet<TargetOption[]>('/api/v1/targets?take=500')
+      setTargets(refreshed)
+      setTargetIds([...targetIds, id])
+      setNewServer(false); setName(''); setHost('')
+      setStep(2)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setBusy(false) }
+  }
+
+  const everyServerHasALocation = targetIds.every((id) => storeByTarget[id] || pathByTarget[id])
   const canContinue =
     step === 0 ? certificateId !== ''
-      : step === 1 ? (newServer ? name !== '' && host !== '' : targetId !== '')
-        : step === 2 ? (newStore ? storePath !== '' : storeId !== '')
+      : step === 1 ? (targetIds.length > 0 || (newServer && name !== '' && host !== ''))
+        : step === 2 ? targetIds.length > 0 && everyServerHasALocation
           : false
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal wizard" onClick={(e) => e.stopPropagation()}>
         <div className="detail-header">
-          <h2>Install a certificate on a server</h2>
+          <h2>Install a certificate on servers</h2>
           <button onClick={onClose}>Close</button>
         </div>
 
@@ -292,28 +323,28 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
         {done ? (
           <>
             <p className="ok">{done}</p>
-            <p className="muted small">Follow it on the Installations screen.</p>
+            <p className="muted small">Follow it under Activity → Installations.</p>
             <div className="actions"><button onClick={onClose}>Done</button></div>
           </>
         ) : (
           <>
             {step === 0 && (
               <>
-                <p className="muted small">Which certificate should end up on the server?</p>
+                <p className="muted small">Which certificate should end up on the servers?</p>
                 <select value={certificateId} onChange={(e) => setCertificateId(e.target.value)}>
                   <option value="">select a certificate…</option>
                   {certificates.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.commonName}
                       {c.daysUntilExpiry !== null ? ` — ${c.daysUntilExpiry} days left` : ''}
-                      {c.installedOn.length > 0 ? ` — already on ${c.installedOn.join(', ')}` : ''}
+                      {c.installedOn.length > 0 ? ` — on ${c.installedOn.map((s) => s.server).join(', ')}` : ''}
                     </option>
                   ))}
                 </select>
                 {certificates.length === 0 && (
                   <p className="warn small">
-                    There are no certificates yet. Request one under “Requests &amp; CSRs”, or add a
-                    monitored endpoint so RemoteSSL discovers the one already in use.
+                    There are no certificates yet. Request one under Certificates → Requests &amp; CSRs, or
+                    watch an endpoint so RemoteSSL discovers the one already in use.
                   </p>
                 )}
               </>
@@ -321,27 +352,52 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
 
             {step === 1 && (
               <>
-                <p className="muted small">Which machine is it going on?</p>
+                <p className="muted small">
+                  Tick every machine it should go on. One certificate can cover a whole estate —
+                  a wildcard usually does — and they are all updated in one run.
+                </p>
+
                 <div className="actions">
                   <button className={!newServer ? 'chosen' : ''} onClick={() => setNewServer(false)}>
-                    A server I already added
+                    Servers I already added
                   </button>
                   <button className={newServer ? 'chosen' : ''} onClick={() => setNewServer(true)}>
-                    A new server
+                    Add a new server
                   </button>
                 </div>
 
                 {!newServer ? (
                   <>
-                    <select value={targetId} onChange={(e) => { setTargetId(e.target.value); setStoreId('') }}>
-                      <option value="">select a server…</option>
-                      {targets.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name} — {t.adapterType}{t.environment ? ` · ${t.environment}` : ''}
-                        </option>
+                    {targets.length > 6 && (
+                      <input value={filter} onChange={(e) => setFilter(e.target.value)}
+                        placeholder="filter by name, adapter or environment" />
+                    )}
+                    <div className="server-picker">
+                      {visible.map((t) => (
+                        <label key={t.id} className={targetIds.includes(t.id) ? 'picked' : ''}>
+                          <input type="checkbox" checked={targetIds.includes(t.id)} onChange={() => toggle(t.id)} />
+                          <span>
+                            <strong>{t.name}</strong>
+                            <span className="muted small"> · {t.adapterType}{t.environment ? ` · ${t.environment}` : ''}</span>
+                          </span>
+                        </label>
                       ))}
-                    </select>
-                    {targets.length === 0 && <p className="warn small">No servers added yet — choose “A new server”.</p>}
+                      {visible.length === 0 && (
+                        <p className="muted small">
+                          {targets.length === 0
+                            ? 'No servers added yet — choose “Add a new server”.'
+                            : 'Nothing matches that filter.'}
+                        </p>
+                      )}
+                    </div>
+                    <div className="actions">
+                      <button onClick={() => setTargetIds(visible.map((t) => t.id))}
+                        disabled={visible.length === 0}>Select all shown</button>
+                      <button onClick={() => setTargetIds([])} disabled={targetIds.length === 0}>Clear</button>
+                      <span className="muted small" style={{ alignSelf: 'center' }}>
+                        {targetIds.length} selected
+                      </span>
+                    </div>
                   </>
                 ) : (
                   <div className="wizard-fields">
@@ -360,13 +416,16 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
                         {credentials.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.credentialType})</option>)}
                       </select>
                     </label>
-                    {adapter?.notes && <p className="muted small">{adapter.notes}</p>}
+                    {newAdapter?.notes && <p className="muted small">{newAdapter.notes}</p>}
                     {credentials.length === 0 && (
                       <p className="warn small">
                         No credentials stored yet. RemoteSSL cannot reach the server without one — add it
                         under Setup → Credentials, then come back.
                       </p>
                     )}
+                    <p className="muted small">
+                      Continuing adds this server and ticks it; you can then add more or move on.
+                    </p>
                   </div>
                 )}
               </>
@@ -374,51 +433,83 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
 
             {step === 2 && (
               <>
-                <p className="muted small">
-                  Where on the machine should the certificate live, and what has to happen after it is written?
-                </p>
-                {!newServer && (target?.stores.length ?? 0) > 0 && (
-                  <div className="actions">
-                    <button className={!newStore ? 'chosen' : ''} onClick={() => setNewStore(false)}>An existing location</button>
-                    <button className={newStore ? 'chosen' : ''} onClick={() => setNewStore(true)}>A new location</button>
-                  </div>
-                )}
-
-                {!newServer && !newStore && (target?.stores.length ?? 0) > 0 ? (
-                  <select value={storeId} onChange={(e) => setStoreId(e.target.value)}>
-                    <option value="">select a location…</option>
-                    {(target?.stores ?? []).map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.storeType}: {s.storePath}{s.alias ? ` (${s.alias})` : ''}
-                      </option>
+                <p className="muted small">Where on each machine should the certificate live?</p>
+                <table className="data-table">
+                  <thead><tr><th>Server</th><th>Location</th></tr></thead>
+                  <tbody>
+                    {chosen.map((t) => (
+                      <tr key={t.id}>
+                        <td>
+                          {t.name}
+                          <div className="muted small">{t.adapterType}{t.environment ? ` · ${t.environment}` : ''}</div>
+                        </td>
+                        <td>
+                          {t.stores.length > 0 ? (
+                            <select
+                              value={storeByTarget[t.id] ?? ''}
+                              onChange={(e) => setStoreByTarget({ ...storeByTarget, [t.id]: e.target.value })}
+                            >
+                              <option value="">a new location…</option>
+                              {t.stores.map((s) => (
+                                <option key={s.id} value={s.id}>
+                                  {s.storeType}: {s.storePath}{s.alias ? ` (${s.alias})` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          ) : <span className="muted small">no location yet</span>}
+                          {!storeByTarget[t.id] && (
+                            <input
+                              value={pathByTarget[t.id] ?? ''}
+                              onChange={(e) => setPathByTarget({ ...pathByTarget, [t.id]: e.target.value })}
+                              placeholder={t.adapterType === 'iis' || t.adapterType === 'windows-cert-store'
+                                ? 'LocalMachine/My' : '/etc/nginx/ssl'}
+                              style={{ marginTop: 4, width: '100%' }}
+                            />
+                          )}
+                        </td>
+                      </tr>
                     ))}
-                  </select>
-                ) : (
-                  <div className="wizard-fields">
-                    <label>Path
-                      <input value={storePath} onChange={(e) => setStorePath(e.target.value)}
-                        placeholder={effectiveAdapter?.channel === 'winrm' ? 'LocalMachine/My' : '/etc/nginx/ssl'} />
-                    </label>
-                    {effectiveAdapter?.supportsAlias && (
-                      <label>Alias<input value={alias} onChange={(e) => setAlias(e.target.value)} /></label>
-                    )}
-                  </div>
-                )}
+                  </tbody>
+                </table>
 
-                {/* §9.3: the fields come from the adapter, so this screen never asks for
-                    something the adapter has no use for. */}
+                {/* §9.3: the fields come from the adapter, so this never asks for something the
+                    adapter has no use for. */}
+                <h3>Service settings</h3>
+                <p className="muted small">
+                  Used only where a server has no certificate installed yet. Where one is already
+                  there, its own paths and commands are kept.
+                  {mixedAdapters && ' The selected servers do not all run the same thing, so these '
+                    + `follow ${formAdapter?.displayName ?? 'the first one'}.`}
+                </p>
                 <div className="wizard-fields">
-                  {(effectiveAdapter?.serviceFields ?? []).map((f) => (
+                  {(formAdapter?.serviceFields ?? []).map((f) => (
                     <label key={f.key}>
                       {f.label}{f.required && <span className="bad"> *</span>}
-                      <input
-                        value={service[f.key] ?? ''}
-                        onChange={(e) => setService({ ...service, [f.key]: e.target.value })}
-                      />
+                      <input value={service[f.key] ?? ''}
+                        onChange={(e) => setService({ ...service, [f.key]: e.target.value })} />
                       {f.help && <span className="muted small">{f.help}</span>}
                     </label>
                   ))}
                 </div>
+
+                {targetIds.length > 1 && (
+                  <>
+                    <h3>How to roll it out</h3>
+                    <div className="wizard-fields">
+                      <label>Order
+                        <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+                          {STRATEGIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                        </select>
+                      </label>
+                      {['wave', 'parallel', 'canary'].includes(strategy) && (
+                        <label>How many at a time
+                          <input value={maxConcurrency} onChange={(e) => setMaxConcurrency(e.target.value)}
+                            type="number" min={1} />
+                        </label>
+                      )}
+                    </div>
+                  </>
+                )}
               </>
             )}
 
@@ -426,7 +517,8 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
               <>
                 <p className="small">
                   <strong>{plan.certificate}</strong>{' '}
-                  <span className="muted">{plan.newThumbprint.slice(0, 16)}…</span>
+                  <span className="muted">{plan.newThumbprint.slice(0, 16)}…</span> — going to{' '}
+                  <strong>{plan.targets.length}</strong> server(s), {plan.strategy}
                 </p>
                 <table className="data-table">
                   <thead><tr><th>Server</th><th>Adapter</th><th>Location</th><th>Serving today</th><th>Runner</th></tr></thead>
@@ -449,7 +541,7 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
 
                 {plan.approvalRequired && (
                   <p className="warn small">
-                    Policy requires approval for this environment — the job will be created and wait for an approver.
+                    Policy requires approval for this environment — the job is created and waits for an approver.
                   </p>
                 )}
                 {plan.windowRequired && !plan.windowOpen && (
@@ -469,7 +561,12 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
 
             <div className="actions" style={{ marginTop: 16 }}>
               {step > 0 && <button onClick={() => setStep(step - 1)} disabled={busy}>Back</button>}
-              {step < 2 && <button onClick={() => setStep(step + 1)} disabled={!canContinue || busy}>Continue</button>}
+              {step === 0 && <button onClick={() => setStep(1)} disabled={!canContinue || busy}>Continue</button>}
+              {step === 1 && (
+                <button onClick={leaveServerStep} disabled={!canContinue || busy}>
+                  {busy ? 'Adding…' : newServer ? 'Add and continue' : 'Continue'}
+                </button>
+              )}
               {step === 2 && (
                 <button onClick={prepareReview} disabled={!canContinue || busy}>
                   {busy ? 'Preparing…' : 'Review'}
@@ -477,15 +574,15 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
               )}
               {step === 3 && (
                 <button onClick={install} disabled={busy || (plan?.blockers.length ?? 1) > 0}>
-                  {busy ? 'Starting…' : 'Install'}
+                  {busy ? 'Starting…' : `Install on ${bindingIds.length} server(s)`}
                 </button>
               )}
             </div>
 
             {step === 2 && (
               <p className="muted small">
-                Nothing is installed by “Review” — it creates the server and location records if they are
-                new, then shows what the installation would change.
+                Nothing is installed by “Review” — it records the locations, then shows what the
+                installation would change on each server.
               </p>
             )}
           </>

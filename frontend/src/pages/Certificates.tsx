@@ -20,7 +20,7 @@ interface CertificateListItem {
   ownerId: string | null
   monitorCount: number
   versionCount: number
-  installedOn: string[]
+  installedOn: { server: string; state: string }[]
 }
 
 interface VersionDto {
@@ -392,7 +392,7 @@ export default function Certificates() {
       <table className="data-table">
         <thead>
           <tr>
-            <th>Certificate</th><th>Expiry</th><th>Installed on</th><th>CA</th>
+            <th>Certificate</th><th>Expiry</th><th className="installed-col">Installed on</th><th>CA</th>
             <th>Auto renew</th><th>Status</th><th>Monitors</th>
           </tr>
         </thead>
@@ -409,12 +409,17 @@ export default function Certificates() {
                   : '—'}
                 {c.notAfter && <div className="muted small">{new Date(c.notAfter).toLocaleDateString()}</div>}
               </td>
-              <td className="small">
+              <td className="small installed-col">
                 {(c.installedOn ?? []).length === 0
-                  ? <span className="muted">Not installed anywhere</span>
-                  : (c.installedOn ?? []).map((name) => (
-                      <span key={name} className="store-chip">{name}</span>
-                    ))}
+                  ? <span className="muted">Not on any server</span>
+                  : <div className="site-list">{(c.installedOn ?? []).map((s) => (
+                      <span key={s.server} className={`site-chip ${s.state}`}
+                        title={s.state === 'installed' ? 'Installed and confirmed'
+                          : s.state === 'failed' ? 'The last installation failed'
+                            : 'Configured, not installed yet'}>
+                        {s.server}
+                      </span>
+                    ))}</div>}
               </td>
               <td className="small">{c.ca ?? '—'}</td>
               <td>{c.autoRenew ? <span className="ok">Yes</span> : <span className="muted">No</span>}</td>

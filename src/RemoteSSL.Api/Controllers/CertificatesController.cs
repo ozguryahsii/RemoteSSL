@@ -21,11 +21,19 @@ public class CertificatesController(
         bool Managed, int DeploymentCount, bool AutoRenew,
         string? Environment, string? OwnerId, int MonitorCount, int VersionCount,
         /// <summary>
-        /// The machines this certificate is installed on. "How many" is not the question an
-        /// operator actually has — "which servers" is — so the names travel with the list
-        /// rather than making them open each certificate to find out.
+        /// The machines this certificate is meant to be on, each with whether it actually got
+        /// there. "How many" is not the question an operator has — "which servers, and did it
+        /// land" is — and a binding on its own only says where it was supposed to go.
         /// </summary>
-        IReadOnlyList<string> InstalledOn);
+        IReadOnlyList<InstallationSite> InstalledOn);
+
+    /// <summary>
+    /// One machine this certificate is bound to. <paramref name="State"/> is "installed" once a
+    /// deployment to it has succeeded, "failed" when the last attempt did not, and "pending"
+    /// while nothing has run yet — a distinction that matters, because a certificate listed
+    /// against a server it never reached is exactly the kind of thing that expires unnoticed.
+    /// </summary>
+    public record InstallationSite(string Server, string State);
 
     /// <summary>
     /// Everything the nine certificate detail tabs need (design doc §26.2):
@@ -107,11 +115,20 @@ public class CertificatesController(
                 MonitorCount = c.MonitorLinks.Count,
                 VersionCount = c.Versions.Count,
                 DeploymentCount = db.DeploymentBindings.Count(b => b.CertificateId == c.Id),
-                // The machines, not just the count: "which servers is this on" is the question.
+                // The machines, not just the count, and whether the certificate actually landed
+                // on each: the binding says where it should go, the last job says whether it did.
                 InstalledOn = db.DeploymentBindings
                     .Where(b => b.CertificateId == c.Id)
-                    .Select(b => b.CertificateStore.Target.Name)
-                    .Distinct()
+                    .Select(b => new
+                    {
+                        Server = b.CertificateStore.Target.Name,
+                        LastStatus = db.DeploymentJobTargets
+                            .Where(jt => jt.DeploymentBindingId == b.Id
+                                         && jt.DeploymentJob.CertificateVersion.CertificateId == c.Id)
+                            .OrderByDescending(jt => jt.DeploymentJob.CreatedAt)
+                            .Select(jt => (DeploymentJobStatus?)jt.Status)
+                            .FirstOrDefault(),
+                    })
                     .ToList(),
                 CaName = db.CertificateRequests
                     .Where(r => r.CertificateId == c.Id && r.CaConnectorId != null)
@@ -136,7 +153,26 @@ public class CertificatesController(
             x.Latest?.NotAfter,
             x.Latest is null ? null : ExpiryCalculator.DaysUntilExpiry(x.Latest.NotAfter, now),
             x.DeploymentCount > 0, x.DeploymentCount, x.AutoRenew,
-            x.Environment, x.OwnerId, x.MonitorCount, x.VersionCount, x.InstalledOn));
+            x.Environment, x.OwnerId, x.MonitorCount, x.VersionCount,
+            x.InstalledOn
+                .GroupBy(i => i.Server)
+                .Select(g => new InstallationSite(g.Key, InstallationState(
+                    g.Select(i => i.LastStatus).ToList())))
+                .OrderBy(i => i.Server)
+                .ToList()));
+    }
+
+    /// <summary>
+    /// One word for what happened on a server. A machine with several stores counts as installed
+    /// once any of them succeeded, and as failed only when something actually failed — a store
+    /// nobody has deployed to yet should not colour the whole server red.
+    /// </summary>
+    private static string InstallationState(IReadOnlyList<DeploymentJobStatus?> statuses)
+    {
+        if (statuses.Any(s => s == DeploymentJobStatus.Succeeded)) return "installed";
+        if (statuses.Any(s => s is DeploymentJobStatus.Failed or DeploymentJobStatus.RolledBack
+                                or DeploymentJobStatus.PartiallyFailed)) return "failed";
+        return "pending";
     }
 
     /// <summary>Extension metadata is stored as JSON; a malformed value must not break the screen.</summary>
