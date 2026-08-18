@@ -684,6 +684,20 @@ public class DeploymentService(
             CompletedAt = DateTimeOffset.UtcNow
         });
 
+    /// <summary>
+    /// The conventional key path beside a certificate file. Returns empty when the certificate
+    /// path carries no certificate extension — that means it is a directory or something else we
+    /// cannot reason about, and a guessed path for a private key is worse than none: the adapter
+    /// refuses the run instead (§7.3 — a key must never land somewhere unintended).
+    /// </summary>
+    public static string DeriveKeyPath(string certPath)
+    {
+        foreach (var ext in new[] { ".crt", ".pem", ".cer" })
+            if (certPath.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
+                return string.Concat(certPath.AsSpan(0, certPath.Length - ext.Length), ".key");
+        return "";
+    }
+
     private string BuildPayload(CertificateVersion version, DeploymentJobTarget jt)
     {
         var store = jt.DeploymentBinding.CertificateStore;
@@ -708,7 +722,10 @@ public class DeploymentService(
                 connection = new { host = Get(conn, "host", target.Name), port = GetInt(conn, "port", 22), useSudo = GetBool(conn, "useSudo") },
                 credentialRefId = target.CredentialRefId,
                 certPath = Get(svc, "certPath", store.StorePath),
-                keyPath = Get(svc, "keyPath", store.StorePath.Replace(".crt", ".key").Replace(".pem", ".key")),
+                // Derived from the certificate path, not from the store: a store is usually a
+                // directory, and swapping an extension it does not have used to yield the
+                // directory itself — which put the private key inside it under a nonsense name.
+                keyPath = Get(svc, "keyPath", DeriveKeyPath(Get(svc, "certPath", store.StorePath))),
                 chainPath = svc.TryGetProperty("chainPath", out var cp) ? cp.GetString() : null,
                 bundleMode = Get(svc, "bundleMode", target.AdapterType == "haproxy" ? "combined" : "separate"),
                 validateCmd = svc.TryGetProperty("validateCmd", out var vc) ? vc.GetString() : null,

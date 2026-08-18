@@ -195,7 +195,11 @@ public class EndToEndTests
         var binding = new DeploymentBinding
         {
             Id = Guid.NewGuid(), CertificateId = version.CertificateId, CertificateStoreId = store.Id,
-            CertificateStore = store, CreatedAt = DateTimeOffset.UtcNow
+            CertificateStore = store, CreatedAt = DateTimeOffset.UtcNow,
+            // The store is a directory; the binding is what names the files. Without them there is
+            // nowhere to put the private key, and the plan says so rather than letting the run
+            // guess — so a realistic binding carries both paths.
+            ServiceBindingJson = """{"certPath":"/etc/nginx/ssl/e2e.crt","keyPath":"/etc/nginx/ssl/e2e.key"}"""
         };
         db.Targets.Add(target);
         db.CertificateStores.Add(store);

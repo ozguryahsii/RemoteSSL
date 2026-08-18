@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { apiGet, apiDelete } from '../api/client'
 import { useData, post, MAX_PAGE, TruncationNotice } from './SimplePages'
+import InstallWizard, { type PresetLocation } from './InstallWizard'
 
 interface DiscoveredSite {
   kind: string
@@ -11,6 +12,9 @@ interface DiscoveredSite {
   notAfter: string | null
   storePath: string | null
   alias: string | null
+  /** The files this site actually uses, where the adapter can see them. */
+  certificatePath: string | null
+  keyPath: string | null
 }
 
 interface Discovery {
@@ -24,6 +28,43 @@ interface Discovery {
 
 function daysLeft(iso: string): number {
   return Math.floor((new Date(iso).getTime() - Date.now()) / 86400000)
+}
+
+/** Which server the open discovery panel belongs to, so a replacement can be aimed at it. */
+interface DiscoverySubject { id: string; name: string; adapterType: string; storeId?: string }
+
+/**
+ * Turns a site discovery found into the place a replacement should install to, carrying the
+ * settings the site is really using. This is the whole point of asking the server what it serves:
+ * the operator picks the site, and the paths come from the machine rather than from a convention.
+ */
+function siteToLocation(site: DiscoveredSite, on: DiscoverySubject): PresetLocation {
+  const service: Record<string, string> = {}
+  if (site.kind === 'iis-site') {
+    service.iisSiteName = site.name
+    // IIS reports a binding as "ip:port:hostheader" — e.g. "*:443:www.ozgur.com".
+    const parts = (site.detail ?? '').split(':')
+    if (parts.length >= 2 && parts[1]) service.iisPort = parts[1]
+    if (parts.length >= 3 && parts[2]) service.iisHostHeader = parts[2]
+  } else if (site.certificatePath) {
+    service.certPath = site.certificatePath
+    if (site.keyPath) service.keyPath = site.keyPath
+  }
+  if (site.alias) service.alias = site.alias
+
+  return {
+    targetId: on.id,
+    targetName: on.name,
+    adapterType: on.adapterType,
+    siteName: site.name,
+    // A keystore inventory is read from a store we already have; everything else comes back as a path.
+    storeId: site.kind === 'keystore-alias' ? on.storeId ?? null : null,
+    storePath: site.storePath ?? (site.kind === 'iis-site' ? 'LocalMachine/My' : null),
+    service,
+    currently: site.subject
+      ? `${site.subject}${site.notAfter ? ` — ${daysLeft(site.notAfter)} days left` : ''}`
+      : null,
+  }
 }
 
 interface TargetRow {
@@ -78,7 +119,9 @@ export default function Targets() {
   const [winMethod, setWinMethod] = useState('winrm') // winrm | ssh, for windows adapters
   const [testResult, setTestResult] = useState<string | null>(null)
   const [discovery, setDiscovery] = useState<Discovery | null>(null)
-  const [discoveryFor, setDiscoveryFor] = useState<string | null>(null)
+  const [discoveryFor, setDiscoveryFor] = useState<DiscoverySubject | null>(null)
+  const [picked, setPicked] = useState<number[]>([])
+  const [replaceOn, setReplaceOn] = useState<PresetLocation[] | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
   const [eHaRole, setEHaRole] = useState(''); const [eGroup, setEGroup] = useState('')
   const [eName, setEName] = useState(''); const [eAdapter, setEAdapter] = useState('nginx')
@@ -176,8 +219,10 @@ export default function Targets() {
    * which certificate each one uses today. "Where do I write the file" is the wrong question to
    * start from — the operator knows the site, not the path.
    */
-  async function discoverStores(targetId: string, targetName: string) {
-    setDiscoveryFor(targetName)
+  async function discoverStores(t: TargetRow) {
+    const targetId = t.id
+    setDiscoveryFor({ id: t.id, name: t.name, adapterType: t.adapterType })
+    setPicked([])
     setDiscovery({ success: true, sites: [], pending: true })
     const res = await post(`/api/v1/targets/${targetId}/stores/discover`)
     const { jobId } = await res.json()
@@ -194,8 +239,10 @@ export default function Targets() {
   }
 
   /** §12.3: list everything in a Java keystore, not just the alias we deploy to. */
-  async function inventoryKeystore(targetId: string, storeId: string, targetName: string) {
-    setDiscoveryFor(targetName)
+  async function inventoryKeystore(t: TargetRow, storeId: string) {
+    const targetId = t.id
+    setDiscoveryFor({ id: t.id, name: t.name, adapterType: t.adapterType, storeId })
+    setPicked([])
     setDiscovery({ success: true, sites: [], pending: true })
     const res = await post(`/api/v1/targets/${targetId}/stores/${storeId}/inventory`)
     if (!res.ok) {
@@ -224,6 +271,8 @@ export default function Targets() {
             notAfter: e.notAfter,
             storePath: null,
             alias: e.alias,
+            certificatePath: null,
+            keyPath: null,
           })),
         })
         return
@@ -287,8 +336,8 @@ export default function Targets() {
       {discovery && (
         <div className="detail-panel">
           <div className="detail-header">
-            <h3>What {discoveryFor} is serving</h3>
-            <button onClick={() => { setDiscovery(null); setDiscoveryFor(null) }}>Close</button>
+            <h3>What {discoveryFor?.name} is serving</h3>
+            <button onClick={() => { setDiscovery(null); setDiscoveryFor(null); setPicked([]) }}>Close</button>
           </div>
           {discovery.pending && <p className="muted small">Asking the server…</p>}
           {discovery.error && <p className="bad small">{discovery.error}</p>}
@@ -300,11 +349,18 @@ export default function Targets() {
           {(discovery.sites ?? []).length > 0 && (
             <table className="data-table">
               <thead>
-                <tr><th>Site</th><th>Where</th><th>Certificate it serves now</th><th>Expires</th></tr>
+                <tr><th></th><th>Site</th><th>Where</th><th>Certificate it serves now</th><th>Expires</th></tr>
               </thead>
               <tbody>
                 {discovery.sites.map((site, i) => (
-                  <tr key={i}>
+                  <tr key={i} className={picked.includes(i) ? 'picked' : ''}>
+                    <td>
+                      <input type="checkbox" checked={picked.includes(i)}
+                        title="Replace the certificate on this site"
+                        onChange={() => setPicked(picked.includes(i)
+                          ? picked.filter((x) => x !== i)
+                          : [...picked, i])} />
+                    </td>
                     <td>
                       {site.name}
                       <div className="muted small">{site.kind}</div>
@@ -329,7 +385,32 @@ export default function Targets() {
               </tbody>
             </table>
           )}
+          {(discovery.sites ?? []).length > 0 && (
+            <div className="actions">
+              <button
+                disabled={picked.length === 0 || !discoveryFor}
+                onClick={() => setReplaceOn([...picked]
+                  .sort((a, b) => a - b)
+                  .map((i) => siteToLocation(discovery.sites[i], discoveryFor!)))}
+              >
+                Replace certificate on {picked.length} site(s)
+              </button>
+              <button onClick={() => setPicked(discovery.sites.map((_, i) => i))}>Select all</button>
+              <button onClick={() => setPicked([])} disabled={picked.length === 0}>Clear</button>
+              <span className="muted small" style={{ alignSelf: 'center' }}>
+                Tick the sites that should move to a different certificate — a wildcard renewal
+                usually means several of them at once.
+              </span>
+            </div>
+          )}
         </div>
+      )}
+      {replaceOn && (
+        <InstallWizard
+          preset={replaceOn}
+          onClose={() => setReplaceOn(null)}
+          onInstalled={reload}
+        />
       )}
       <table className="data-table">
         <thead><tr><th>Name</th><th>Adapter</th><th>Connection</th><th>HA role</th><th>Group</th><th>Stores</th><th></th></tr></thead>
@@ -390,10 +471,10 @@ export default function Targets() {
               </td>
               <td className="actions">
                 <button onClick={() => testConnection(t.id)}>Test connection</button>
-                <button onClick={() => discoverStores(t.id, t.name)}>What's on it?</button>
+                <button onClick={() => discoverStores(t)}>What's on it?</button>
                 {/* §9.3: only offered where the adapter can actually read the store back. */}
                 {capability(t.adapterType)?.supportsStoreDiscovery && t.stores.length > 0 && (
-                  <button onClick={() => inventoryKeystore(t.id, t.stores[0].id, t.name)}>Inventory</button>
+                  <button onClick={() => inventoryKeystore(t, t.stores[0].id)}>Inventory</button>
                 )}
                 <button onClick={() => addStore(t.id)}>Add store</button>
                 <button onClick={() => startEdit(t)}>Edit</button>

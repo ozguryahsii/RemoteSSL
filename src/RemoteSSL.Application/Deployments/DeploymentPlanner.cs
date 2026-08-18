@@ -9,7 +9,13 @@ namespace RemoteSSL.Application.Deployments;
 public sealed record PlannedTarget(
     Guid BindingId, string Target, string Adapter, string? Environment, string? HaRole,
     string Store, string? Alias, string? RunnerName, string RunnerStatus,
-    string? CurrentThumbprint, string? CurrentCommonName, int? CurrentDaysLeft);
+    string? CurrentThumbprint, string? CurrentCommonName, int? CurrentDaysLeft,
+    /// <summary>
+    /// The place on that machine, as the operator names it: the IIS site, the file being written,
+    /// the keystore alias. Several bindings on one server can share a store — three IIS sites all
+    /// live in LocalMachine\My — and a preview that shows the store alone cannot tell them apart.
+    /// </summary>
+    string? Site = null);
 
 /// <summary>
 /// Impact preview shown before a deployment is confirmed (NFR-008: "kritik production
@@ -35,6 +41,50 @@ public sealed record DeploymentPlan(
 
 public class DeploymentPlanner(IRemoteSslDbContext db, GovernanceService governance)
 {
+    /// <summary>
+    /// Names the place a binding installs to, from whichever of its settings identifies it. Falls
+    /// back to the alias and then to nothing rather than inventing a name.
+    /// </summary>
+    public static string? SiteOf(string serviceBindingJson, string? alias)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(
+                string.IsNullOrWhiteSpace(serviceBindingJson) ? "{}" : serviceBindingJson);
+            foreach (var key in new[] { "iisSiteName", "profileName", "certificateName", "certPath", "keyPath" })
+            {
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty(key, out var value)
+                    && value.ValueKind == System.Text.Json.JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(value.GetString()))
+                    return value.GetString();
+            }
+        }
+        catch (System.Text.Json.JsonException) { /* a malformed binding simply has no name to show */ }
+
+        return alias;
+    }
+
+    /// <summary>The binding's service settings as plain strings; an unreadable one is simply empty.</summary>
+    private static Dictionary<string, string> SettingsOf(string serviceBindingJson)
+    {
+        var settings = new Dictionary<string, string>();
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(
+                string.IsNullOrWhiteSpace(serviceBindingJson) ? "{}" : serviceBindingJson);
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return settings;
+            // Numbers and booleans are left out rather than failing the whole read: a port being a
+            // number must not decide whether a key path exists.
+            foreach (var property in doc.RootElement.EnumerateObject())
+                if (property.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                    settings[property.Name] = property.Value.GetString()!;
+        }
+        catch (System.Text.Json.JsonException) { /* nothing readable, so nothing configured */ }
+
+        return settings;
+    }
+
     public async Task<DeploymentPlan> PlanAsync(
         Guid certificateVersionId, IReadOnlyList<Guid> bindingIds, string strategy, int maxConcurrency,
         bool approvalRequested, CancellationToken ct)
@@ -78,7 +128,22 @@ public class DeploymentPlanner(IRemoteSslDbContext db, GovernanceService governa
                 $"{b.CertificateStore.StoreType}:{b.CertificateStore.StorePath}", b.CertificateStore.Alias,
                 runner?.Name, runner?.Status ?? "no runner assigned",
                 currentVersion?.Sha256Thumbprint, currentVersion?.CommonName,
-                currentVersion is null ? null : Monitoring.ExpiryCalculator.DaysUntilExpiry(currentVersion.NotAfter, now)));
+                currentVersion is null ? null : Monitoring.ExpiryCalculator.DaysUntilExpiry(currentVersion.NotAfter, now),
+                SiteOf(b.ServiceBindingJson, b.CertificateStore.Alias)));
+
+            // A file adapter writes the key beside the certificate; without a usable path for it
+            // the run would have nowhere safe to put it, and that is worth saying here rather than
+            // at the target (§7.3).
+            if (target.AdapterType is "nginx" or "apache" or "generic-file" && version.EncryptedPrivateKeyPem is not null)
+            {
+                var svc = SettingsOf(b.ServiceBindingJson);
+                var certPath = svc.GetValueOrDefault("certPath") ?? b.CertificateStore.StorePath;
+                var keyPath = svc.GetValueOrDefault("keyPath") ?? DeploymentService.DeriveKeyPath(certPath);
+                if (string.IsNullOrWhiteSpace(keyPath) || keyPath == certPath)
+                    blockers.Add($"{target.Name} — {SiteOf(b.ServiceBindingJson, null) ?? b.CertificateStore.StorePath}: "
+                                 + "no private key path is set on this binding, and none can be derived from the "
+                                 + "certificate path.");
+            }
 
             if (target.RunnerId is not null && runner?.Status != "Online")
                 blockers.Add($"{target.Name}: its runner is {runner?.Status ?? "unknown"}");

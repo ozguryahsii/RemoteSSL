@@ -441,3 +441,6 @@ button.chosen { background: #dbeafe; border-color: #93c5fd; color: #1e40af; font
 .installed-col { min-width: 300px; }
 .site-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .site-list .site-chip { margin: 0; }
+
+/* A discovered site ticked for replacement. */
+tr.picked > td { background: #dbeafe; }

@@ -59,6 +59,8 @@ interface PlannedTarget {
   target: string
   adapter: string
   store: string
+  /** The site, file or alias this binding installs to — what tells two rows on one server apart. */
+  site: string | null
   runnerStatus: string
   currentCommonName: string | null
   currentDaysLeft: number | null
@@ -77,7 +79,29 @@ interface Plan {
   blockers: string[]
 }
 
+/**
+ * One place a certificate is actually served from, as discovery found it: an IIS site, an nginx
+ * server block, a keystore alias. This is the unit a replacement really works on — three IIS sites
+ * on one machine are three bindings, not one — so when the wizard is opened from a discovery it is
+ * driven by these rather than by a list of servers.
+ */
+export interface PresetLocation {
+  targetId: string
+  targetName: string
+  adapterType: string
+  /** What the operator calls the place: the site name, the server_name, the alias. */
+  siteName: string
+  /** The store discovery already knows about, when it does; otherwise the path to find or create. */
+  storeId?: string | null
+  storePath: string | null
+  /** Service settings read off the running configuration — the paths this site really uses. */
+  service: Record<string, string>
+  /** What it is serving today, shown so the operator can see what is being replaced. */
+  currently?: string | null
+}
+
 const STEPS = ['Certificate', 'Servers', 'Where on each server', 'Review & install'] as const
+const PRESET_STEPS = ['Certificate', 'Sites to replace on', 'Review & install'] as const
 
 /** Strategies the orchestrator implements (§21.4), described in terms of what they do to you. */
 const STRATEGIES = [
@@ -89,7 +113,13 @@ const STRATEGIES = [
   { value: 'all-at-once', label: 'All at once' },
 ]
 
-export default function InstallWizard({ onClose, onInstalled }: { onClose: () => void; onInstalled: () => void }) {
+export default function InstallWizard({ onClose, onInstalled, preset }: {
+  onClose: () => void
+  onInstalled: () => void
+  /** Set when opened from a discovery: the exact sites whose certificate is being replaced. */
+  preset?: PresetLocation[]
+}) {
+  const replacing = (preset?.length ?? 0) > 0
   const [step, setStep] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -118,6 +148,9 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
   const [pathByTarget, setPathByTarget] = useState<Record<string, string>>({})
   const [service, setService] = useState<Record<string, string>>({})
 
+  // Replacement mode — one row per discovered site, each with the paths that site really uses.
+  const [locations, setLocations] = useState<PresetLocation[]>(preset ?? [])
+
   const [strategy, setStrategy] = useState('sequential')
   const [maxConcurrency, setMaxConcurrency] = useState('2')
 
@@ -139,6 +172,45 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
     ? newAdapter
     : adapters.find((a) => a.type === chosen[0]?.adapterType) ?? newAdapter
   const mixedAdapters = new Set(chosen.map((t) => t.adapterType)).size > 1
+
+  /**
+   * The list of places this run installs to. In the ordinary flow that is one per chosen server;
+   * when replacing, it is one per discovered site, which may be several on the same machine.
+   */
+  interface Unit {
+    key: string
+    targetId: string
+    label: string
+    storeId: string
+    path: string
+    service: Record<string, string>
+    /** Preset units carry the site's own settings, which must not be overwritten by a sibling. */
+    exact: boolean
+  }
+
+  const units: Unit[] = replacing
+    ? locations.map((l, i) => ({
+      key: `${l.targetId}:${l.siteName}:${i}`,
+      targetId: l.targetId,
+      label: `${l.siteName} on ${l.targetName}`,
+      storeId: l.storeId ?? '',
+      path: l.storePath ?? '',
+      service: l.service,
+      exact: true,
+    }))
+    : targetIds.map((id) => ({
+      key: id,
+      targetId: id,
+      label: targets.find((t) => t.id === id)?.name ?? id,
+      storeId: storeByTarget[id] ?? '',
+      path: pathByTarget[id] ?? '',
+      service,
+      exact: false,
+    }))
+
+  function updateLocation(i: number, patch: Partial<PresetLocation>) {
+    setLocations(locations.map((l, j) => (j === i ? { ...l, ...patch } : l)))
+  }
 
   function adapterDefaults(a: Adapter | undefined): Record<string, string> {
     const next: Record<string, string> = {}
@@ -171,12 +243,12 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
     return body.id as string
   }
 
-  async function ensureStore(server: string): Promise<string> {
-    const existing = storeByTarget[server]
-    if (existing) return existing
+  async function ensureStore(unit: Unit): Promise<string> {
+    const server = unit.targetId
+    if (unit.storeId) return unit.storeId
 
-    const path = pathByTarget[server]
-    if (!path) throw new Error(`No location chosen for ${targets.find((t) => t.id === server)?.name ?? server}.`)
+    const path = unit.path
+    if (!path) throw new Error(`No location chosen for ${unit.label}.`)
 
     // A location this server already has is that location, not a second one with the same name.
     // Creating a duplicate would leave two stores pointing at one directory and, worse, two
@@ -202,13 +274,19 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
    * otherwise copies the service settings from whatever binding is already there, because those
    * are the paths and commands this machine really uses. The shared form is the last resort.
    */
-  async function ensureBinding(server: string, store: string): Promise<string> {
-    const rows = await apiGet<BindingRow[]>(`/api/v1/targets/${server}/bindings`).catch(() => [])
-    const mine = rows.find((b) => b.certificateId === certificateId && b.storeId === store)
+  async function ensureBinding(unit: Unit, store: string): Promise<string> {
+    const rows = await apiGet<BindingRow[]>(`/api/v1/targets/${unit.targetId}/bindings`).catch(() => [])
+
+    // A store can hold several sites — three IIS sites all live in LocalMachine\My — so "this
+    // certificate is already in this store" is not enough to say the binding is the same one.
+    // When the site's own settings are known, they are part of its identity.
+    const mine = rows.find((b) => b.certificateId === certificateId && b.storeId === store
+      && (!unit.exact || sameService(b.serviceBindingJson, unit.service)))
     if (mine) return mine.id
 
-    const sibling = rows.find((b) => b.storeId === store)
-    let serviceBinding: Record<string, string> = service
+    // Settings read off the running configuration describe this site; a sibling's describe another.
+    const sibling = unit.exact ? undefined : rows.find((b) => b.storeId === store)
+    let serviceBinding: Record<string, string> = unit.service
     if (sibling) {
       try {
         const parsed = JSON.parse(sibling.serviceBindingJson || '{}') as Record<string, unknown>
@@ -228,6 +306,13 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
     return body.id as string
   }
 
+  /** True when every setting we know about this site matches what the stored binding says. */
+  function sameService(json: string, want: Record<string, string>): boolean {
+    let parsed: Record<string, unknown>
+    try { parsed = JSON.parse(json || '{}') as Record<string, unknown> } catch { return false }
+    return Object.entries(want).every(([k, v]) => v === '' || String(parsed[k] ?? '') === v)
+  }
+
   async function activeVersionOf(id: string): Promise<string> {
     const detail = await apiGet<{ versions: { id: string; status: string; notAfter: string }[] }>(
       `/api/v1/certificates/${id}`)
@@ -242,8 +327,19 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
   async function prepareReview() {
     setBusy(true); setError(null)
     try {
-      const servers = [...targetIds]
-      const created = await Promise.all(servers.map(async (s) => ensureBinding(s, await ensureStore(s))))
+      // Sequential, and with a cache per (server, path): several sites on one machine share one
+      // store, and creating them in parallel would create the same store several times over.
+      const stores = new Map<string, string>()
+      const created: string[] = []
+      for (const unit of units) {
+        const cacheKey = `${unit.targetId}|${unit.storeId || unit.path.replace(/\/+$/, '')}`
+        let storeId = stores.get(cacheKey)
+        if (!storeId) {
+          storeId = await ensureStore(unit)
+          stores.set(cacheKey, storeId)
+        }
+        created.push(await ensureBinding(unit, storeId))
+      }
       setBindingIds(created)
 
       const versionId = await activeVersionOf(certificateId)
@@ -278,9 +374,10 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
       })
       const body = await res.json()
       if (!res.ok) throw new Error(body.title ?? `The installation could not be started (${res.status})`)
+      const places = `${bindingIds.length} ${replacing ? 'site(s)' : 'server(s)'}`
       setDone(plan?.approvalRequired
-        ? `Job ${body.id} created for ${bindingIds.length} server(s) and is waiting for approval.`
-        : `Job ${body.id} started on ${bindingIds.length} server(s).`)
+        ? `Job ${body.id} created for ${places} and is waiting for approval.`
+        : `Job ${body.id} started on ${places}.`)
       onInstalled()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
@@ -303,27 +400,42 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
     } finally { setBusy(false) }
   }
 
-  const everyServerHasALocation = targetIds.every((id) => storeByTarget[id] || pathByTarget[id])
+  const everyPlaceHasALocation = units.every((u) => u.storeId || u.path)
+  /**
+   * A replacement carries each site's own settings, so a missing required one is a real gap —
+   * nginx without a key path, for instance, has nowhere to put the private key.
+   */
+  const missingRequired = replacing
+    ? locations.flatMap((l) => (adapters.find((a) => a.type === l.adapterType)?.serviceFields ?? [])
+      .filter((f) => f.required && !l.service[f.key])
+      .map((f) => `${l.siteName}: ${f.label} is required`))
+    : []
   const canContinue =
     step === 0 ? certificateId !== ''
       : step === 1 ? (targetIds.length > 0 || (newServer && name !== '' && host !== ''))
-        : step === 2 ? targetIds.length > 0 && everyServerHasALocation
+        : step === 2 ? units.length > 0 && everyPlaceHasALocation && missingRequired.length === 0
           : false
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal wizard" onClick={(e) => e.stopPropagation()}>
         <div className="detail-header">
-          <h2>Install a certificate on servers</h2>
+          <h2>{replacing
+            ? `Replace the certificate on ${locations.length} site(s)`
+            : 'Install a certificate on servers'}</h2>
           <button onClick={onClose}>Close</button>
         </div>
 
         <ol className="wizard-steps">
-          {STEPS.map((label, i) => (
-            <li key={label} className={i === step ? 'current' : i < step ? 'done' : ''}>
-              <span className="wizard-step-no">{i + 1}</span> {label}
-            </li>
-          ))}
+          {(replacing ? PRESET_STEPS : STEPS).map((label, i) => {
+            // Replacement skips the server step: discovery already said which machines are involved.
+            const at = replacing ? (i === 0 ? 0 : i + 1) : i
+            return (
+              <li key={label} className={at === step ? 'current' : at < step ? 'done' : ''}>
+                <span className="wizard-step-no">{i + 1}</span> {label}
+              </li>
+            )
+          })}
         </ol>
 
         {error && <p className="bad small">{error}</p>}
@@ -338,7 +450,26 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
           <>
             {step === 0 && (
               <>
-                <p className="muted small">Which certificate should end up on the servers?</p>
+                {replacing && (
+                  <>
+                    <p className="muted small">Replacing what these sites serve today:</p>
+                    <table className="data-table">
+                      <thead><tr><th>Site</th><th>Server</th><th>Serving now</th></tr></thead>
+                      <tbody>
+                        {locations.map((l, i) => (
+                          <tr key={i}>
+                            <td>{l.siteName}</td>
+                            <td className="small">{l.targetName} <span className="muted">· {l.adapterType}</span></td>
+                            <td className="small">{l.currently ?? <span className="muted">nothing bound</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+                <p className="muted small">
+                  {replacing ? 'Which certificate should replace it?' : 'Which certificate should end up on the servers?'}
+                </p>
                 <select value={certificateId} onChange={(e) => setCertificateId(e.target.value)}>
                   <option value="">select a certificate…</option>
                   {certificates.map((c) => (
@@ -439,7 +570,62 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
               </>
             )}
 
-            {step === 2 && (
+            {step === 2 && replacing && (
+              <>
+                <p className="muted small">
+                  These are the paths and settings each site is using right now, read from its own
+                  configuration. Change one only if you want the replacement to go somewhere else.
+                </p>
+                {locations.map((l, i) => {
+                  const a = adapters.find((x) => x.type === l.adapterType)
+                  return (
+                    <div key={i} className="detail-panel">
+                      <h3>{l.siteName} <span className="muted small">on {l.targetName} · {l.adapterType}</span></h3>
+                      <div className="wizard-fields">
+                        <label>Where it lives
+                          <input value={l.storePath ?? ''} disabled={!!l.storeId}
+                            onChange={(e) => updateLocation(i, { storePath: e.target.value })} />
+                        </label>
+                        {/* §9.3: the adapter says which settings this kind of place has. */}
+                        {(a?.serviceFields ?? []).map((f) => (
+                          <label key={f.key}>
+                            {f.label}{f.required && <span className="bad"> *</span>}
+                            <input value={l.service[f.key] ?? ''}
+                              onChange={(e) => updateLocation(i, {
+                                service: { ...l.service, [f.key]: e.target.value },
+                              })} />
+                            {f.help && <span className="muted small">{f.help}</span>}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+
+                {missingRequired.map((m, i) => <p key={i} className="warn small">{m}</p>)}
+
+                {locations.length > 1 && (
+                  <>
+                    <h3>How to roll it out</h3>
+                    <div className="wizard-fields">
+                      <label>Order
+                        <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+                          {STRATEGIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                        </select>
+                      </label>
+                      {['wave', 'parallel', 'canary'].includes(strategy) && (
+                        <label>How many at a time
+                          <input value={maxConcurrency} onChange={(e) => setMaxConcurrency(e.target.value)}
+                            type="number" min={1} />
+                        </label>
+                      )}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            {step === 2 && !replacing && (
               <>
                 <p className="muted small">Where on each machine should the certificate live?</p>
                 <table className="data-table">
@@ -526,14 +712,15 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
                 <p className="small">
                   <strong>{plan.certificate}</strong>{' '}
                   <span className="muted">{plan.newThumbprint.slice(0, 16)}…</span> — going to{' '}
-                  <strong>{plan.targets.length}</strong> server(s), {plan.strategy}
+                  <strong>{plan.targets.length}</strong> {replacing ? 'site(s)' : 'server(s)'}, {plan.strategy}
                 </p>
                 <table className="data-table">
-                  <thead><tr><th>Server</th><th>Adapter</th><th>Location</th><th>Serving today</th><th>Runner</th></tr></thead>
+                  <thead><tr><th>Server</th><th>Site</th><th>Adapter</th><th>Location</th><th>Serving today</th><th>Runner</th></tr></thead>
                   <tbody>
                     {plan.targets.map((t, i) => (
                       <tr key={i}>
                         <td>{t.target}</td>
+                        <td className="small">{t.site ?? <span className="muted">—</span>}</td>
                         <td className="small">{t.adapter}</td>
                         <td className="small muted">{t.store}</td>
                         <td className="small">
@@ -568,8 +755,12 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
             )}
 
             <div className="actions" style={{ marginTop: 16 }}>
-              {step > 0 && <button onClick={() => setStep(step - 1)} disabled={busy}>Back</button>}
-              {step === 0 && <button onClick={() => setStep(1)} disabled={!canContinue || busy}>Continue</button>}
+              {step > 0 && (
+                <button onClick={() => setStep(replacing && step === 2 ? 0 : step - 1)} disabled={busy}>Back</button>
+              )}
+              {step === 0 && (
+                <button onClick={() => setStep(replacing ? 2 : 1)} disabled={!canContinue || busy}>Continue</button>
+              )}
               {step === 1 && (
                 <button onClick={leaveServerStep} disabled={!canContinue || busy}>
                   {busy ? 'Adding…' : newServer ? 'Add and continue' : 'Continue'}
@@ -582,7 +773,9 @@ export default function InstallWizard({ onClose, onInstalled }: { onClose: () =>
               )}
               {step === 3 && (
                 <button onClick={install} disabled={busy || (plan?.blockers.length ?? 1) > 0}>
-                  {busy ? 'Starting…' : `Install on ${bindingIds.length} server(s)`}
+                  {busy ? 'Starting…'
+                    : replacing ? `Replace on ${bindingIds.length} site(s)`
+                      : `Install on ${bindingIds.length} server(s)`}
                 </button>
               )}
             </div>

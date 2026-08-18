@@ -59,6 +59,14 @@ public static class LinuxDeployer
         var managedFiles = new List<string> { p.CertPath };
         if (bundleMode == "separate")
         {
+            // Refused rather than guessed: with no key path of its own, a run would fall back to
+            // something like the store directory, and `mv` would drop the private key inside it
+            // under the temporary name. Nothing is uploaded until there is a real path to write to.
+            if (string.IsNullOrWhiteSpace(p.KeyPath) || p.KeyPath == p.CertPath)
+                return new DeployOutcome(false, false,
+                    [new("PreCheck", false,
+                        "this binding has no private key path — set keyPath on it (the certificate "
+                        + $"path is {p.CertPath})")]);
             managedFiles.Add(p.KeyPath);
             if (!string.IsNullOrEmpty(p.ChainPath)) managedFiles.Add(p.ChainPath!);
         }
@@ -80,11 +88,24 @@ public static class LinuxDeployer
             // PRE-CHECK: parent dirs exist and are writable
             foreach (var f in managedFiles)
             {
-                var dir = f[..f.LastIndexOf('/')];
+                var slash = f.LastIndexOf('/');
+                if (slash <= 0)
+                {
+                    steps.Add(new("PreCheck", false, $"not an absolute path: {f}"));
+                    return new DeployOutcome(false, false, steps);
+                }
+                var dir = f[..slash];
                 var r = ssh.Exec($"test -d {Shell.Quote(dir)} && test -w {Shell.Quote(dir)}");
                 if (!r.Ok)
                 {
                     steps.Add(new("PreCheck", false, $"directory missing or not writable: {dir}"));
+                    return new DeployOutcome(false, false, steps);
+                }
+                // A path that is itself a directory would take the staged file *into* it under the
+                // temporary name instead of replacing anything.
+                if (ssh.Exec($"test -d {Shell.Quote(f)}").Ok)
+                {
+                    steps.Add(new("PreCheck", false, $"this is a directory, not a file to write: {f}"));
                     return new DeployOutcome(false, false, steps);
                 }
             }

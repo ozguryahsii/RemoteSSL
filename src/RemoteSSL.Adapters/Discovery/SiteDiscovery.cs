@@ -27,7 +27,14 @@ public sealed record DiscoveredSite(
     string? Subject = null,
     DateTimeOffset? NotAfter = null,
     string? StorePath = null,
-    string? Alias = null);
+    string? Alias = null,
+    /// <summary>
+    /// The certificate and key files this site actually uses, where the adapter has them. A
+    /// replacement can then be pre-filled with the paths in use rather than a convention that
+    /// may not be this machine's.
+    /// </summary>
+    string? CertificatePath = null,
+    string? KeyPath = null);
 
 public sealed record SiteDiscoveryResult(
     bool Success,
@@ -157,7 +164,10 @@ public static class SiteDiscovery
                 s.Listen is null ? s.CertificatePath : $"listen {s.Listen} · {s.CertificatePath}",
                 d.Thumbprint, d.Subject, d.NotAfter,
                 // The store for an nginx server block is the directory its certificate lives in.
-                s.CertificatePath is null ? null : DirectoryOf(s.CertificatePath));
+                s.CertificatePath is null ? null : DirectoryOf(s.CertificatePath),
+                Alias: null,
+                CertificatePath: s.CertificatePath,
+                KeyPath: s.KeyPath);
         }).ToList();
 
         return new SiteDiscoveryResult(true, sites);
@@ -216,10 +226,12 @@ public static class SiteDiscovery
 /// </summary>
 public static class NginxConfigReader
 {
-    public sealed record NginxServer(string ServerName, string? Listen, string? CertificatePath);
+    public sealed record NginxServer(
+        string ServerName, string? Listen, string? CertificatePath, string? KeyPath = null);
 
     private static readonly Regex ServerStart = new(@"^\s*server\s*\{", RegexOptions.Compiled);
-    private static readonly Regex Directive = new(@"^\s*(server_name|listen|ssl_certificate)\s+([^;]+);",
+    private static readonly Regex Directive = new(
+        @"^\s*(server_name|listen|ssl_certificate|ssl_certificate_key)\s+([^;]+);",
         RegexOptions.Compiled);
 
     public static IReadOnlyList<NginxServer> Parse(string dump)
@@ -231,7 +243,7 @@ public static class NginxConfigReader
         {
             if (!ServerStart.IsMatch(lines[i])) continue;
 
-            string? name = null, listen = null, certificate = null;
+            string? name = null, listen = null, certificate = null, key = null;
             // Depth starts at the brace on the `server {` line itself.
             var depth = 1;
             for (var j = i + 1; j < lines.Length && depth > 0; j++)
@@ -251,6 +263,7 @@ public static class NginxConfigReader
                             case "server_name": name ??= value.Split(' ', StringSplitOptions.RemoveEmptyEntries).First(); break;
                             case "listen": listen ??= value; break;
                             case "ssl_certificate": certificate ??= value; break;
+                            case "ssl_certificate_key": key ??= value; break;
                         }
                     }
                 }
@@ -260,7 +273,7 @@ public static class NginxConfigReader
 
             // A server block with no TLS is not a place a certificate can be replaced.
             if (certificate is not null)
-                servers.Add(new NginxServer(name ?? "(default server)", listen, certificate));
+                servers.Add(new NginxServer(name ?? "(default server)", listen, certificate, key));
         }
 
         return servers;

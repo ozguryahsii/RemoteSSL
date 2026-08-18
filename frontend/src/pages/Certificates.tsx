@@ -79,7 +79,7 @@ type Tab = typeof TABS[number]
 
 interface PlannedTarget {
   bindingId: string; target: string; adapter: string; environment: string | null; haRole: string | null
-  store: string; alias: string | null; runnerName: string | null; runnerStatus: string
+  store: string; site: string | null; alias: string | null; runnerName: string | null; runnerStatus: string
   currentThumbprint: string | null; currentCommonName: string | null; currentDaysLeft: number | null
 }
 
@@ -127,7 +127,7 @@ function DeploymentPlanView({ plan }: { plan: DeploymentPlan }) {
 
       <table className="data-table">
         <thead>
-          <tr><th>#</th><th>Target</th><th>Store</th><th>Runner</th><th>Serving today</th></tr>
+          <tr><th>#</th><th>Target</th><th>Site / store</th><th>Runner</th><th>Serving today</th></tr>
         </thead>
         <tbody>
           {plan.targets.map((t, i) => (
@@ -139,7 +139,10 @@ function DeploymentPlanView({ plan }: { plan: DeploymentPlan }) {
                   {t.environment ?? 'no environment'}{t.haRole && ` · HA ${t.haRole}`}
                 </div>
               </td>
-              <td className="small muted">{t.store}{t.alias && ` (${t.alias})`}</td>
+              <td className="small">
+                {t.site ?? <span className="muted">—</span>}
+                <div className="muted">{t.store}{t.alias && ` (${t.alias})`}</div>
+              </td>
               <td className="small">
                 {t.runnerName ?? 'control plane'}
                 <div className={t.runnerStatus === 'Online' ? 'ok' : 'bad'}>{t.runnerStatus}</div>

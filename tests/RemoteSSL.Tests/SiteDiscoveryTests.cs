@@ -64,6 +64,18 @@ public class NginxConfigReaderTests
     }
 
     [Fact]
+    public void The_key_path_comes_back_too_so_a_replacement_reuses_the_files_in_use()
+    {
+        // Replacing a certificate means writing over the exact pair this server block loads. A
+        // convention like /etc/nginx/ssl/<name>.key is a guess; ssl_certificate_key is the answer.
+        var servers = NginxConfigReader.Parse(Dump);
+
+        Assert.Equal("/etc/nginx/ssl/wildcard.key", servers.Single(s => s.ServerName == "www.ozgur.com").KeyPath);
+        // A block that names no key still reports the certificate rather than being dropped.
+        Assert.Null(servers.Single(s => s.ServerName == "api.ozgur.com").KeyPath);
+    }
+
+    [Fact]
     public void A_directive_inside_a_nested_block_is_not_mistaken_for_the_server_s_own()
     {
         // `location` blocks routinely carry their own directives; attributing one of those to the
