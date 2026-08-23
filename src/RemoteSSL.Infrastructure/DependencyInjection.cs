@@ -56,6 +56,7 @@ public static class DependencyInjection
         services.AddScoped<Security.RunnerIdentityService>();
         services.AddScoped<Application.Observability.MetricsRecorder>();
         services.AddScoped<Application.Observability.MetricsQuery>();
+        services.AddScoped<Application.Monitoring.WorkListService>();
         services.AddScoped<Application.Certificates.InventoryService>();
         services.AddScoped<Application.Deployments.DeploymentService>();
         services.AddScoped<Application.Deployments.DeploymentPlanner>();

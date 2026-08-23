@@ -1,194 +1,144 @@
 import { useEffect, useState } from 'react'
-import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { useTranslation } from 'react-i18next'
-import { apiGetText } from './api/client'
-import Monitors from './pages/Monitors'
-import Certificates from './pages/Certificates'
-import Targets from './pages/Targets'
-import Deployments from './pages/Deployments'
-import Requests from './pages/Requests'
-import { Runners, Credentials, Approvals, Audit } from './pages/SimplePages'
-import Dashboard from './pages/Dashboard'
-import Keys from './pages/Keys'
-import { Login, Policies, CaIntegrations, Settings } from './pages/AdminPages'
+import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { API_BASE, getToken, setToken } from './api/client'
+import { Login } from './pages/AdminPages'
+import Today from './ui/Today'
+import Certificates from './ui/Certificates'
+import CertificateDetail from './ui/CertificateDetail'
+import Renewals from './ui/Renewals'
+import Renewal from './ui/Renewal'
+import Servers from './ui/Servers'
+import { Activity, ActivityDetail } from './ui/Activity'
+import SettingsSection from './ui/Settings'
 import './App.css'
 
 /**
- * Six places, named after the things an operator actually has: certificates, the servers they go
- * on, the endpoints being watched, what happened, and the setup behind it.
+ * Five places, named after the job rather than the data model.
  *
- * There used to be fourteen entries, one per entity in the data model. That is a faithful map of
- * the system and a poor map of the work — it asked the reader to already know that installing a
- * certificate means visiting Targets, then Deployments, or that a CSR lives under a separate
- * screen from the certificate it will become. Everything is still here; the screens that belong
- * to one subject now sit behind that subject as tabs, so the top level stays small enough to hold
- * in your head.
+ * The product manages one cycle: a certificate approaches its end, a CSR goes to the CA, the
+ * signed file comes back, it is installed everywhere the old one is serving, and somebody has to
+ * see when that fails. Each entry below is a step of that cycle, in order. Anything set up once —
+ * runners, credentials, policies, people — is behind Settings, because it is not the daily work.
+ *
+ * The previous navigation had one entry per entity in the database. That is a faithful map of the
+ * system and a useless map of the work: it asked the reader to already know that renewing means
+ * visiting Certificates, then Requests, then Targets, then Deployments, in that order.
  */
-interface Tab { path: string; key: string; element: React.ReactNode }
-interface Section { path: string; key: string; tabs?: Tab[]; element?: React.ReactNode }
-
-const SECTIONS: Section[] = [
-  { path: '/', key: 'home', element: <Dashboard /> },
-
-  // A request is a certificate that does not exist yet, so it belongs with the certificates.
-  {
-    path: '/certificates',
-    key: 'certificates',
-    tabs: [
-      { path: '', key: 'all', element: <Certificates /> },
-      { path: 'requests', key: 'requests', element: <Requests /> },
-    ],
-  },
-
-  { path: '/servers', key: 'servers', element: <Targets /> },
-  { path: '/endpoints', key: 'endpoints', element: <Monitors /> },
-
-  // What happened, and what is waiting on a person. Installations, approvals and the audit trail
-  // answer the same question at different depths, so they are one section rather than three.
-  {
-    path: '/activity',
-    key: 'activity',
-    tabs: [
-      { path: '', key: 'installations', element: <Deployments /> },
-      { path: 'approvals', key: 'approvals', element: <Approvals /> },
-      { path: 'audit', key: 'audit', element: <Audit /> },
-    ],
-  },
-
-  // Everything you set up once and then stop thinking about.
-  {
-    path: '/setup',
-    key: 'setup',
-    tabs: [
-      { path: '', key: 'runners', element: <Runners /> },
-      { path: 'credentials', key: 'credentials', element: <Credentials /> },
-      { path: 'keys', key: 'keys', element: <Keys /> },
-      { path: 'authorities', key: 'authorities', element: <CaIntegrations /> },
-      { path: 'policies', key: 'policies', element: <Policies /> },
-      { path: 'general', key: 'general', element: <Settings /> },
-    ],
-  },
+const NAV = [
+  { to: '/', label: 'Today', hint: 'What needs doing', end: true },
+  { to: '/certificates', label: 'Certificates', hint: 'What you have and when it runs out' },
+  { to: '/renewals', label: 'Renewals', hint: 'Being bought right now' },
+  { to: '/servers', label: 'Servers', hint: 'Where certificates are serving' },
+  { to: '/activity', label: 'Activity', hint: 'What has been installed' },
+  { to: '/settings', label: 'Settings', hint: 'Set up once' },
 ]
 
-/**
- * Where the old screens used to live. Bookmarks and links in older messages keep working instead
- * of landing on a blank page.
- */
+/** Old links keep working: everything moved, and a dead bookmark is a support call. */
 const MOVED: Record<string, string> = {
-  '/monitors': '/endpoints',
+  '/endpoints': '/settings/monitors',
+  '/monitors': '/settings/monitors',
   '/targets': '/servers',
   '/deployments': '/activity',
-  '/requests': '/certificates/requests',
-  '/approvals': '/activity/approvals',
-  '/audit': '/activity/audit',
-  '/runners': '/setup',
-  '/credentials': '/setup/credentials',
-  '/keys': '/setup/keys',
-  '/ca-integrations': '/setup/authorities',
-  '/policies': '/setup/policies',
-  '/settings': '/setup/general',
+  '/setup': '/settings',
+  '/setup/runners': '/settings/runners',
+  '/setup/credentials': '/settings/credentials',
+  '/setup/policies': '/settings/policies',
+  '/setup/ca': '/settings/ca',
+  '/setup/keys': '/settings/keys',
+  '/setup/users': '/settings/users',
+  '/certificates/requests': '/renewals',
+  '/activity/approvals': '/settings/approvals',
+  '/activity/audit': '/settings/audit',
 }
 
-/** Tab strip for a section that has more than one screen under it. */
-function SectionTabs({ section }: { section: Section }) {
-  const { t } = useTranslation()
-  const { pathname } = useLocation()
-  if (!section.tabs) return null
+/**
+ * Whether the control plane is answering, and whether it is happy.
+ *
+ * The health endpoint answers 503 when a dependency it was told about is down, so a failed
+ * request is not the same as an unreachable server — and saying "cannot reach the server" when
+ * the server is right there, merely reporting a missing queue, sends people to the wrong problem.
+ */
+function Health() {
+  const [state, setState] = useState<'checking' | 'ok' | 'degraded' | 'down'>('checking')
 
+  useEffect(() => {
+    let alive = true
+    const check = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/health`)
+        const body = (await res.text()).trim()
+        if (alive) setState(body === 'Healthy' ? 'ok' : 'degraded')
+      } catch {
+        if (alive) setState('down')
+      }
+    }
+    check()
+    const timer = setInterval(check, 30000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [])
+
+  const words = {
+    checking: 'Checking…',
+    ok: 'Connected',
+    degraded: 'Connected, something is unhealthy',
+    down: 'Cannot reach the server',
+  }
+  return <div className={`health ${state === 'degraded' ? 'checking' : state}`}>{words[state]}</div>
+}
+
+function Shell() {
   return (
-    <div className="section-tabs">
-      {section.tabs.map((tab) => {
-        const to = tab.path ? `${section.path}/${tab.path}` : section.path
-        // The default tab is also active on the bare section path.
-        const active = pathname === to || (tab.path === '' && pathname === `${section.path}/`)
-        return (
-          <NavLink key={to} to={to} className={active ? 'active' : ''}>
-            {t(`nav.tab.${section.key}.${tab.key}`)}
-          </NavLink>
-        )
-      })}
+    <div className="app">
+      <nav className="sidebar">
+        <div className="brand">RemoteSSL</div>
+        <ul>
+          {NAV.map((n) => (
+            <li key={n.to}>
+              <NavLink to={n.to} end={n.end} className={({ isActive }) => isActive ? 'active' : ''}>
+                <span className="nav-label">{n.label}</span>
+                <span className="nav-hint">{n.hint}</span>
+              </NavLink>
+            </li>
+          ))}
+        </ul>
+        <div className="sidebar-foot">
+          <Health />
+          {getToken() && (
+            <button className="ghost small" onClick={() => { setToken(null); window.location.href = '/login' }}>
+              Sign out
+            </button>
+          )}
+        </div>
+      </nav>
+
+      <main className="content">
+        <Routes>
+          <Route path="/" element={<Today />} />
+          <Route path="/certificates" element={<Certificates />} />
+          <Route path="/certificates/:id" element={<CertificateDetail />} />
+          <Route path="/renewals" element={<Renewals />} />
+          <Route path="/renewals/:id" element={<Renewal />} />
+          <Route path="/servers" element={<Servers />} />
+          <Route path="/activity" element={<Activity />} />
+          <Route path="/activity/:id" element={<ActivityDetail />} />
+          <Route path="/settings/*" element={<SettingsSection />} />
+          {Object.entries(MOVED).map(([from, to]) => (
+            <Route key={from} path={from} element={<Navigate to={to} replace />} />
+          ))}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
     </div>
   )
 }
 
-function SectionShell({ section, children }: { section: Section; children: React.ReactNode }) {
-  const { t } = useTranslation()
-  return (
-    <>
-      {/* The section names the subject once; the tabs name the view of it. The screens inside
-          no longer carry their own heading, so nothing is said twice. */}
-      <h1 className="section-title">{t(`nav.${section.key}`)}</h1>
-      <SectionTabs section={section} />
-      {children}
-    </>
-  )
-}
-
-function ApiStatusBadge() {
-  const { t } = useTranslation()
-  const [healthy, setHealthy] = useState<boolean | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const check = () =>
-      apiGetText('/health')
-        .then((body) => !cancelled && setHealthy(body.trim() === 'Healthy'))
-        .catch(() => !cancelled && setHealthy(false))
-    check()
-    const id = setInterval(check, 30_000)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [])
-
-  if (healthy === null) return null
-  return (
-    <span className={`status-badge ${healthy ? 'ok' : 'bad'}`}>
-      {t('common.apiStatus')}: {healthy ? t('common.healthy') : t('common.unreachable')}
-    </span>
-  )
-}
-
 export default function App() {
-  const { t } = useTranslation()
   return (
     <BrowserRouter>
-      <div className="layout">
-        <aside className="sidebar">
-          <div className="brand">{t('app.title')}</div>
-          <nav>
-            {SECTIONS.map((s) => (
-              <NavLink key={s.path} to={s.path} end={s.path === '/'}
-                className={({ isActive }) => (isActive ? 'active' : '')}>
-                {t(`nav.${s.key}`)}
-              </NavLink>
-            ))}
-          </nav>
-          <div className="sidebar-footer">
-            <ApiStatusBadge />
-          </div>
-        </aside>
-        <main className="content">
-          <Routes>
-            {SECTIONS.map((s) =>
-              s.tabs
-                ? s.tabs.map((tab) => (
-                    <Route
-                      key={`${s.path}/${tab.path}`}
-                      path={tab.path ? `${s.path}/${tab.path}` : s.path}
-                      element={<SectionShell section={s}>{tab.element}</SectionShell>}
-                    />
-                  ))
-                : <Route key={s.path} path={s.path} element={s.element} />,
-            )}
-            {Object.entries(MOVED).map(([from, to]) => (
-              <Route key={from} path={from} element={<Navigate to={to} replace />} />
-            ))}
-            <Route path="/login" element={<Login />} />
-          </Routes>
-        </main>
-      </div>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="*" element={<Shell />} />
+      </Routes>
     </BrowserRouter>
   )
 }

@@ -11,9 +11,58 @@ namespace RemoteSSL.Api.Controllers;
 [Route("api/v1/certificates")]
 public class CertificatesController(
     IRemoteSslDbContext db, Application.Auditing.AuditWriter audit,
-    Application.Requests.ICaConnectorResolver connectors, Application.Abstractions.INotificationSink notifier)
+    Application.Requests.ICaConnectorResolver connectors, Application.Abstractions.INotificationSink notifier,
+    Application.Certificates.InventoryService inventory, ISecretProtector protector)
     : ControllerBase
 {
+    /// <param name="KeyPem">
+    /// Optional. Stored encrypted (§7.3) and never returned by any endpoint; without it the
+    /// certificate can still be tracked and its expiry alerted on, but not installed anywhere.
+    /// </param>
+    public record ImportRequest(string CertPem, string? ChainPem = null, string? KeyPem = null);
+
+    /// <summary>
+    /// Takes a certificate the operator already has — bought years ago, exported from a device,
+    /// mailed by the CA — into the inventory.
+    ///
+    /// Most estates start here rather than at a request: the certificates that expire unnoticed
+    /// are precisely the ones nothing issued through this product. Tracking has to be possible
+    /// without owning the whole lifecycle.
+    /// </summary>
+    [HttpPost("import")]
+    [ServiceFilter(typeof(Idempotency.IdempotencyFilter))]
+    public async Task<ActionResult<object>> Import(ImportRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.CertPem))
+            return ValidationProblem("Paste the certificate in PEM form (-----BEGIN CERTIFICATE-----).");
+
+        Domain.Entities.CertificateVersion version;
+        try
+        {
+            version = await inventory.AddVersionAsync(
+                req.CertPem.Trim(), req.ChainPem?.Trim(),
+                string.IsNullOrWhiteSpace(req.KeyPem) ? null : protector.Protect(req.KeyPem.Trim()),
+                CertificateVersionStatus.Active, ct);
+        }
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or ArgumentException)
+        {
+            return ValidationProblem($"That does not read as a certificate: {ex.Message}");
+        }
+
+        audit.Append("ui", "certificate.import", "certificate", version.CertificateId.ToString(),
+            "SUCCESS", new { version.Sha256Thumbprint, HasPrivateKey = !string.IsNullOrWhiteSpace(req.KeyPem) });
+        await db.SaveChangesAsync(ct);
+
+        return new
+        {
+            CertificateId = version.CertificateId,
+            VersionId = version.Id,
+            version.Certificate.CommonName,
+            version.NotAfter,
+            HasPrivateKey = version.EncryptedPrivateKeyPem is not null,
+        };
+    }
+
     /// <summary>Inventory row per design doc §26.1: Certificate | Expiry | CA | Managed | Deployments | Auto Renew | Status.</summary>
     public record CertificateListItem(
         Guid Id, string CommonName, string DisplayName, string Health,
@@ -65,8 +114,12 @@ public class CertificatesController(
         Guid JobId, string Status, string Strategy, string? RequestedBy, string? ApprovedBy,
         int TargetCount, int FailedTargets, DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt);
 
+    /// <param name="TargetId">
+    /// The machine itself, not just its name: reinstalling where a certificate already lives has
+    /// to address the server, and a name is not an address.
+    /// </param>
     public record StoreDto(
-        Guid BindingId, Guid StoreId, string Target, string Adapter, string StoreType,
+        Guid BindingId, Guid StoreId, Guid TargetId, string Target, string Adapter, string StoreType,
         string StorePath, string? Alias, string ServiceBindingJson);
 
     public record RenewalDto(
@@ -355,7 +408,7 @@ public class CertificatesController(
         var stores = await db.DeploymentBindings.AsNoTracking()
             .Where(b => b.CertificateId == id)
             .Select(b => new StoreDto(
-                b.Id, b.CertificateStoreId,
+                b.Id, b.CertificateStoreId, b.CertificateStore.TargetId,
                 b.CertificateStore.Target.Name, b.CertificateStore.Target.AdapterType,
                 b.CertificateStore.StoreType, b.CertificateStore.StorePath,
                 b.CertificateStore.Alias, b.ServiceBindingJson))

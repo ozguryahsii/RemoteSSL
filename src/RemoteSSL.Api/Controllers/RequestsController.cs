@@ -95,6 +95,43 @@ public class RequestsController(IRemoteSslDbContext db, CertificateRequestServic
         return NoContent();
     }
 
+    /// <summary>
+    /// One renewal, with the CSR itself. A CSR carries only the public key and the names, so it
+    /// is shown rather than hidden — the operator has to paste it into the CA's portal, and
+    /// making them download a file for that is friction with no security to show for it.
+    /// </summary>
+    [HttpGet("{id:guid}")]
+    public async Task<ActionResult<object>> Get(Guid id, CancellationToken ct)
+    {
+        var r = await db.CertificateRequests.AsNoTracking()
+            .Where(r => r.Id == id)
+            .Select(r => new
+            {
+                r.Id, r.CertificateId, r.CommonName, r.SansJson, r.KeyAlgorithm, r.KeySizeOrCurve,
+                r.KeyOrigin, State = r.State.ToString(), r.CsrPem, r.ProviderRequestId,
+                r.ErrorMessage, r.IssuedVersionId, r.RequestedBy, r.Environment, r.OwnerId,
+                r.CaConnectorId, r.CreatedAt, r.UpdatedAt,
+                // Where the certificate this renews is installed today: what a replacement has to
+                // reach for the renewal to have been worth doing.
+                Places = db.DeploymentBindings
+                    .Where(b => r.CertificateId != null && b.CertificateId == r.CertificateId)
+                    .Select(b => new
+                    {
+                        b.Id,
+                        StoreId = b.CertificateStoreId,
+                        b.CertificateStore.TargetId,
+                        Target = b.CertificateStore.Target.Name,
+                        Adapter = b.CertificateStore.Target.AdapterType,
+                        b.CertificateStore.StorePath,
+                        b.CertificateStore.Alias,
+                        b.ServiceBindingJson,
+                    }).ToList(),
+            })
+            .FirstOrDefaultAsync(ct);
+
+        return r is null ? NotFound() : r;
+    }
+
     [HttpGet("{id:guid}/csr")]
     public async Task<IActionResult> DownloadCsr(Guid id, CancellationToken ct)
     {

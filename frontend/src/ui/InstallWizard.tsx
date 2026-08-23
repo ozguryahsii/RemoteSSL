@@ -417,34 +417,35 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
           : false
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal wizard" onClick={(e) => e.stopPropagation()}>
-        <div className="detail-header">
+    <div className="overlay" onClick={onClose}>
+      <div className="sheet wide" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
           <h2>{replacing
             ? `Replace the certificate on ${locations.length} site(s)`
             : 'Install a certificate on servers'}</h2>
           <button onClick={onClose}>Close</button>
         </div>
 
-        <ol className="wizard-steps">
+        <div className="sheet-body">
+        <ol className="steps">
           {(replacing ? PRESET_STEPS : STEPS).map((label, i) => {
             // Replacement skips the server step: discovery already said which machines are involved.
             const at = replacing ? (i === 0 ? 0 : i + 1) : i
             return (
               <li key={label} className={at === step ? 'current' : at < step ? 'done' : ''}>
-                <span className="wizard-step-no">{i + 1}</span> {label}
+                <span className="step-no">{i + 1}</span> {label}
               </li>
             )
           })}
         </ol>
 
-        {error && <p className="bad small">{error}</p>}
+        {error && <p className="notice bad small">{error}</p>}
 
         {done ? (
           <>
             <p className="ok">{done}</p>
             <p className="muted small">Follow it under Activity → Installations.</p>
-            <div className="actions"><button onClick={onClose}>Done</button></div>
+            <div className="row-actions"><button onClick={onClose}>Done</button></div>
           </>
         ) : (
           <>
@@ -453,7 +454,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                 {replacing && (
                   <>
                     <p className="muted small">Replacing what these sites serve today:</p>
-                    <table className="data-table">
+                    <table className="grid">
                       <thead><tr><th>Site</th><th>Server</th><th>Serving now</th></tr></thead>
                       <tbody>
                         {locations.map((l, i) => (
@@ -481,7 +482,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                   ))}
                 </select>
                 {certificates.length === 0 && (
-                  <p className="warn small">
+                  <p className="notice warn small">
                     There are no certificates yet. Request one under Certificates → Requests &amp; CSRs, or
                     watch an endpoint so RemoteSSL discovers the one already in use.
                   </p>
@@ -496,11 +497,11 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                   a wildcard usually does — and they are all updated in one run.
                 </p>
 
-                <div className="actions">
-                  <button className={!newServer ? 'chosen' : ''} onClick={() => setNewServer(false)}>
+                <div className="row-actions">
+                  <button className={!newServer ? 'primary' : ''} onClick={() => setNewServer(false)}>
                     Servers I already added
                   </button>
-                  <button className={newServer ? 'chosen' : ''} onClick={() => setNewServer(true)}>
+                  <button className={newServer ? 'primary' : ''} onClick={() => setNewServer(true)}>
                     Add a new server
                   </button>
                 </div>
@@ -529,7 +530,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                         </p>
                       )}
                     </div>
-                    <div className="actions">
+                    <div className="row-actions">
                       <button onClick={() => setTargetIds(visible.map((t) => t.id))}
                         disabled={visible.length === 0}>Select all shown</button>
                       <button onClick={() => setTargetIds([])} disabled={targetIds.length === 0}>Clear</button>
@@ -539,7 +540,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                     </div>
                   </>
                 ) : (
-                  <div className="wizard-fields">
+                  <div className="form-grid">
                     <label>Name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="web-01" /></label>
                     <label>What runs on it
                       <select value={adapterType} onChange={(e) => setAdapterType(e.target.value)}>
@@ -557,7 +558,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                     </label>
                     {newAdapter?.notes && <p className="muted small">{newAdapter.notes}</p>}
                     {credentials.length === 0 && (
-                      <p className="warn small">
+                      <p className="notice warn small">
                         No credentials stored yet. RemoteSSL cannot reach the server without one — add it
                         under Setup → Credentials, then come back.
                       </p>
@@ -579,9 +580,9 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                 {locations.map((l, i) => {
                   const a = adapters.find((x) => x.type === l.adapterType)
                   return (
-                    <div key={i} className="detail-panel">
+                    <div key={i} className="card">
                       <h3>{l.siteName} <span className="muted small">on {l.targetName} · {l.adapterType}</span></h3>
-                      <div className="wizard-fields">
+                      <div className="form-grid">
                         <label>Where it lives
                           <input value={l.storePath ?? ''} disabled={!!l.storeId}
                             onChange={(e) => updateLocation(i, { storePath: e.target.value })} />
@@ -602,12 +603,12 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                   )
                 })}
 
-                {missingRequired.map((m, i) => <p key={i} className="warn small">{m}</p>)}
+                {missingRequired.map((m, i) => <p key={i} className="notice warn small">{m}</p>)}
 
                 {locations.length > 1 && (
                   <>
                     <h3>How to roll it out</h3>
-                    <div className="wizard-fields">
+                    <div className="form-grid">
                       <label>Order
                         <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
                           {STRATEGIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
@@ -628,7 +629,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
             {step === 2 && !replacing && (
               <>
                 <p className="muted small">Where on each machine should the certificate live?</p>
-                <table className="data-table">
+                <table className="grid">
                   <thead><tr><th>Server</th><th>Location</th></tr></thead>
                   <tbody>
                     {chosen.map((t) => (
@@ -675,7 +676,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                   {mixedAdapters && ' The selected servers do not all run the same thing, so these '
                     + `follow ${formAdapter?.displayName ?? 'the first one'}.`}
                 </p>
-                <div className="wizard-fields">
+                <div className="form-grid">
                   {(formAdapter?.serviceFields ?? []).map((f) => (
                     <label key={f.key}>
                       {f.label}{f.required && <span className="bad"> *</span>}
@@ -689,7 +690,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                 {targetIds.length > 1 && (
                   <>
                     <h3>How to roll it out</h3>
-                    <div className="wizard-fields">
+                    <div className="form-grid">
                       <label>Order
                         <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
                           {STRATEGIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
@@ -714,7 +715,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                   <span className="muted">{plan.newThumbprint.slice(0, 16)}…</span> — going to{' '}
                   <strong>{plan.targets.length}</strong> {replacing ? 'site(s)' : 'server(s)'}, {plan.strategy}
                 </p>
-                <table className="data-table">
+                <table className="grid">
                   <thead><tr><th>Server</th><th>Site</th><th>Adapter</th><th>Location</th><th>Serving today</th><th>Runner</th></tr></thead>
                   <tbody>
                     {plan.targets.map((t, i) => (
@@ -735,18 +736,18 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
                 </table>
 
                 {plan.approvalRequired && (
-                  <p className="warn small">
+                  <p className="notice warn small">
                     Policy requires approval for this environment — the job is created and waits for an approver.
                   </p>
                 )}
                 {plan.windowRequired && !plan.windowOpen && (
-                  <p className="warn small">Policy requires a maintenance window, and it is not open right now.</p>
+                  <p className="notice warn small">Policy requires a maintenance window, and it is not open right now.</p>
                 )}
-                {plan.warnings.map((w, i) => <p key={i} className="warn small">{w}</p>)}
+                {plan.warnings.map((w, i) => <p key={i} className="notice warn small">{w}</p>)}
                 {plan.blockers.length > 0 && (
                   <>
                     <h3>This cannot run yet</h3>
-                    <ul className="step-list">
+                    <ul className="work-list">
                       {plan.blockers.map((b, i) => <li key={i} className="bad">{b}</li>)}
                     </ul>
                   </>
@@ -754,7 +755,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
               </>
             )}
 
-            <div className="actions" style={{ marginTop: 16 }}>
+            <div className="row-actions" style={{ marginTop: 16 }}>
               {step > 0 && (
                 <button onClick={() => setStep(replacing && step === 2 ? 0 : step - 1)} disabled={busy}>Back</button>
               )}
@@ -788,6 +789,7 @@ export default function InstallWizard({ onClose, onInstalled, preset }: {
             )}
           </>
         )}
+        </div>
       </div>
     </div>
   )
